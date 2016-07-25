@@ -348,10 +348,6 @@ pub fn compiler_rt(build: &Build, target: &str) {
             ]);
         }
     } else {
-        if !target.contains("freebsd") {
-            sources.push("gcc_personality_v0.c");
-        }
-
         if target.contains("x86_64") {
             sources.extend(vec![
                 "x86_64/chkstk.S",
