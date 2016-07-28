@@ -136,7 +136,7 @@ fn main() {
     cmd.arg(format!("--build={}", build_helper::gnu_target(&host)));
 
     run(&mut cmd);
-    run(Command::new("make")
+    run(Command::new("gmake")
             .current_dir(&build_dir)
             .arg("build_lib_static")
             .arg("-j")
