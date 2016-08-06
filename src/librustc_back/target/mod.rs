@@ -157,6 +157,7 @@ supported_targets! {
 
     ("x86_64-unknown-bitrig", x86_64_unknown_bitrig),
     ("x86_64-unknown-openbsd", x86_64_unknown_openbsd),
+    ("i686-unknown-netbsdelf", i686_unknown_netbsdelf),
     ("x86_64-unknown-netbsd", x86_64_unknown_netbsd),
     ("x86_64-rumprun-netbsd", x86_64_rumprun_netbsd),
 
