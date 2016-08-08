@@ -235,7 +235,12 @@ fn check_expr(cx: &mut MatchCheckCtxt, ex: &hir::Expr) {
                 .flat_map(|arm| &arm.0)
                 .map(|pat| vec![wrap_pat(cx, &pat)])
                 .collect();
-            check_exhaustive(cx, ex.span, &matrix, source);
+            let match_span = Span {
+                lo: ex.span.lo,
+                hi: scrut.span.hi,
+                expn_id: ex.span.expn_id
+            };
+            check_exhaustive(cx, match_span, &matrix, source);
         },
         _ => ()
     }
@@ -424,10 +429,15 @@ fn check_exhaustive<'a, 'tcx>(cx: &MatchCheckCtxt<'a, 'tcx>,
                             format!("`{}` and {} more", head.join("`, `"), tail.len())
                         }
                     };
-                    span_err!(cx.tcx.sess, sp, E0004,
+
+                    let label_text = match pattern_strings.len(){
+                        1 => format!("pattern {} not covered", joined_patterns),
+                        _ => format!("patterns {} not covered", joined_patterns)
+                    };
+                    struct_span_err!(cx.tcx.sess, sp, E0004,
                         "non-exhaustive patterns: {} not covered",
                         joined_patterns
-                    );
+                    ).span_label(sp, &label_text).emit();
                 },
             }
         }
