@@ -211,6 +211,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                 ty::TyTuple(..) => Some(12),
                 ty::TyProjection(..) => Some(13),
                 ty::TyParam(..) => Some(14),
+                ty::TyAnon(..) => Some(15),
                 ty::TyInfer(..) | ty::TyError => None
             }
         }
@@ -654,6 +655,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         let mut err = struct_span_err!(self.sess, span, E0072,
                                        "recursive type `{}` has infinite size",
                                        self.item_path_str(type_def_id));
+        err.span_label(span, &format!("recursive type has infinite size"));
         err.help(&format!("insert indirection (e.g., a `Box`, `Rc`, or `&`) \
                            at some point to make `{}` representable",
                           self.item_path_str(type_def_id)));
@@ -670,10 +672,15 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         let mut err = match warning_node_id {
             Some(_) => None,
             None => {
-                Some(struct_span_err!(
-                    self.sess, span, E0038,
-                    "the trait `{}` cannot be made into an object",
-                    self.item_path_str(trait_def_id)))
+                let trait_str = self.item_path_str(trait_def_id);
+                let mut db = struct_span_err!(
+                            self.sess, span, E0038,
+                            "the trait `{}` cannot be made into an object",
+                            trait_str);
+                db.span_label(span,
+                              &format!("the trait `{}` cannot be made \
+                              into an object", trait_str));
+                Some(db)
             }
         };
 

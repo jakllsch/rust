@@ -12,9 +12,9 @@
 #![allow(unreachable_code)]
 
 use rustc::infer::{self, InferCtxt, InferOk};
-use rustc::traits::{self, ProjectionMode};
+use rustc::traits::{self, Reveal};
 use rustc::ty::fold::TypeFoldable;
-use rustc::ty::{self, Ty, TyCtxt};
+use rustc::ty::{self, Ty, TyCtxt, TypeVariants};
 use rustc::mir::repr::*;
 use rustc::mir::tcx::LvalueTy;
 use rustc::mir::transform::{MirPass, MirSource, Pass};
@@ -360,10 +360,27 @@ impl<'a, 'gcx, 'tcx> TypeChecker<'a, 'gcx, 'tcx> {
                         span_mirbug!(self, stmt, "bad assignment ({:?} = {:?}): {:?}",
                                      lv_ty, rv_ty, terr);
                     }
-                }
-
                 // FIXME: rvalue with undeterminable type - e.g. inline
                 // asm.
+                }
+            }
+            StatementKind::SetDiscriminant{ ref lvalue, variant_index } => {
+                let lvalue_type = lvalue.ty(mir, tcx).to_ty(tcx);
+                let adt = match lvalue_type.sty {
+                    TypeVariants::TyEnum(adt, _) => adt,
+                    _ => {
+                        span_bug!(stmt.source_info.span,
+                                  "bad set discriminant ({:?} = {:?}): lhs is not an enum",
+                                  lvalue,
+                                  variant_index);
+                    }
+                };
+                if variant_index >= adt.variants.len() {
+                     span_bug!(stmt.source_info.span,
+                               "bad set discriminant ({:?} = {:?}): value of of range",
+                               lvalue,
+                               variant_index);
+                };
             }
         }
     }
@@ -695,7 +712,7 @@ impl<'tcx> MirPass<'tcx> for TypeckMir {
             return;
         }
         let param_env = ty::ParameterEnvironment::for_item(tcx, src.item_id());
-        tcx.infer_ctxt(None, Some(param_env), ProjectionMode::AnyFinal).enter(|infcx| {
+        tcx.infer_ctxt(None, Some(param_env), Reveal::NotSpecializable).enter(|infcx| {
             let mut checker = TypeChecker::new(&infcx);
             {
                 let mut verifier = TypeVerifier::new(&mut checker, mir);

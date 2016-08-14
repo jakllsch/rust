@@ -1051,7 +1051,7 @@ impl<'a> Parser<'a> {
     pub fn parse_for_in_type(&mut self) -> PResult<'a, TyKind> {
         /*
         Parses whatever can come after a `for` keyword in a type.
-        The `for` has already been consumed.
+        The `for` hasn't been consumed.
 
         Deprecated:
 
@@ -1090,6 +1090,23 @@ impl<'a> Parser<'a> {
             Ok(ast::TyKind::PolyTraitRef(all_bounds))
         }
     }
+
+    pub fn parse_impl_trait_type(&mut self) -> PResult<'a, TyKind> {
+        /*
+        Parses whatever can come after a `impl` keyword in a type.
+        The `impl` has already been consumed.
+        */
+
+        let bounds = self.parse_ty_param_bounds(BoundParsingMode::Modified)?;
+
+        if !bounds.iter().any(|b| if let TraitTyParamBound(..) = *b { true } else { false }) {
+            let last_span = self.last_span;
+            self.span_err(last_span, "at least one trait must be specified");
+        }
+
+        Ok(ast::TyKind::ImplTrait(bounds))
+    }
+
 
     pub fn parse_ty_path(&mut self) -> PResult<'a, TyKind> {
         Ok(TyKind::Path(None, self.parse_path(PathStyle::Type)?))
@@ -1406,6 +1423,8 @@ impl<'a> Parser<'a> {
             self.parse_borrowed_pointee()?
         } else if self.check_keyword(keywords::For) {
             self.parse_for_in_type()?
+        } else if self.eat_keyword(keywords::Impl) {
+            self.parse_impl_trait_type()?
         } else if self.token_is_bare_fn_keyword() {
             // BARE FUNCTION
             self.parse_ty_bare_fn(Vec::new())?
@@ -1990,10 +2009,19 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub fn parse_field_name(&mut self) -> PResult<'a, Ident> {
+        if let token::Literal(token::Integer(name), None) = self.token {
+            self.bump();
+            Ok(Ident::with_empty_ctxt(name))
+        } else {
+            self.parse_ident()
+        }
+    }
+
     /// Parse ident COLON expr
     pub fn parse_field(&mut self) -> PResult<'a, Field> {
         let lo = self.span.lo;
-        let i = self.parse_ident()?;
+        let i = self.parse_field_name()?;
         let hi = self.last_span.hi;
         self.expect(&token::Colon)?;
         let e = self.parse_expr()?;
@@ -3489,7 +3517,7 @@ impl<'a> Parser<'a> {
             // Check if a colon exists one ahead. This means we're parsing a fieldname.
             let (subpat, fieldname, is_shorthand) = if self.look_ahead(1, |t| t == &token::Colon) {
                 // Parsing a pattern of the form "fieldname: pat"
-                let fieldname = self.parse_ident()?;
+                let fieldname = self.parse_field_name()?;
                 self.bump();
                 let pat = self.parse_pat()?;
                 hi = pat.span.hi;

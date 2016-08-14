@@ -21,7 +21,7 @@ use rustc::hir;
 use rustc::hir::def_id::DefId;
 use rustc::hir::intravisit::FnKind;
 use rustc::hir::map::blocks::FnLikeNode;
-use rustc::traits::{self, ProjectionMode};
+use rustc::traits::{self, Reveal};
 use rustc::ty::{self, TyCtxt, Ty};
 use rustc::ty::cast::CastTy;
 use rustc::mir::repr::*;
@@ -615,9 +615,12 @@ impl<'a, 'tcx> Visitor<'tcx> for Qualifier<'a, 'tcx, 'tcx> {
                     if !allow {
                         self.add(Qualif::NOT_CONST);
                         if self.mode != Mode::Fn {
-                            span_err!(self.tcx.sess, self.span, E0017,
-                                      "references in {}s may only refer \
-                                       to immutable values", self.mode);
+                            struct_span_err!(self.tcx.sess,  self.span, E0017,
+                                             "references in {}s may only refer \
+                                              to immutable values", self.mode)
+                                .span_label(self.span, &format!("{}s require immutable values",
+                                                                self.mode))
+                                .emit();
                         }
                     }
                 } else {
@@ -989,7 +992,7 @@ impl<'tcx> MirMapPass<'tcx> for QualifyAndPromoteConstants {
             // Statics must be Sync.
             if mode == Mode::Static {
                 let ty = mir.return_ty.unwrap();
-                tcx.infer_ctxt(None, None, ProjectionMode::AnyFinal).enter(|infcx| {
+                tcx.infer_ctxt(None, None, Reveal::NotSpecializable).enter(|infcx| {
                     let cause = traits::ObligationCause::new(mir.span, id, traits::SharedStatic);
                     let mut fulfillment_cx = traits::FulfillmentContext::new();
                     fulfillment_cx.register_builtin_bound(&infcx, ty, ty::BoundSync, cause);

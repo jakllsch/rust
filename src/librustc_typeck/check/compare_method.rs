@@ -11,9 +11,11 @@
 use middle::free_region::FreeRegionMap;
 use rustc::infer::{self, InferOk, TypeOrigin};
 use rustc::ty;
-use rustc::traits::{self, ProjectionMode};
+use rustc::traits::{self, Reveal};
 use rustc::ty::error::ExpectedFound;
 use rustc::ty::subst::{self, Subst, Substs, VecPerParamSpace};
+use rustc::hir::map::Node;
+use rustc::hir::{ImplItemKind, TraitItem_};
 
 use syntax::ast;
 use syntax_pos::Span;
@@ -211,7 +213,7 @@ pub fn compare_impl_method<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
         return;
     }
 
-    tcx.infer_ctxt(None, None, ProjectionMode::AnyFinal).enter(|mut infcx| {
+    tcx.infer_ctxt(None, None, Reveal::NotSpecializable).enter(|mut infcx| {
         let mut fulfillment_cx = traits::FulfillmentContext::new();
 
         // Normalize the associated types in the trait_bounds.
@@ -431,7 +433,7 @@ pub fn compare_const_impl<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
            impl_trait_ref);
 
     let tcx = ccx.tcx;
-    tcx.infer_ctxt(None, None, ProjectionMode::AnyFinal).enter(|infcx| {
+    tcx.infer_ctxt(None, None, Reveal::NotSpecializable).enter(|infcx| {
         let mut fulfillment_cx = traits::FulfillmentContext::new();
 
         // The below is for the most part highly similar to the procedure
@@ -461,7 +463,7 @@ pub fn compare_const_impl<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
         // Compute skolemized form of impl and trait const tys.
         let impl_ty = impl_c.ty.subst(tcx, impl_to_skol_substs);
         let trait_ty = trait_c.ty.subst(tcx, &trait_to_skol_substs);
-        let origin = TypeOrigin::Misc(impl_c_span);
+        let mut origin = TypeOrigin::Misc(impl_c_span);
 
         let err = infcx.commit_if_ok(|_| {
             // There is no "body" here, so just pass dummy id.
@@ -496,11 +498,31 @@ pub fn compare_const_impl<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
             debug!("checking associated const for compatibility: impl ty {:?}, trait ty {:?}",
                    impl_ty,
                    trait_ty);
+
+            // Locate the Span containing just the type of the offending impl
+            if let Some(impl_trait_node) = tcx.map.get_if_local(impl_c.def_id) {
+                if let Node::NodeImplItem(impl_trait_item) = impl_trait_node {
+                    if let ImplItemKind::Const(ref ty, _) = impl_trait_item.node {
+                        origin = TypeOrigin::Misc(ty.span);
+                    }
+                }
+            }
+
             let mut diag = struct_span_err!(
                 tcx.sess, origin.span(), E0326,
                 "implemented const `{}` has an incompatible type for trait",
                 trait_c.name
             );
+
+            // Add a label to the Span containing just the type of the item
+            if let Some(orig_trait_node) = tcx.map.get_if_local(trait_c.def_id) {
+                if let Node::NodeTraitItem(orig_trait_item) = orig_trait_node {
+                    if let TraitItem_::ConstTraitItem(ref ty, _) = orig_trait_item.node {
+                        diag.span_label(ty.span, &format!("original trait requirement"));
+                    }
+                }
+            }
+
             infcx.note_type_err(
                 &mut diag, origin,
                 Some(infer::ValuePairs::Types(ExpectedFound {

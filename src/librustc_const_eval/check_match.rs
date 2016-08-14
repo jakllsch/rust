@@ -25,7 +25,7 @@ use rustc::middle::expr_use_visitor::{LoanCause, MutateMode};
 use rustc::middle::expr_use_visitor as euv;
 use rustc::middle::mem_categorization::{cmt};
 use rustc::hir::pat_util::*;
-use rustc::traits::ProjectionMode;
+use rustc::traits::Reveal;
 use rustc::ty::*;
 use rustc::ty;
 use std::cmp::Ordering;
@@ -235,12 +235,7 @@ fn check_expr(cx: &mut MatchCheckCtxt, ex: &hir::Expr) {
                 .flat_map(|arm| &arm.0)
                 .map(|pat| vec![wrap_pat(cx, &pat)])
                 .collect();
-            let match_span = Span {
-                lo: ex.span.lo,
-                hi: scrut.span.hi,
-                expn_id: ex.span.expn_id
-            };
-            check_exhaustive(cx, match_span, &matrix, source);
+            check_exhaustive(cx, scrut.span, &matrix, source);
         },
         _ => ()
     }
@@ -1115,9 +1110,15 @@ fn check_legality_of_move_bindings(cx: &MatchCheckCtxt,
 
         // x @ Foo(..) is legal, but x @ Foo(y) isn't.
         if sub.map_or(false, |p| pat_contains_bindings(&p)) {
-            span_err!(cx.tcx.sess, p.span, E0007, "cannot bind by-move with sub-bindings");
+            struct_span_err!(cx.tcx.sess, p.span, E0007,
+                             "cannot bind by-move with sub-bindings")
+                .span_label(p.span, &format!("binds an already bound by-move value by moving it"))
+                .emit();
         } else if has_guard {
-            span_err!(cx.tcx.sess, p.span, E0008, "cannot bind by-move into a pattern guard");
+            struct_span_err!(cx.tcx.sess, p.span, E0008,
+                      "cannot bind by-move into a pattern guard")
+                .span_label(p.span, &format!("moves value into pattern guard"))
+                .emit();
         } else if by_ref_span.is_some() {
             let mut err = struct_span_err!(cx.tcx.sess, p.span, E0009,
                                            "cannot bind by-move and by-ref in the same pattern");
@@ -1132,7 +1133,7 @@ fn check_legality_of_move_bindings(cx: &MatchCheckCtxt,
                 let pat_ty = cx.tcx.node_id_to_type(p.id);
                 //FIXME: (@jroesch) this code should be floated up as well
                 cx.tcx.infer_ctxt(None, Some(cx.param_env.clone()),
-                                  ProjectionMode::AnyFinal).enter(|infcx| {
+                                  Reveal::NotSpecializable).enter(|infcx| {
                     if infcx.type_moves_by_default(pat_ty, pat.span) {
                         check_move(p, sub.as_ref().map(|p| &**p));
                     }
@@ -1148,7 +1149,7 @@ fn check_legality_of_move_bindings(cx: &MatchCheckCtxt,
 fn check_for_mutation_in_guard<'a, 'tcx>(cx: &'a MatchCheckCtxt<'a, 'tcx>,
                                          guard: &hir::Expr) {
     cx.tcx.infer_ctxt(None, Some(cx.param_env.clone()),
-                      ProjectionMode::AnyFinal).enter(|infcx| {
+                      Reveal::NotSpecializable).enter(|infcx| {
         let mut checker = MutationChecker {
             cx: cx,
         };
