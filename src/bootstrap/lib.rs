@@ -26,6 +26,7 @@ extern crate md5;
 extern crate num_cpus;
 extern crate rustc_serialize;
 extern crate toml;
+extern crate regex;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -451,6 +452,7 @@ impl Build {
                 DistMingw { _dummy } => dist::mingw(self, target.target),
                 DistRustc { stage } => dist::rustc(self, stage, target.target),
                 DistStd { compiler } => dist::std(self, &compiler, target.target),
+                DistSrc { _dummy } => dist::rust_src(self),
 
                 DebuggerScripts { stage } => {
                     let compiler = Compiler::new(stage, target.target);
@@ -868,8 +870,13 @@ impl Build {
         // This is a hack, because newer binutils broke things on some vms/distros
         // (i.e., linking against unknown relocs disabled by the following flag)
         // See: https://github.com/rust-lang/rust/issues/34978
-        if target == "x86_64-unknown-linux-musl" {
-            base.push("-Wa,-mrelax-relocations=no".into());
+        match target {
+            "i586-unknown-linux-gnu" |
+            "i686-unknown-linux-musl" |
+            "x86_64-unknown-linux-musl" => {
+                base.push("-Wa,-mrelax-relocations=no".into());
+            },
+            _ => {},
         }
         return base
     }
