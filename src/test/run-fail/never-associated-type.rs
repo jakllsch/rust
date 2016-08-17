@@ -1,4 +1,4 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,12 +8,27 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![deny(unreachable_code)]
+// Test that we can use ! as an associated type.
 
-fn f() -> ! {
-    return panic!(); //~ ERROR `return` in a function declared as diverging
-    panic!(); // the unreachable statement error is in <std macro>, at this line, there
-             // only is a note
+#![feature(never_type)]
+
+// error-pattern:kapow!
+
+trait Foo {
+    type Wow;
+
+    fn smeg(&self) -> Self::Wow;
 }
 
-fn main() { f() }
+struct Blah;
+impl Foo for Blah {
+    type Wow = !;
+    fn smeg(&self) -> ! {
+        panic!("kapow!");
+    }
+}
+
+fn main() {
+    Blah.smeg();
+}
+

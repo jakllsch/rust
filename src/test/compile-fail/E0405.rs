@@ -8,9 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-fn foo() -> ! { return; }
-    //~^ ERROR E0166
-    //~| NOTE diverging function cannot return
+struct Foo;
+
+impl SomeTrait for Foo {} //~ ERROR E0405
 
 fn main() {
 }
