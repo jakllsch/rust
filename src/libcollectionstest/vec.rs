@@ -11,7 +11,7 @@
 use std::borrow::Cow;
 use std::iter::{FromIterator, repeat};
 use std::mem::size_of;
-use std::vec::Drain;
+use std::vec::{Drain, IntoIter};
 
 use test::Bencher;
 
@@ -502,6 +502,14 @@ fn test_into_iter_as_mut_slice() {
 }
 
 #[test]
+fn test_into_iter_debug() {
+    let vec = vec!['a', 'b', 'c'];
+    let into_iter = vec.into_iter();
+    let debug = format!("{:?}", into_iter);
+    assert_eq!(debug, "IntoIter(['a', 'b', 'c'])");
+}
+
+#[test]
 fn test_into_iter_count() {
     assert_eq!(vec![1, 2, 3].into_iter().count(), 3);
 }
@@ -537,6 +545,7 @@ fn test_cow_from() {
 #[allow(dead_code)]
 fn assert_covariance() {
     fn drain<'new>(d: Drain<'static, &'static str>) -> Drain<'new, &'new str> { d }
+    fn into_iter<'new>(i: IntoIter<&'static str>) -> IntoIter<&'new str> { i }
 }
 
 #[bench]

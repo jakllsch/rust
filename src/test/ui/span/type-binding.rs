@@ -1,4 +1,4 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,16 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(box_syntax, unboxed_closures)]
+// Regression test for issue #28158
+// Test the type binding span doesn't include >>
 
-fn to_fn_once<A,F:FnOnce<A>>(f: F) -> F { f }
+use std::ops::Deref;
 
-fn main() {
-    let r = {
-        let x: Box<_> = box 42;
-        let f = to_fn_once(move|| &x); //~ ERROR: `x` does not live long enough
-        f()
-    };
+fn homura<T: Deref<Trget = i32>>(_: T) {}
 
-    drop(r);
-}
+fn main() {}

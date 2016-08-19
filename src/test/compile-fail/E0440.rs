@@ -1,4 +1,4 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,10 +8,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// Make sure that the span of a closure marked `move` begins at the `move` keyword.
+#![feature(repr_simd)]
+#![feature(platform_intrinsics)]
 
-fn main() {
-    let x: () =
-    move //~ ERROR mismatched types
-    || ();
+#[repr(simd)]
+struct f64x2(f64, f64);
+
+extern "platform-intrinsic" {
+    fn x86_mm_movemask_pd<T>(x: f64x2) -> i32; //~ ERROR E0440
+}
+
+fn main () {
 }

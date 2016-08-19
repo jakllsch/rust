@@ -8,10 +8,20 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// this error is dispayed in `<std macros>`
-// error-pattern:cannot apply unary operator `!` to type `&'static str`
-// error-pattern:in this expansion of assert!
+// rustc-env:RUST_NEW_ERROR_FORMAT
+
+trait Foo {
+    fn foo(x: u16);
+    fn bar(&mut self, bar: &mut Bar);
+}
+
+struct Bar;
+
+impl Foo for Bar {
+    fn foo(x: i16) { }
+    fn bar(&mut self, bar: &Bar) { }
+}
 
 fn main() {
-    assert!("foo");
 }
+

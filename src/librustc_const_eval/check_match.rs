@@ -1073,11 +1073,12 @@ fn check_irrefutable(cx: &MatchCheckCtxt, pat: &Pat, is_fn_arg: bool) {
     };
 
     is_refutable(cx, pat, |uncovered_pat| {
-        span_err!(cx.tcx.sess, pat.span, E0005,
+        let pattern_string = pat_to_string(uncovered_pat);
+        struct_span_err!(cx.tcx.sess, pat.span, E0005,
             "refutable pattern in {}: `{}` not covered",
             origin,
-            pat_to_string(uncovered_pat),
-        );
+            pattern_string,
+        ).span_label(pat.span, &format!("pattern `{}` not covered", pattern_string)).emit();
     });
 }
 
@@ -1120,10 +1121,11 @@ fn check_legality_of_move_bindings(cx: &MatchCheckCtxt,
                 .span_label(p.span, &format!("moves value into pattern guard"))
                 .emit();
         } else if by_ref_span.is_some() {
-            let mut err = struct_span_err!(cx.tcx.sess, p.span, E0009,
-                                           "cannot bind by-move and by-ref in the same pattern");
-            span_note!(&mut err, by_ref_span.unwrap(), "by-ref binding occurs here");
-            err.emit();
+            struct_span_err!(cx.tcx.sess, p.span, E0009,
+                            "cannot bind by-move and by-ref in the same pattern")
+                    .span_label(p.span, &format!("by-move pattern here"))
+                    .span_label(by_ref_span.unwrap(), &format!("both by-ref and by-move used"))
+                    .emit();
         }
     };
 
