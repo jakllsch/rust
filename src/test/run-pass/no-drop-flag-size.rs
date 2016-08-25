@@ -8,21 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// compile-flags: -Z orbit
-// Tests that -Z orbit affects functions from other crates.
+use std::mem::size_of;
 
-#![feature(unsafe_no_drop_flag)]
-
-#[unsafe_no_drop_flag]
-struct Foo;
-
-impl Drop for Foo {
-    fn drop(&mut self) {
-        panic!("MIR trans is not enabled for mem::forget");
-    }
+struct Test<T> {
+    a: T
 }
 
-fn main() {
-    let x = Foo;
-    std::mem::forget(x);
+impl<T> Drop for Test<T> {
+    fn drop(&mut self) { }
+}
+
+pub fn main() {
+    assert_eq!(size_of::<isize>(), size_of::<Test<isize>>());
 }
