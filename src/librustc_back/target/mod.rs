@@ -159,6 +159,7 @@ supported_targets! {
 
     ("x86_64-unknown-bitrig", x86_64_unknown_bitrig),
     ("x86_64-unknown-openbsd", x86_64_unknown_openbsd),
+    ("arm-unknown-netbsdelf-eabi", arm_unknown_netbsdelf_eabi),
     ("armv6-unknown-netbsdelf-eabihf", armv6_unknown_netbsdelf_eabihf),
     ("armv7-unknown-netbsdelf-eabihf", armv7_unknown_netbsdelf_eabihf),
     ("i686-unknown-netbsdelf", i686_unknown_netbsdelf),
