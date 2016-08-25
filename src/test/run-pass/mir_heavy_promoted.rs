@@ -8,9 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[link(name = "")] extern {}
-//~^ ERROR E0454
-//~| NOTE empty name given
+const TEST_DATA: [u8; 32 * 1024 * 1024] = [42; 32 * 1024 * 1024];
 
+// Check that the promoted copy of TEST_DATA doesn't
+// leave an alloca from an unused temp behind, which,
+// without optimizations, can still blow the stack.
 fn main() {
+    println!("{}", TEST_DATA.len());
 }
