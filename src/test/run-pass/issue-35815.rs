@@ -8,17 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-trait Foo {
-    fn bar(&self);
-}
+use std::mem;
 
-fn some_func<T: Foo>(foo: T) {
-    foo.bar();
+struct Foo<T: ?Sized> {
+    a: i64,
+    b: bool,
+    c: T,
 }
 
 fn main() {
-    some_func(5i32);
-    //~^ ERROR the trait bound `i32: Foo` is not satisfied
-    //~| NOTE trait `i32: Foo` not satisfied
-    //~| NOTE required by `some_func`
+    let foo: &Foo<i32> = &Foo { a: 1, b: false, c: 2i32 };
+    let foo_unsized: &Foo<Send> = foo;
+    assert_eq!(mem::size_of_val(foo), mem::size_of_val(foo_unsized));
 }
