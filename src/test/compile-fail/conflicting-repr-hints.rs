@@ -8,27 +8,23 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(specialization)]
+#![feature(rustc_attrs)]
+#![allow(dead_code)]
 
-trait SpaceLlama {
-    fn fly(&self);
-}
+#[repr(C)]
+enum A { A }
 
-impl<T> SpaceLlama for T {
-    default fn fly(&self) {}
-}
+#[repr(u64)]
+enum B { B }
 
-impl<T: Clone> SpaceLlama for T {
-//~^ NOTE parent `impl` is here
-    fn fly(&self) {}
-}
+#[repr(C, u64)] //~ WARNING conflicting representation hints
+enum C { C }
 
-impl SpaceLlama for i32 {
-    default fn fly(&self) {}
-    //~^ ERROR E0520
-    //~| NOTE cannot specialize default item `fly`
-    //~| NOTE either the parent `impl` or `fly` in the parent `impl` must be marked `default`
-}
+#[repr(u32, u64)] //~ WARNING conflicting representation hints
+enum D { D }
 
-fn main() {
-}
+#[repr(C, packed)]
+struct E(i32);
+
+#[rustc_error]
+fn main() {} //~ ERROR compilation successful
