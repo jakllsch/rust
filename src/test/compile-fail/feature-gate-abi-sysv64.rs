@@ -8,22 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::fmt;
+// Test that the sysv64 ABI cannot be used when abi-sysv64 feature
+// gate is not used.
 
-trait Foo {
-    fn foo(&self) -> (Self, Self);
-}
-
-impl<T: Copy> Foo for T {
-    fn foo(&self) -> (Self, Self) {
-        (*self, *self)
-    }
-}
+extern "sysv64" fn foo() {}
+//~^ ERROR sysv64 ABI is experimental and subject to change
 
 fn main() {
-    assert_eq!((11).foo(), (11, 11));
-
-    let junk: Box<fmt::Debug+Sized> = Box::new(42);
-    let f = format!("{:?}", junk);
-    assert_eq!(f, "42");
+    foo();
 }

@@ -8,14 +8,17 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::mem;
+// Checks if the correct annotation for the sysv64 ABI is passed to
+// llvm. Also checks that the abi-sysv64 feature gate allows usage
+// of the sysv64 abi.
 
-trait Misc {}
+// compile-flags: -C no-prepopulate-passes
 
-fn size_of_copy<T: Copy+?Sized>() -> usize { mem::size_of::<T>() }
+#![crate_type = "lib"]
+#![feature(abi_sysv64)]
 
-fn main() {
-    size_of_copy::<Misc+Copy>();
-    //~^ ERROR `Misc + Copy: std::marker::Copy` is not satisfied
-    //~| ERROR the trait `std::marker::Copy` cannot be made into an object
+// CHECK: define x86_64_sysvcc i64 @has_sysv64_abi
+#[no_mangle]
+pub extern "sysv64" fn has_sysv64_abi(a: i64) -> i64 {
+    a * 2
 }
