@@ -931,7 +931,8 @@ fn convert_item(ccx: &CrateCtxt, it: &hir::Item) {
             tcx.trait_item_def_ids.borrow_mut().insert(ccx.tcx.map.local_def_id(it.id),
                                                        trait_item_def_ids);
         },
-        hir::ItemStruct(ref struct_def, _) => {
+        hir::ItemStruct(ref struct_def, _) |
+        hir::ItemUnion(ref struct_def, _) => {
             let def_id = ccx.tcx.map.local_def_id(it.id);
             let scheme = type_scheme_of_def_id(ccx, def_id);
             let predicates = predicates_of_item(ccx, it);
@@ -1067,6 +1068,16 @@ fn convert_struct_def<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
         ccx.tcx.insert_adt_def(ctor_id, adt);
     }
     adt
+}
+
+fn convert_union_def<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
+                                it: &hir::Item,
+                                def: &hir::VariantData)
+                                -> ty::AdtDefMaster<'tcx>
+{
+    let did = ccx.tcx.map.local_def_id(it.id);
+    let variants = vec![convert_struct_variant(ccx, did, it.name, ConstInt::Infer(0), def)];
+    ccx.tcx.intern_adt_def(did, ty::AdtKind::Union, variants)
 }
 
     fn evaluate_disr_expr(ccx: &CrateCtxt, repr_ty: attr::IntType, e: &hir::Expr)
@@ -1439,7 +1450,8 @@ fn generics_of_def_id<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
 
                     ItemTy(_, ref generics) |
                     ItemEnum(_, ref generics) |
-                    ItemStruct(_, ref generics) => {
+                    ItemStruct(_, ref generics) |
+                    ItemUnion(_, ref generics) => {
                         allow_defaults = true;
                         generics
                     }
@@ -1576,6 +1588,11 @@ fn type_of_def_id<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
                         let substs = mk_item_substs(&ccx.icx(generics), item.span, def_id);
                         ccx.tcx.mk_struct(def, substs)
                     }
+                    ItemUnion(ref un, ref generics) => {
+                        let def = convert_union_def(ccx, item, un);
+                        let substs = mk_item_substs(&ccx.icx(generics), item.span, def_id);
+                        ccx.tcx.mk_union(def, substs)
+                    }
                     ItemDefaultImpl(..) |
                     ItemTrait(..) |
                     ItemImpl(..) |
@@ -1637,7 +1654,8 @@ fn predicates_of_item<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
         hir::ItemFn(_, _, _, _, ref generics, _) |
         hir::ItemTy(_, ref generics) |
         hir::ItemEnum(_, ref generics) |
-        hir::ItemStruct(_, ref generics) => generics,
+        hir::ItemStruct(_, ref generics) |
+        hir::ItemUnion(_, ref generics) => generics,
         _ => &no_generics
     };
 
@@ -2157,7 +2175,7 @@ fn enforce_impl_params_are_constrained<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
     let ty_generics = generics_of_def_id(ccx, impl_def_id);
     for (ty_param, param) in ty_generics.types.iter().zip(&generics.ty_params) {
         let param_ty = ty::ParamTy::for_def(ty_param);
-        if !input_parameters.contains(&ctp::Parameter::Type(param_ty)) {
+        if !input_parameters.contains(&ctp::Parameter::from(param_ty)) {
             report_unused_parameter(ccx, param.span, "type", &param_ty.to_string());
         }
     }
@@ -2188,23 +2206,19 @@ fn enforce_impl_lifetimes_are_constrained<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
             ty::ConstTraitItem(..) | ty::MethodTraitItem(..) => None
         })
         .flat_map(|ty| ctp::parameters_for(&ty, true))
-        .filter_map(|p| match p {
-            ctp::Parameter::Type(_) => None,
-            ctp::Parameter::Region(r) => Some(r),
-        })
         .collect();
 
-    for (index, lifetime_def) in ast_generics.lifetimes.iter().enumerate() {
-        let region = ty::EarlyBoundRegion {
-            index: index as u32,
-            name: lifetime_def.lifetime.name
-        };
+    for (ty_lifetime, lifetime) in impl_scheme.generics.regions.iter()
+        .zip(&ast_generics.lifetimes)
+    {
+        let param = ctp::Parameter::from(ty_lifetime.to_early_bound_region_data());
+
         if
-            lifetimes_in_associated_types.contains(&region) && // (*)
-            !input_parameters.contains(&ctp::Parameter::Region(region))
+            lifetimes_in_associated_types.contains(&param) && // (*)
+            !input_parameters.contains(&param)
         {
-            report_unused_parameter(ccx, lifetime_def.lifetime.span,
-                                    "lifetime", &region.name.to_string());
+            report_unused_parameter(ccx, lifetime.lifetime.span,
+                                    "lifetime", &lifetime.lifetime.name.to_string());
         }
     }
 

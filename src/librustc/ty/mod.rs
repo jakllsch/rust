@@ -717,11 +717,16 @@ pub struct RegionParameterDef<'tcx> {
 
 impl<'tcx> RegionParameterDef<'tcx> {
     pub fn to_early_bound_region(&self) -> ty::Region {
-        ty::ReEarlyBound(ty::EarlyBoundRegion {
+        ty::ReEarlyBound(self.to_early_bound_region_data())
+    }
+
+    pub fn to_early_bound_region_data(&self) -> ty::EarlyBoundRegion {
+        ty::EarlyBoundRegion {
             index: self.index,
             name: self.name,
-        })
+        }
     }
+
     pub fn to_bound_region(&self) -> ty::BoundRegion {
         // this is an early bound region, so unaffected by #32330
         ty::BoundRegion::BrNamed(self.def_id, self.name, Issue32330::WontChange)
@@ -948,6 +953,7 @@ impl<'tcx> TraitPredicate<'tcx> {
                 .flat_map(|t| t.walk())
                 .filter_map(|t| match t.sty {
                     ty::TyStruct(adt_def, _) |
+                    ty::TyUnion(adt_def, _) |
                     ty::TyEnum(adt_def, _) =>
                         Some(adt_def.did),
                     _ =>
@@ -1341,6 +1347,7 @@ impl<'a, 'tcx> ParameterEnvironment<'tcx> {
                     }
                     hir::ItemEnum(..) |
                     hir::ItemStruct(..) |
+                    hir::ItemUnion(..) |
                     hir::ItemTy(..) |
                     hir::ItemImpl(..) |
                     hir::ItemConst(..) |
@@ -1421,6 +1428,7 @@ bitflags! {
         const IS_PHANTOM_DATA     = 1 << 3,
         const IS_SIMD             = 1 << 4,
         const IS_FUNDAMENTAL      = 1 << 5,
+        const IS_UNION            = 1 << 6,
     }
 }
 
@@ -1513,7 +1521,7 @@ impl<'tcx> Decodable for AdtDef<'tcx> {
 
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum AdtKind { Struct, Enum }
+pub enum AdtKind { Struct, Union, Enum }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable)]
 pub enum VariantKind { Struct, Tuple, Unit }
@@ -1544,8 +1552,10 @@ impl<'a, 'gcx, 'tcx, 'container> AdtDefData<'gcx, 'container> {
         if Some(did) == tcx.lang_items.phantom_data() {
             flags = flags | AdtFlags::IS_PHANTOM_DATA;
         }
-        if let AdtKind::Enum = kind {
-            flags = flags | AdtFlags::IS_ENUM;
+        match kind {
+            AdtKind::Enum => flags = flags | AdtFlags::IS_ENUM,
+            AdtKind::Union => flags = flags | AdtFlags::IS_UNION,
+            AdtKind::Struct => {}
         }
         AdtDefData {
             did: did,
@@ -1568,6 +1578,8 @@ impl<'a, 'gcx, 'tcx, 'container> AdtDefData<'gcx, 'container> {
     pub fn adt_kind(&self) -> AdtKind {
         if self.flags.get().intersects(AdtFlags::IS_ENUM) {
             AdtKind::Enum
+        } else if self.flags.get().intersects(AdtFlags::IS_UNION) {
+            AdtKind::Union
         } else {
             AdtKind::Struct
         }
@@ -1610,7 +1622,8 @@ impl<'a, 'gcx, 'tcx, 'container> AdtDefData<'gcx, 'container> {
     /// Asserts this is a struct and returns the struct's unique
     /// variant.
     pub fn struct_variant(&self) -> &VariantDefData<'gcx, 'container> {
-        assert_eq!(self.adt_kind(), AdtKind::Struct);
+        let adt_kind = self.adt_kind();
+        assert!(adt_kind == AdtKind::Struct || adt_kind == AdtKind::Union);
         &self.variants[0]
     }
 
@@ -1669,7 +1682,8 @@ impl<'a, 'gcx, 'tcx, 'container> AdtDefData<'gcx, 'container> {
     pub fn variant_of_def(&self, def: Def) -> &VariantDefData<'gcx, 'container> {
         match def {
             Def::Variant(_, vid) => self.variant_with_id(vid),
-            Def::Struct(..) | Def::TyAlias(..) | Def::AssociatedTy(..) => self.struct_variant(),
+            Def::Struct(..) | Def::Union(..) |
+            Def::TyAlias(..) | Def::AssociatedTy(..) => self.struct_variant(),
             _ => bug!("unexpected def {:?} in variant_of_def", def)
         }
     }
@@ -1818,7 +1832,7 @@ impl<'a, 'tcx> AdtDefData<'tcx, 'tcx> {
                 }
             }
 
-            TyEnum(adt, substs) | TyStruct(adt, substs) => {
+            TyEnum(adt, substs) | TyStruct(adt, substs) | TyUnion(adt, substs) => {
                 // recursive case
                 let adt = tcx.lookup_adt_def_master(adt.did);
                 adt.calculate_sized_constraint_inner(tcx, stack);
@@ -2408,7 +2422,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             Def::Variant(enum_did, did) => {
                 self.lookup_adt_def(enum_did).variant_with_id(did)
             }
-            Def::Struct(did) => {
+            Def::Struct(did) | Def::Union(did) => {
                 self.lookup_adt_def(did).struct_variant()
             }
             _ => bug!("expect_variant_def used with unexpected def {:?}", def)
