@@ -1,4 +1,4 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,24 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// ignore-tidy-linelength
-
 #![feature(optin_builtin_traits)]
 
-unsafe trait Trait {
-//~^ ERROR E0380
-    fn method(&self) {
-        println!("Hello");
-    }
-}
-
-unsafe impl Trait for .. {}
-
-fn call_method<T: Trait>(x: T) {
-    x.method();
-}
-
-fn main() {
-    // ICE
-    call_method(());
-}
+trait Magic<T> {} //~ ERROR E0567
+impl Magic<isize> for .. {}
