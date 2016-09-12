@@ -8,26 +8,17 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// aux-build:append-impl.rs
+#![feature(conservative_impl_trait)]
 
-#![feature(rustc_macro)]
-#![allow(warnings)]
-
-#[macro_use]
-extern crate append_impl;
-
-trait Append {
-    fn foo(&self);
-}
-
-#[derive(PartialEq,
-         Append,
-         Eq)]
-struct A {
-//~^ ERROR: the semantics of constant patterns is not yet settled
-    inner: u32,
+fn func<'a, T>(a: &'a [T]) -> impl Iterator<Item=&'a T> {
+    a.iter().map(|a| a*a)
+    //~^ ERROR binary operation `*` cannot be applied to type `&T`
 }
 
 fn main() {
-    A { inner: 3 }.foo();
+    let a = (0..30).collect::<Vec<_>>();
+
+    for k in func(&a) {
+        println!("{}", k);
+    }
 }
