@@ -8,10 +8,18 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-fn main() {
-    let xs : Vec<Option<i32>> = vec!(Some(1), None);
+#[derive(Debug)]
+pub enum Event {
+    Key(u8),
+    Resize,
+    Unknown(u16),
+}
 
-    for Some(x) in xs {}
-    //~^ ERROR E0297
-    //~| NOTE pattern `None` not covered
+static XTERM_SINGLE_BYTES : [(u8, Event); 1] = [(1,  Event::Resize)];
+
+fn main() {
+    match XTERM_SINGLE_BYTES[0] {
+        (1, Event::Resize) => {},
+        ref bad => panic!("unexpected {:?}", bad)
+    }
 }

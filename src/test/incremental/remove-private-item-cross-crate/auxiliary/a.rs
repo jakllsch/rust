@@ -8,10 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-fn main() {
-    let xs : Vec<Option<i32>> = vec!(Some(1), None);
+#![allow(warnings)]
+#![crate_name = "a"]
+#![crate_type = "rlib"]
 
-    for Some(x) in xs {}
-    //~^ ERROR E0297
-    //~| NOTE pattern `None` not covered
-}
+pub fn foo(b: u8) -> u32 { b as u32 }
+
+#[cfg(rpass1)]
+fn bar() { }

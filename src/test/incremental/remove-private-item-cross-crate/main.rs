@@ -8,10 +8,21 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-fn main() {
-    let xs : Vec<Option<i32>> = vec!(Some(1), None);
+// Test that we are able to reuse `main` even though a private
+// item was removed from the root module of crate`a`.
 
-    for Some(x) in xs {}
-    //~^ ERROR E0297
-    //~| NOTE pattern `None` not covered
+// revisions:rpass1 rpass2
+// aux-build:a.rs
+
+#![feature(rustc_attrs)]
+#![crate_type = "bin"]
+#![rustc_partition_reused(module="main", cfg="rpass2")]
+
+extern crate a;
+
+pub fn main() {
+    let vec: Vec<u8> = vec![0, 1, 2, 3];
+    for &b in &vec {
+        println!("{}", a::foo(b));
+    }
 }
