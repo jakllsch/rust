@@ -39,6 +39,7 @@ use std::rc::Rc;
 use std::path::PathBuf;
 use syntax::ast;
 use syntax::attr;
+use syntax::ext::base::LoadedMacro;
 use syntax::ptr::P;
 use syntax::parse::token::InternedString;
 use syntax_pos::Span;
@@ -210,6 +211,7 @@ pub trait CrateStore<'tcx> {
     fn is_explicitly_linked(&self, cnum: ast::CrateNum) -> bool;
     fn is_allocator(&self, cnum: ast::CrateNum) -> bool;
     fn is_panic_runtime(&self, cnum: ast::CrateNum) -> bool;
+    fn is_compiler_builtins(&self, cnum: ast::CrateNum) -> bool;
     fn panic_strategy(&self, cnum: ast::CrateNum) -> PanicStrategy;
     fn extern_crate(&self, cnum: ast::CrateNum) -> Option<ExternCrate>;
     fn crate_attrs(&self, cnum: ast::CrateNum) -> Vec<ast::Attribute>;
@@ -405,6 +407,7 @@ impl<'tcx> CrateStore<'tcx> for DummyCrateStore {
     fn is_explicitly_linked(&self, cnum: ast::CrateNum) -> bool { bug!("is_explicitly_linked") }
     fn is_allocator(&self, cnum: ast::CrateNum) -> bool { bug!("is_allocator") }
     fn is_panic_runtime(&self, cnum: ast::CrateNum) -> bool { bug!("is_panic_runtime") }
+    fn is_compiler_builtins(&self, cnum: ast::CrateNum) -> bool { bug!("is_compiler_builtins") }
     fn panic_strategy(&self, cnum: ast::CrateNum) -> PanicStrategy {
         bug!("panic_strategy")
     }
@@ -490,6 +493,9 @@ impl<'tcx> CrateStore<'tcx> for DummyCrateStore {
     fn metadata_encoding_version(&self) -> &[u8] { bug!("metadata_encoding_version") }
 }
 
+pub trait MacroLoader {
+     fn load_crate(&mut self, extern_crate: &ast::Item, allows_macros: bool) -> Vec<LoadedMacro>;
+}
 
 /// Metadata encoding and decoding can make use of thread-local encoding and
 /// decoding contexts. These allow implementers of serialize::Encodable and

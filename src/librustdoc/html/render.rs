@@ -1846,7 +1846,7 @@ fn item_module(w: &mut fmt::Formatter, cx: &Context,
                        <tr class='{stab} module-item'>
                            <td><a class='{class}' href='{href}'
                                   title='{title}'>{name}</a></td>
-                           <td class='docblock short'>
+                           <td class='docblock-short'>
                                {stab_docs} {docs}
                            </td>
                        </tr>",
@@ -2521,23 +2521,32 @@ fn render_struct(w: &mut fmt::Formatter, it: &clean::Item,
             if let Some(g) = g {
                 write!(w, "{}", WhereClause(g))?
             }
-            write!(w, " {{\n{}", tab)?;
+            let mut has_visible_fields = false;
+            write!(w, " {{")?;
             for field in fields {
                 if let clean::StructFieldItem(ref ty) = field.inner {
-                    write!(w, "    {}{}: {},\n{}",
+                    write!(w, "\n{}    {}{}: {},",
+                           tab,
                            VisSpace(&field.visibility),
                            field.name.as_ref().unwrap(),
-                           *ty,
-                           tab)?;
+                           *ty)?;
+                    has_visible_fields = true;
                 }
             }
 
-            if it.has_stripped_fields().unwrap() {
-                write!(w, "    // some fields omitted\n{}", tab)?;
+            if has_visible_fields {
+                if it.has_stripped_fields().unwrap() {
+                    write!(w, "\n{}    // some fields omitted", tab)?;
+                }
+                write!(w, "\n{}", tab)?;
+            } else if it.has_stripped_fields().unwrap() {
+                // If there are no visible fields we can just display
+                // `{ /* fields omitted */ }` to save space.
+                write!(w, " /* fields omitted */ ")?;
             }
             write!(w, "}}")?;
         }
-        doctree::Tuple | doctree::Newtype => {
+        doctree::Tuple => {
             write!(w, "(")?;
             for (i, field) in fields.iter().enumerate() {
                 if i > 0 {
@@ -2954,7 +2963,7 @@ impl<'a> fmt::Display for Source<'a> {
             write!(fmt, "<span id=\"{0}\">{0:1$}</span>\n", i, cols)?;
         }
         write!(fmt, "</pre>")?;
-        write!(fmt, "{}", highlight::render_with_highlighting(s, None, None))?;
+        write!(fmt, "{}", highlight::render_with_highlighting(s, None, None, None))?;
         Ok(())
     }
 }
@@ -2963,6 +2972,7 @@ fn item_macro(w: &mut fmt::Formatter, cx: &Context, it: &clean::Item,
               t: &clean::Macro) -> fmt::Result {
     w.write_str(&highlight::render_with_highlighting(&t.source,
                                                      Some("macro"),
+                                                     None,
                                                      None))?;
     render_stability_since_raw(w, it.stable_since(), None)?;
     document(w, cx, it)

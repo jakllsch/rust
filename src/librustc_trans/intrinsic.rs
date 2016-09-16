@@ -136,6 +136,14 @@ pub fn trans_intrinsic_call<'a, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
         (Some(llfn), _) => {
             Call(bcx, llfn, &llargs, call_debug_location)
         }
+        (_, "likely") => {
+            let expect = ccx.get_intrinsic(&("llvm.expect.i1"));
+            Call(bcx, expect, &[llargs[0], C_bool(ccx, true)], call_debug_location)
+        }
+        (_, "unlikely") => {
+            let expect = ccx.get_intrinsic(&("llvm.expect.i1"));
+            Call(bcx, expect, &[llargs[0], C_bool(ccx, false)], call_debug_location)
+        }
         (_, "try") => {
             bcx = try_intrinsic(bcx, llargs[0], llargs[1], llargs[2], llresult,
                                 call_debug_location);
@@ -186,6 +194,7 @@ pub fn trans_intrinsic_call<'a, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
             let ptr = if is_sized {
                 llargs[0]
             } else {
+                // FIXME(#36457) -- we should pass unsized values as two arguments
                 let scratch = alloc_ty(bcx, tp_ty, "drop");
                 call_lifetime_start(bcx, scratch);
                 Store(bcx, llargs[0], get_dataptr(bcx, scratch));
