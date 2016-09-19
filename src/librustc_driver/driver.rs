@@ -674,11 +674,11 @@ pub fn phase_2_configure_and_expand<'a, F>(sess: &Session,
         }
         let features = sess.features.borrow();
         let cfg = syntax::ext::expand::ExpansionConfig {
-            crate_name: crate_name.to_string(),
             features: Some(&features),
             recursion_limit: sess.recursion_limit.get(),
             trace_mac: sess.opts.debugging_opts.trace_macros,
             should_test: sess.opts.test,
+            ..syntax::ext::expand::ExpansionConfig::default(crate_name.to_string())
         };
         let mut ecx = ExtCtxt::new(&sess.parse_sess, krate.config.clone(), cfg, &mut resolver);
         let ret = syntax::ext::expand::expand_crate(&mut ecx, syntax_exts, krate);
@@ -1017,6 +1017,7 @@ pub fn phase_4_translate_to_llvm<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         passes.push_pass(box mir::transform::no_landing_pads::NoLandingPads);
         passes.push_pass(box mir::transform::simplify_cfg::SimplifyCfg::new("no-landing-pads"));
 
+        // From here on out, regions are gone.
         passes.push_pass(box mir::transform::erase_regions::EraseRegions);
 
         passes.push_pass(box mir::transform::add_call_guards::AddCallGuards);
@@ -1024,6 +1025,8 @@ pub fn phase_4_translate_to_llvm<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         passes.push_pass(box mir::transform::no_landing_pads::NoLandingPads);
         passes.push_pass(box mir::transform::simplify_cfg::SimplifyCfg::new("elaborate-drops"));
 
+        // No lifetime analysis based on borrowing can be done from here on out.
+        passes.push_pass(box mir::transform::instcombine::InstCombine::new());
         passes.push_pass(box mir::transform::deaggregator::Deaggregator);
 
         passes.push_pass(box mir::transform::add_call_guards::AddCallGuards);

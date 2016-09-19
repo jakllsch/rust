@@ -8,15 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-pub mod simplify_branches;
-pub mod simplify_cfg;
-pub mod erase_regions;
-pub mod no_landing_pads;
-pub mod type_check;
-pub mod add_call_guards;
-pub mod promote_consts;
-pub mod qualify_consts;
-pub mod dump_mir;
-pub mod deaggregator;
-pub mod instcombine;
+#![allow(warnings)]
 
+use std::iter::Zip;
+
+fn zip_covariant<'a, A, B>(iter: Zip<&'static A, &'static B>) -> Zip<&'a A, &'a B> { iter }
+
+fn main() { }
