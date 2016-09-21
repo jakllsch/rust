@@ -401,7 +401,7 @@ fn record_inlining_canditates<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                                         callees: &[TransItem<'tcx>],
                                         inlining_map: &mut InliningMap<'tcx>) {
     let is_inlining_candidate = |trans_item: &TransItem<'tcx>| {
-        trans_item.is_from_extern_crate() || trans_item.requests_inline(tcx)
+        trans_item.needs_local_copy(tcx)
     };
 
     let inlining_candidates = callees.into_iter()
@@ -523,7 +523,7 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirNeighborCollector<'a, 'tcx> {
 
     fn visit_lvalue(&mut self,
                     lvalue: &mir::Lvalue<'tcx>,
-                    context: mir_visit::LvalueContext,
+                    context: mir_visit::LvalueContext<'tcx>,
                     location: Location) {
         debug!("visiting lvalue {:?}", *lvalue);
 
