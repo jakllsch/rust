@@ -1,4 +1,4 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,15 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct BuildData {
-    foo: isize,
+const C1: i32 = 0x12345678;
+const C2: isize = C1 as i16 as isize;
+
+enum E {
+    V = C2
 }
 
 fn main() {
-    let foo = BuildData {
-        foo: 0,
-        bar: 0
-        //~^ ERROR struct `BuildData` has no field named `bar`
-        //~| NOTE `BuildData` does not have this field
-    };
+    assert_eq!(C2 as u64, E::V as u64);
 }

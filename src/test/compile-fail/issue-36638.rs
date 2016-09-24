@@ -8,10 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct Simba {
-    mother: u32,
-}
+// compile-flags: -Z continue-parse-after-error
 
-fn main() {
-    let s = Simba { mother: 1, father: 0 }; //~ ERROR E0560
-}
+struct Foo<Self>(Self);
+//~^ ERROR expected identifier, found keyword `Self`
+
+trait Bar<Self> {}
+//~^ ERROR expected identifier, found keyword `Self`
+
+fn main() {}

@@ -38,7 +38,7 @@ struct ModuleData {
 
 impl<'a> base::Resolver for Resolver<'a> {
     fn load_crate(&mut self, extern_crate: &ast::Item, allows_macros: bool) -> Vec<LoadedMacro> {
-        self.macro_loader.load_crate(extern_crate, allows_macros)
+        self.crate_loader.load_macros(extern_crate, allows_macros)
     }
 
     fn next_node_id(&mut self) -> ast::NodeId {
@@ -47,7 +47,7 @@ impl<'a> base::Resolver for Resolver<'a> {
 
     fn visit_expansion(&mut self, mark: Mark, expansion: &Expansion) {
         expansion.visit_with(&mut ExpansionVisitor {
-            current_module: self.expansion_data[mark.as_u32() as usize].module.clone(),
+            current_module: self.expansion_data[&mark.as_u32()].module.clone(),
             resolver: self,
         });
     }
@@ -57,7 +57,7 @@ impl<'a> base::Resolver for Resolver<'a> {
             self.macro_names.insert(ident.name);
         }
 
-        let mut module = self.expansion_data[scope.as_u32() as usize].module.clone();
+        let mut module = self.expansion_data[&scope.as_u32()].module.clone();
         while module.macros_escape {
             module = module.parent.clone().unwrap();
         }
@@ -71,9 +71,11 @@ impl<'a> base::Resolver for Resolver<'a> {
     fn find_attr_invoc(&mut self, attrs: &mut Vec<ast::Attribute>) -> Option<ast::Attribute> {
         for i in 0..attrs.len() {
             let name = intern(&attrs[i].name());
-            match self.expansion_data[0].module.macros.borrow().get(&name) {
+            match self.expansion_data[&0].module.macros.borrow().get(&name) {
                 Some(ext) => match **ext {
-                    MultiModifier(..) | MultiDecorator(..) => return Some(attrs.remove(i)),
+                    MultiModifier(..) | MultiDecorator(..) | SyntaxExtension::AttrProcMacro(..) => {
+                        return Some(attrs.remove(i))
+                    }
                     _ => {}
                 },
                 None => {}
@@ -82,7 +84,7 @@ impl<'a> base::Resolver for Resolver<'a> {
         None
     }
 
-    fn resolve_invoc(&mut self, invoc: &Invocation) -> Option<Rc<SyntaxExtension>> {
+    fn resolve_invoc(&mut self, scope: Mark, invoc: &Invocation) -> Option<Rc<SyntaxExtension>> {
         let (name, span) = match invoc.kind {
             InvocationKind::Bang { ref mac, .. } => {
                 let path = &mac.node.path;
@@ -97,7 +99,7 @@ impl<'a> base::Resolver for Resolver<'a> {
             InvocationKind::Attr { ref attr, .. } => (intern(&*attr.name()), attr.span),
         };
 
-        let mut module = self.expansion_data[invoc.mark().as_u32() as usize].module.clone();
+        let mut module = self.expansion_data[&scope.as_u32()].module.clone();
         loop {
             if let Some(ext) = module.macros.borrow().get(&name) {
                 return Some(ext.clone());
@@ -135,8 +137,7 @@ struct ExpansionVisitor<'b, 'a: 'b> {
 
 impl<'a, 'b> ExpansionVisitor<'a, 'b> {
     fn visit_invoc(&mut self, id: ast::NodeId) {
-        assert_eq!(id.as_u32(), self.resolver.expansion_data.len() as u32);
-        self.resolver.expansion_data.push(ExpansionData {
+        self.resolver.expansion_data.insert(id.as_u32(), ExpansionData {
             module: self.current_module.clone(),
         });
     }
