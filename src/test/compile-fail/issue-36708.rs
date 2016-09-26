@@ -8,27 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(specialization)]
+// aux-build:issue-36708.rs
 
-trait SpaceLlama {
-    fn fly(&self);
+extern crate issue_36708 as lib;
+
+struct Bar;
+
+impl lib::Foo for Bar {
+    fn foo<T>() {}
+    //~^ ERROR E0049
+    //~| NOTE found 1 type parameter, expected 0
 }
 
-impl<T> SpaceLlama for T {
-    default fn fly(&self) {}
-}
-
-impl<T: Clone> SpaceLlama for T {
-//~^ NOTE parent `impl` is here
-    fn fly(&self) {}
-}
-
-impl SpaceLlama for i32 {
-    default fn fly(&self) {}
-    //~^ ERROR E0520
-    //~| NOTE cannot specialize default item `fly`
-    //~| NOTE `fly` in the parent `impl` must be marked `default`
-}
-
-fn main() {
-}
+fn main() {}

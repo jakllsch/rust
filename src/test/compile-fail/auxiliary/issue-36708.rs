@@ -8,27 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(specialization)]
+#![crate_type = "lib"]
 
-trait SpaceLlama {
-    fn fly(&self);
-}
-
-impl<T> SpaceLlama for T {
-    default fn fly(&self) {}
-}
-
-impl<T: Clone> SpaceLlama for T {
-//~^ NOTE parent `impl` is here
-    fn fly(&self) {}
-}
-
-impl SpaceLlama for i32 {
-    default fn fly(&self) {}
-    //~^ ERROR E0520
-    //~| NOTE cannot specialize default item `fly`
-    //~| NOTE `fly` in the parent `impl` must be marked `default`
-}
-
-fn main() {
+pub trait Foo {
+    fn foo();
 }
