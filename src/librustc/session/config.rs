@@ -37,7 +37,6 @@ use std::collections::btree_map::Iter as BTreeMapIter;
 use std::collections::btree_map::Keys as BTreeMapKeysIter;
 use std::collections::btree_map::Values as BTreeMapValuesIter;
 
-use std::env;
 use std::fmt;
 use std::hash::{Hasher, SipHasher};
 use std::iter::FromIterator;
@@ -606,6 +605,7 @@ macro_rules! options {
         pub const parse_opt_bool: Option<&'static str> =
             Some("one of: `y`, `yes`, `on`, `n`, `no`, or `off`");
         pub const parse_string: Option<&'static str> = Some("a string");
+        pub const parse_string_push: Option<&'static str> = Some("a string");
         pub const parse_opt_string: Option<&'static str> = Some("a string");
         pub const parse_list: Option<&'static str> = Some("a space-separated list of strings");
         pub const parse_opt_list: Option<&'static str> = Some("a space-separated list of strings");
@@ -664,6 +664,13 @@ macro_rules! options {
         fn parse_string(slot: &mut String, v: Option<&str>) -> bool {
             match v {
                 Some(s) => { *slot = s.to_string(); true },
+                None => false,
+            }
+        }
+
+        fn parse_string_push(slot: &mut Vec<String>, v: Option<&str>) -> bool {
+            match v {
+                Some(s) => { slot.push(s.to_string()); true },
                 None => false,
             }
         }
@@ -743,6 +750,8 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
         "tool to assemble archives with"),
     linker: Option<String> = (None, parse_opt_string, [UNTRACKED],
         "system linker to link outputs with"),
+    link_arg: Vec<String> = (vec![], parse_string_push, [UNTRACKED],
+        "a single extra argument to pass to the linker (can be used several times)"),
     link_args: Option<Vec<String>> = (None, parse_opt_list, [UNTRACKED],
         "extra arguments to pass to the linker (space separated)"),
     link_dead_code: bool = (false, parse_bool, [UNTRACKED],
@@ -1525,25 +1534,10 @@ pub fn build_session_options_and_crate_config(matches: &getopts::Matches)
         crate_name: crate_name,
         alt_std_name: None,
         libs: libs,
-        unstable_features: get_unstable_features_setting(),
+        unstable_features: UnstableFeatures::from_environment(),
         debug_assertions: debug_assertions,
     },
     cfg)
-}
-
-pub fn get_unstable_features_setting() -> UnstableFeatures {
-    // Whether this is a feature-staged build, i.e. on the beta or stable channel
-    let disable_unstable_features = option_env!("CFG_DISABLE_UNSTABLE_FEATURES").is_some();
-    // The secret key needed to get through the rustc build itself by
-    // subverting the unstable features lints
-    let bootstrap_secret_key = option_env!("CFG_BOOTSTRAP_KEY");
-    // The matching key to the above, only known by the build system
-    let bootstrap_provided_key = env::var("RUSTC_BOOTSTRAP_KEY").ok();
-    match (disable_unstable_features, bootstrap_secret_key, bootstrap_provided_key) {
-        (_, Some(ref s), Some(ref p)) if s == p => UnstableFeatures::Cheat,
-        (true, ..) => UnstableFeatures::Disallow,
-        (false, ..) => UnstableFeatures::Allow
-    }
 }
 
 pub fn parse_crate_types_from_list(list_list: Vec<String>) -> Result<Vec<CrateType>, String> {
@@ -1575,7 +1569,7 @@ pub fn parse_crate_types_from_list(list_list: Vec<String>) -> Result<Vec<CrateTy
 pub mod nightly_options {
     use getopts;
     use syntax::feature_gate::UnstableFeatures;
-    use super::{ErrorOutputType, OptionStability, RustcOptGroup, get_unstable_features_setting};
+    use super::{ErrorOutputType, OptionStability, RustcOptGroup};
     use session::{early_error, early_warn};
 
     pub fn is_unstable_enabled(matches: &getopts::Matches) -> bool {
@@ -1583,18 +1577,13 @@ pub mod nightly_options {
     }
 
     pub fn is_nightly_build() -> bool {
-        match get_unstable_features_setting() {
-            UnstableFeatures::Allow | UnstableFeatures::Cheat => true,
-            _ => false,
-        }
+        UnstableFeatures::from_environment().is_nightly_build()
     }
 
     pub fn check_nightly_options(matches: &getopts::Matches, flags: &[RustcOptGroup]) {
         let has_z_unstable_option = matches.opt_strs("Z").iter().any(|x| *x == "unstable-options");
-        let really_allows_unstable_options = match get_unstable_features_setting() {
-            UnstableFeatures::Disallow => false,
-            _ => true,
-        };
+        let really_allows_unstable_options = UnstableFeatures::from_environment()
+            .is_nightly_build();
 
         for opt in flags.iter() {
             if opt.stability == OptionStability::Stable {

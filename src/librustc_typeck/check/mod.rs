@@ -1525,9 +1525,11 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         match self.locals.borrow().get(&nid) {
             Some(&t) => t,
             None => {
-                span_err!(self.tcx.sess, span, E0513,
-                          "no type for local variable {}",
-                          nid);
+                struct_span_err!(self.tcx.sess, span, E0513,
+                                 "no type for local variable {}",
+                                 self.tcx.map.node_to_string(nid))
+                    .span_label(span, &"no type for variable")
+                    .emit();
                 self.tcx.types.err
             }
         }
@@ -3255,7 +3257,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         if let Some((def_id, variant)) = variant {
             if variant.kind == ty::VariantKind::Tuple &&
                     !self.tcx.sess.features.borrow().relaxed_adts {
-                emit_feature_err(&self.tcx.sess.parse_sess.span_diagnostic,
+                emit_feature_err(&self.tcx.sess.parse_sess,
                                  "relaxed_adts", span, GateIssue::Language,
                                  "tuple structs and variants in struct patterns are unstable");
             }
