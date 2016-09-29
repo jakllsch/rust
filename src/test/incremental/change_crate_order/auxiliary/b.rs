@@ -1,4 +1,4 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,26 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// aux-build:append-impl.rs
+#![crate_type="rlib"]
 
-#![feature(rustc_macro)]
-#![allow(warnings)]
+pub static B: u32 = 32;
 
-#[macro_use]
-extern crate append_impl;
-
-trait Append {
-    fn foo(&self);
-}
-
-#[derive(PartialEq,
-         Append,
-         Eq)]
-struct A {
-//~^ ERROR: the semantics of constant patterns is not yet settled
-    inner: u32,
-}
-
-fn main() {
-    A { inner: 3 }.foo();
-}

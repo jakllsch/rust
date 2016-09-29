@@ -16,7 +16,7 @@ use ext::placeholders::{placeholder, PlaceholderExpander};
 use attr::{self, HasAttrs};
 use codemap::{ExpnInfo, NameAndSpan, MacroBang, MacroAttribute};
 use syntax_pos::{self, Span, ExpnId};
-use config::StripUnconfigured;
+use config::{is_test_or_bench, StripUnconfigured};
 use ext::base::*;
 use feature_gate::{self, Features};
 use fold;
@@ -206,7 +206,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
             _ => unreachable!(),
         };
 
-        if self.cx.parse_sess.span_diagnostic.err_count() > err_count {
+        if self.cx.parse_sess.span_diagnostic.err_count() - self.cx.resolve_err_count > err_count {
             self.cx.parse_sess.span_diagnostic.abort_if_errors();
         }
 
@@ -277,8 +277,10 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
         self.cx.cfg = crate_config;
 
         if self.monotonic {
+            let err_count = self.cx.parse_sess.span_diagnostic.err_count();
             let mark = self.cx.current_expansion.mark;
             self.cx.resolver.visit_expansion(mark, &result.0);
+            self.cx.resolve_err_count += self.cx.parse_sess.span_diagnostic.err_count() - err_count;
         }
 
         result
@@ -665,16 +667,16 @@ impl<'a, 'b> Folder for InvocationCollector<'a, 'b> {
     }
 
     fn fold_block(&mut self, block: P<Block>) -> P<Block> {
-        let orig_in_block = mem::replace(&mut self.cx.current_expansion.in_block, true);
+        let no_noninline_mod = mem::replace(&mut self.cx.current_expansion.no_noninline_mod, true);
         let result = noop_fold_block(block, self);
-        self.cx.current_expansion.in_block = orig_in_block;
+        self.cx.current_expansion.no_noninline_mod = no_noninline_mod;
         result
     }
 
     fn fold_item(&mut self, item: P<ast::Item>) -> SmallVector<P<ast::Item>> {
         let item = configure!(self, item);
 
-        let (item, attr) = self.classify_item(item);
+        let (mut item, attr) = self.classify_item(item);
         if let Some(attr) = attr {
             let item = Annotatable::Item(fully_configure!(self, item, noop_fold_item));
             return self.collect_attr(attr, item, ExpansionKind::Items).make_items();
@@ -706,6 +708,7 @@ impl<'a, 'b> Folder for InvocationCollector<'a, 'b> {
                     return noop_fold_item(item, self);
                 }
 
+                let orig_no_noninline_mod = self.cx.current_expansion.no_noninline_mod;
                 let mut module = (*self.cx.current_expansion.module).clone();
                 module.mod_path.push(item.ident);
 
@@ -715,11 +718,14 @@ impl<'a, 'b> Folder for InvocationCollector<'a, 'b> {
                 let inline_module = item.span.contains(inner) || inner == syntax_pos::DUMMY_SP;
 
                 if inline_module {
-                    module.directory.push(&*{
-                        ::attr::first_attr_value_str_by_name(&item.attrs, "path")
-                            .unwrap_or(item.ident.name.as_str())
-                    });
+                    if let Some(path) = attr::first_attr_value_str_by_name(&item.attrs, "path") {
+                        self.cx.current_expansion.no_noninline_mod = false;
+                        module.directory.push(&*path);
+                    } else {
+                        module.directory.push(&*item.ident.name.as_str());
+                    }
                 } else {
+                    self.cx.current_expansion.no_noninline_mod = false;
                     module.directory =
                         PathBuf::from(self.cx.parse_sess.codemap().span_to_filename(inner));
                     module.directory.pop();
@@ -729,7 +735,15 @@ impl<'a, 'b> Folder for InvocationCollector<'a, 'b> {
                     mem::replace(&mut self.cx.current_expansion.module, Rc::new(module));
                 let result = noop_fold_item(item, self);
                 self.cx.current_expansion.module = orig_module;
+                self.cx.current_expansion.no_noninline_mod = orig_no_noninline_mod;
                 return result;
+            }
+            // Ensure that test functions are accessible from the test harness.
+            ast::ItemKind::Fn(..) if self.cx.ecfg.should_test => {
+                if item.attrs.iter().any(|attr| is_test_or_bench(attr)) {
+                    item = item.map(|mut item| { item.vis = ast::Visibility::Public; item });
+                }
+                noop_fold_item(item, self)
             }
             _ => noop_fold_item(item, self),
         }

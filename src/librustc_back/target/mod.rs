@@ -50,6 +50,8 @@ use std::default::Default;
 use std::io::prelude::*;
 use syntax::abi::Abi;
 
+use PanicStrategy;
+
 mod android_base;
 mod apple_base;
 mod apple_ios_base;
@@ -352,6 +354,9 @@ pub struct TargetOptions {
     /// Maximum integer size in bits that this target can perform atomic
     /// operations on.
     pub max_atomic_width: u64,
+
+    /// Panic strategy: "unwind" or "abort"
+    pub panic_strategy: PanicStrategy,
 }
 
 impl Default for TargetOptions {
@@ -401,6 +406,7 @@ impl Default for TargetOptions {
             has_elf_tls: false,
             obj_is_bitcode: false,
             max_atomic_width: 0,
+            panic_strategy: PanicStrategy::Unwind,
         }
     }
 }
@@ -479,6 +485,19 @@ impl Target {
                     .map(|o| o.as_u64()
                          .map(|s| base.options.$key_name = s));
             } );
+            ($key_name:ident, PanicStrategy) => ( {
+                let name = (stringify!($key_name)).replace("_", "-");
+                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                    match s {
+                        "unwind" => base.options.$key_name = PanicStrategy::Unwind,
+                        "abort" => base.options.$key_name = PanicStrategy::Abort,
+                        _ => return Some(Err(format!("'{}' is not a valid value for \
+                                                      panic-strategy. Use 'unwind' or 'abort'.",
+                                                     s))),
+                }
+                Some(Ok(()))
+            })).unwrap_or(Ok(()))
+            } );
             ($key_name:ident, list) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
                 obj.find(&name[..]).map(|o| o.as_array()
@@ -539,6 +558,7 @@ impl Target {
         key!(has_elf_tls, bool);
         key!(obj_is_bitcode, bool);
         key!(max_atomic_width, u64);
+        try!(key!(panic_strategy, PanicStrategy));
 
         Ok(base)
     }
@@ -681,6 +701,7 @@ impl ToJson for Target {
         target_option_val!(has_elf_tls);
         target_option_val!(obj_is_bitcode);
         target_option_val!(max_atomic_width);
+        target_option_val!(panic_strategy);
 
         Json::Object(d)
     }
