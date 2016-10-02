@@ -173,8 +173,8 @@ supported_targets! {
     ("x86_64-unknown-netbsd", x86_64_unknown_netbsd),
     ("x86_64-rumprun-netbsd", x86_64_rumprun_netbsd),
 
-    ("i686_unknown_haiku", i686_unknown_haiku),
-    ("x86_64_unknown_haiku", x86_64_unknown_haiku),
+    ("i686-unknown-haiku", i686_unknown_haiku),
+    ("x86_64-unknown-haiku", x86_64_unknown_haiku),
 
     ("x86_64-apple-darwin", x86_64_apple_darwin),
     ("i686-apple-darwin", i686_apple_darwin),
@@ -195,7 +195,8 @@ supported_targets! {
     ("i586-pc-windows-msvc", i586_pc_windows_msvc),
 
     ("le32-unknown-nacl", le32_unknown_nacl),
-    ("asmjs-unknown-emscripten", asmjs_unknown_emscripten)
+    ("asmjs-unknown-emscripten", asmjs_unknown_emscripten),
+    ("wasm32-unknown-emscripten", wasm32_unknown_emscripten)
 }
 
 /// Everything `rustc` knows about how to compile for a specific target.
