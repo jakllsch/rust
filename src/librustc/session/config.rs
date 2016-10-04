@@ -39,7 +39,8 @@ use std::collections::btree_map::Keys as BTreeMapKeysIter;
 use std::collections::btree_map::Values as BTreeMapValuesIter;
 
 use std::fmt;
-use std::hash::{Hasher, SipHasher};
+use std::hash::Hasher;
+use std::collections::hash_map::DefaultHasher;
 use std::iter::FromIterator;
 use std::path::PathBuf;
 
@@ -212,7 +213,7 @@ macro_rules! top_level_options {
                                                          $warn_text,
                                                          self.error_format)*]);
                 })*
-                let mut hasher =  SipHasher::new();
+                let mut hasher = DefaultHasher::new();
                 dep_tracking::stable_hash(sub_hashes,
                                           &mut hasher,
                                           self.error_format);
@@ -288,6 +289,11 @@ top_level_options!(
         alt_std_name: Option<String> [TRACKED],
         // Indicates how the compiler should treat unstable features
         unstable_features: UnstableFeatures [TRACKED],
+
+        // Indicates whether this run of the compiler is actually rustdoc. This
+        // is currently just a hack and will be removed eventually, so please
+        // try to not rely on this too much.
+        actually_rustdoc: bool [TRACKED],
     }
 );
 
@@ -440,6 +446,7 @@ pub fn basic_options() -> Options {
         libs: Vec::new(),
         unstable_features: UnstableFeatures::Disallow,
         debug_assertions: true,
+        actually_rustdoc: false,
     }
 }
 
@@ -566,7 +573,7 @@ macro_rules! options {
 
     impl<'a> dep_tracking::DepTrackingHash for $struct_name {
 
-        fn hash(&self, hasher: &mut SipHasher, error_format: ErrorOutputType) {
+        fn hash(&self, hasher: &mut DefaultHasher, error_format: ErrorOutputType) {
             let mut sub_hashes = BTreeMap::new();
             $({
                 hash_option!($opt,
@@ -1523,6 +1530,7 @@ pub fn build_session_options_and_crate_config(matches: &getopts::Matches)
         libs: libs,
         unstable_features: UnstableFeatures::from_environment(),
         debug_assertions: debug_assertions,
+        actually_rustdoc: false,
     },
     cfg)
 }
@@ -1650,21 +1658,22 @@ mod dep_tracking {
     use middle::cstore;
     use session::search_paths::{PathKind, SearchPaths};
     use std::collections::BTreeMap;
-    use std::hash::{Hash, SipHasher};
+    use std::hash::Hash;
     use std::path::PathBuf;
+    use std::collections::hash_map::DefaultHasher;
     use super::{Passes, CrateType, OptLevel, DebugInfoLevel,
                 OutputTypes, Externs, ErrorOutputType};
     use syntax::feature_gate::UnstableFeatures;
     use rustc_back::PanicStrategy;
 
     pub trait DepTrackingHash {
-        fn hash(&self, &mut SipHasher, ErrorOutputType);
+        fn hash(&self, &mut DefaultHasher, ErrorOutputType);
     }
 
     macro_rules! impl_dep_tracking_hash_via_hash {
         ($t:ty) => (
             impl DepTrackingHash for $t {
-                fn hash(&self, hasher: &mut SipHasher, _: ErrorOutputType) {
+                fn hash(&self, hasher: &mut DefaultHasher, _: ErrorOutputType) {
                     Hash::hash(self, hasher);
                 }
             }
@@ -1674,7 +1683,7 @@ mod dep_tracking {
     macro_rules! impl_dep_tracking_hash_for_sortable_vec_of {
         ($t:ty) => (
             impl DepTrackingHash for Vec<$t> {
-                fn hash(&self, hasher: &mut SipHasher, error_format: ErrorOutputType) {
+                fn hash(&self, hasher: &mut DefaultHasher, error_format: ErrorOutputType) {
                     let mut elems: Vec<&$t> = self.iter().collect();
                     elems.sort();
                     Hash::hash(&elems.len(), hasher);
@@ -1713,7 +1722,7 @@ mod dep_tracking {
     impl_dep_tracking_hash_for_sortable_vec_of!((String, cstore::NativeLibraryKind));
 
     impl DepTrackingHash for SearchPaths {
-        fn hash(&self, hasher: &mut SipHasher, _: ErrorOutputType) {
+        fn hash(&self, hasher: &mut DefaultHasher, _: ErrorOutputType) {
             let mut elems: Vec<_> = self
                 .iter(PathKind::All)
                 .collect();
@@ -1726,7 +1735,7 @@ mod dep_tracking {
         where T1: DepTrackingHash,
               T2: DepTrackingHash
     {
-        fn hash(&self, hasher: &mut SipHasher, error_format: ErrorOutputType) {
+        fn hash(&self, hasher: &mut DefaultHasher, error_format: ErrorOutputType) {
             Hash::hash(&0, hasher);
             DepTrackingHash::hash(&self.0, hasher, error_format);
             Hash::hash(&1, hasher);
@@ -1736,7 +1745,7 @@ mod dep_tracking {
 
     // This is a stable hash because BTreeMap is a sorted container
     pub fn stable_hash(sub_hashes: BTreeMap<&'static str, &DepTrackingHash>,
-                       hasher: &mut SipHasher,
+                       hasher: &mut DefaultHasher,
                        error_format: ErrorOutputType) {
         for (key, sub_hash) in sub_hashes {
             // Using Hash::hash() instead of DepTrackingHash::hash() is fine for
