@@ -12,7 +12,7 @@ use target::{Target, TargetOptions, TargetResult};
 
 pub fn target() -> TargetResult {
     let mut base = super::netbsd_base::opts();
-    base.max_atomic_width = 64;
+    base.max_atomic_width = Some(64);
     Ok(Target {
         llvm_target: "armv6-unknown-netbsdelf-eabihf".to_string(),
         target_endian: "little".to_string(),
