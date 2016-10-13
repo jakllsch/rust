@@ -66,11 +66,12 @@ mod netbsd_base;
 mod solaris_base;
 mod windows_base;
 mod windows_msvc_base;
+mod thumb_base;
 
 pub type TargetResult = Result<Target, String>;
 
 macro_rules! supported_targets {
-    ( $(($triple:expr, $module:ident)),+ ) => (
+    ( $(($triple:expr, $module:ident),)+ ) => (
         $(mod $module;)*
 
         /// List of supported targets
@@ -196,7 +197,12 @@ supported_targets! {
 
     ("le32-unknown-nacl", le32_unknown_nacl),
     ("asmjs-unknown-emscripten", asmjs_unknown_emscripten),
-    ("wasm32-unknown-emscripten", wasm32_unknown_emscripten)
+    ("wasm32-unknown-emscripten", wasm32_unknown_emscripten),
+
+    ("thumbv6m-none-eabi", thumbv6m_none_eabi),
+    ("thumbv7m-none-eabi", thumbv7m_none_eabi),
+    ("thumbv7em-none-eabi", thumbv7em_none_eabi),
+    ("thumbv7em-none-eabihf", thumbv7em_none_eabihf),
 }
 
 /// Everything `rustc` knows about how to compile for a specific target.
@@ -352,9 +358,8 @@ pub struct TargetOptions {
     // will 'just work'.
     pub obj_is_bitcode: bool,
 
-    /// Maximum integer size in bits that this target can perform atomic
-    /// operations on.
-    pub max_atomic_width: u64,
+    /// Don't use this field; instead use the `.max_atomic_width()` method.
+    pub max_atomic_width: Option<u64>,
 
     /// Panic strategy: "unwind" or "abort"
     pub panic_strategy: PanicStrategy,
@@ -406,7 +411,7 @@ impl Default for TargetOptions {
             allow_asm: true,
             has_elf_tls: false,
             obj_is_bitcode: false,
-            max_atomic_width: 0,
+            max_atomic_width: None,
             panic_strategy: PanicStrategy::Unwind,
         }
     }
@@ -425,6 +430,12 @@ impl Target {
             },
             abi => abi
         }
+    }
+
+    /// Maximum integer size in bits that this target can perform atomic
+    /// operations on.
+    pub fn max_atomic_width(&self) -> u64 {
+        self.options.max_atomic_width.unwrap_or(self.target_pointer_width.parse().unwrap())
     }
 
     /// Load a target descriptor from a JSON object.
@@ -465,9 +476,6 @@ impl Target {
             options: Default::default(),
         };
 
-        // Default max-atomic-width to target-pointer-width
-        base.options.max_atomic_width = base.target_pointer_width.parse().unwrap();
-
         macro_rules! key {
             ($key_name:ident) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
@@ -480,11 +488,11 @@ impl Target {
                     .map(|o| o.as_boolean()
                          .map(|s| base.options.$key_name = s));
             } );
-            ($key_name:ident, u64) => ( {
+            ($key_name:ident, Option<u64>) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
                 obj.find(&name[..])
                     .map(|o| o.as_u64()
-                         .map(|s| base.options.$key_name = s));
+                         .map(|s| base.options.$key_name = Some(s)));
             } );
             ($key_name:ident, PanicStrategy) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
@@ -558,7 +566,7 @@ impl Target {
         key!(exe_allocation_crate);
         key!(has_elf_tls, bool);
         key!(obj_is_bitcode, bool);
-        key!(max_atomic_width, u64);
+        key!(max_atomic_width, Option<u64>);
         try!(key!(panic_strategy, PanicStrategy));
 
         Ok(base)

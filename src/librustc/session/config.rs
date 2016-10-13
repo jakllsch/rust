@@ -482,7 +482,7 @@ pub enum CrateType {
     CrateTypeRlib,
     CrateTypeStaticlib,
     CrateTypeCdylib,
-    CrateTypeRustcMacro,
+    CrateTypeProcMacro,
 }
 
 #[derive(Clone, Hash)]
@@ -933,7 +933,7 @@ pub fn default_configuration(sess: &Session) -> ast::CrateConfig {
     let os = &sess.target.target.target_os;
     let env = &sess.target.target.target_env;
     let vendor = &sess.target.target.target_vendor;
-    let max_atomic_width = sess.target.target.options.max_atomic_width;
+    let max_atomic_width = sess.target.target.max_atomic_width();
 
     let fam = if let Some(ref fam) = sess.target.target.options.target_family {
         intern(fam)
@@ -972,8 +972,8 @@ pub fn default_configuration(sess: &Session) -> ast::CrateConfig {
     if sess.opts.debug_assertions {
         ret.push(attr::mk_word_item(InternedString::new("debug_assertions")));
     }
-    if sess.opts.crate_types.contains(&CrateTypeRustcMacro) {
-        ret.push(attr::mk_word_item(InternedString::new("rustc_macro")));
+    if sess.opts.crate_types.contains(&CrateTypeProcMacro) {
+        ret.push(attr::mk_word_item(InternedString::new("proc_macro")));
     }
     return ret;
 }
@@ -1546,7 +1546,7 @@ pub fn parse_crate_types_from_list(list_list: Vec<String>) -> Result<Vec<CrateTy
                 "dylib"     => CrateTypeDylib,
                 "cdylib"    => CrateTypeCdylib,
                 "bin"       => CrateTypeExecutable,
-                "rustc-macro" => CrateTypeRustcMacro,
+                "proc-macro" => CrateTypeProcMacro,
                 _ => {
                     return Err(format!("unknown crate type: `{}`",
                                        part));
@@ -1630,7 +1630,7 @@ impl fmt::Display for CrateType {
             CrateTypeRlib => "rlib".fmt(f),
             CrateTypeStaticlib => "staticlib".fmt(f),
             CrateTypeCdylib => "cdylib".fmt(f),
-            CrateTypeRustcMacro => "rustc-macro".fmt(f),
+            CrateTypeProcMacro => "proc-macro".fmt(f),
         }
     }
 }

@@ -26,7 +26,6 @@ extern crate md5;
 extern crate num_cpus;
 extern crate rustc_serialize;
 extern crate toml;
-extern crate regex;
 
 use std::collections::HashMap;
 use std::env;
@@ -62,6 +61,7 @@ mod config;
 mod dist;
 mod doc;
 mod flags;
+mod install;
 mod native;
 mod sanity;
 mod step;
@@ -452,6 +452,8 @@ impl Build {
                 DistRustc { stage } => dist::rustc(self, stage, target.target),
                 DistStd { compiler } => dist::std(self, &compiler, target.target),
                 DistSrc { _dummy } => dist::rust_src(self),
+
+                Install { stage } => install::install(self, stage, target.target),
 
                 DebuggerScripts { stage } => {
                     let compiler = Compiler::new(stage, target.target);

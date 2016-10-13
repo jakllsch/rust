@@ -25,8 +25,10 @@ use rustc::middle::expr_use_visitor::{LoanCause, MutateMode};
 use rustc::middle::expr_use_visitor as euv;
 use rustc::middle::mem_categorization::{cmt};
 use rustc::hir::pat_util::*;
+use rustc::session::Session;
 use rustc::traits::Reveal;
 use rustc::ty::{self, Ty, TyCtxt};
+use rustc_errors::DiagnosticBuilder;
 use std::cmp::Ordering;
 use std::fmt;
 use std::iter::{FromIterator, IntoIterator, repeat};
@@ -163,6 +165,10 @@ pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
     tcx.sess.abort_if_errors();
 }
 
+fn create_e0004<'a>(sess: &'a Session, sp: Span, error_message: String) -> DiagnosticBuilder<'a> {
+    struct_span_err!(sess, sp, E0004, "{}", &error_message)
+}
+
 fn check_expr(cx: &mut MatchCheckCtxt, ex: &hir::Expr) {
     intravisit::walk_expr(cx, ex);
     match ex.node {
@@ -215,9 +221,10 @@ fn check_expr(cx: &mut MatchCheckCtxt, ex: &hir::Expr) {
             if inlined_arms.is_empty() {
                 if !pat_ty.is_uninhabited(cx.tcx) {
                     // We know the type is inhabited, so this must be wrong
-                    let mut err = struct_span_err!(cx.tcx.sess, ex.span, E0002,
-                                                   "non-exhaustive patterns: type {} is non-empty",
-                                                   pat_ty);
+                    let mut err = create_e0004(cx.tcx.sess, ex.span,
+                                               format!("non-exhaustive patterns: type {} \
+                                                        is non-empty",
+                                                       pat_ty));
                     span_help!(&mut err, ex.span,
                         "Please ensure that all possible cases are being handled; \
                          possibly adding wildcards or more match arms.");
@@ -247,7 +254,7 @@ fn check_for_bindings_named_the_same_as_variants(cx: &MatchCheckCtxt, pat: &Pat)
                 if edef.is_enum() {
                     if let Def::Local(..) = cx.tcx.expect_def(p.id) {
                         if edef.variants.iter().any(|variant| {
-                            variant.name == name.node && variant.kind == ty::VariantKind::Unit
+                            variant.name == name.node && variant.ctor_kind == CtorKind::Const
                         }) {
                             let ty_path = cx.tcx.item_path_str(edef.did);
                             let mut err = struct_span_warn!(cx.tcx.sess, p.span, E0170,
@@ -438,10 +445,11 @@ fn check_exhaustive<'a, 'tcx>(cx: &MatchCheckCtxt<'a, 'tcx>,
                         1 => format!("pattern {} not covered", joined_patterns),
                         _ => format!("patterns {} not covered", joined_patterns)
                     };
-                    struct_span_err!(cx.tcx.sess, sp, E0004,
-                        "non-exhaustive patterns: {} not covered",
-                        joined_patterns
-                    ).span_label(sp, &label_text).emit();
+                    create_e0004(cx.tcx.sess, sp,
+                                 format!("non-exhaustive patterns: {} not covered",
+                                         joined_patterns))
+                        .span_label(sp, &label_text)
+                        .emit();
                 },
             }
         }
@@ -577,8 +585,8 @@ fn construct_witness<'a,'tcx>(cx: &MatchCheckCtxt<'a,'tcx>, ctor: &Constructor,
 
         ty::TyAdt(adt, _) => {
             let v = ctor.variant_for_adt(adt);
-            match v.kind {
-                ty::VariantKind::Struct => {
+            match v.ctor_kind {
+                CtorKind::Fictive => {
                     let field_pats: hir::HirVec<_> = v.fields.iter()
                         .zip(pats)
                         .filter(|&(_, ref pat)| pat.node != PatKind::Wild)
@@ -593,10 +601,10 @@ fn construct_witness<'a,'tcx>(cx: &MatchCheckCtxt<'a,'tcx>, ctor: &Constructor,
                     let has_more_fields = field_pats.len() < pats_len;
                     PatKind::Struct(def_to_path(cx.tcx, v.did), field_pats, has_more_fields)
                 }
-                ty::VariantKind::Tuple => {
+                CtorKind::Fn => {
                     PatKind::TupleStruct(def_to_path(cx.tcx, v.did), pats.collect(), None)
                 }
-                ty::VariantKind::Unit => {
+                CtorKind::Const => {
                     PatKind::Path(None, def_to_path(cx.tcx, v.did))
                 }
             }
@@ -801,8 +809,8 @@ fn pat_constructors(cx: &MatchCheckCtxt, p: &Pat,
     match pat.node {
         PatKind::Struct(..) | PatKind::TupleStruct(..) | PatKind::Path(..) =>
             match cx.tcx.expect_def(pat.id) {
-                Def::Variant(id) => vec![Variant(id)],
-                Def::Struct(..) | Def::Union(..) |
+                Def::Variant(id) | Def::VariantCtor(id, ..) => vec![Variant(id)],
+                Def::Struct(..) | Def::StructCtor(..) | Def::Union(..) |
                 Def::TyAlias(..) | Def::AssociatedTy(..) => vec![Single],
                 Def::Const(..) | Def::AssociatedConst(..) =>
                     span_bug!(pat.span, "const pattern should've been rewritten"),
@@ -913,10 +921,10 @@ pub fn specialize<'a, 'b, 'tcx>(
                 Def::Const(..) | Def::AssociatedConst(..) =>
                     span_bug!(pat_span, "const pattern should've \
                                          been rewritten"),
-                Def::Variant(id) if *constructor != Variant(id) => None,
-                Def::Variant(..) | Def::Struct(..) => Some(Vec::new()),
-                def => span_bug!(pat_span, "specialize: unexpected \
-                                          definition {:?}", def),
+                Def::VariantCtor(id, CtorKind::Const) if *constructor != Variant(id) => None,
+                Def::VariantCtor(_, CtorKind::Const) |
+                Def::StructCtor(_, CtorKind::Const) => Some(Vec::new()),
+                def => span_bug!(pat_span, "specialize: unexpected definition: {:?}", def),
             }
         }
 
@@ -925,8 +933,9 @@ pub fn specialize<'a, 'b, 'tcx>(
                 Def::Const(..) | Def::AssociatedConst(..) =>
                     span_bug!(pat_span, "const pattern should've \
                                          been rewritten"),
-                Def::Variant(id) if *constructor != Variant(id) => None,
-                Def::Variant(..) | Def::Struct(..) => {
+                Def::VariantCtor(id, CtorKind::Fn) if *constructor != Variant(id) => None,
+                Def::VariantCtor(_, CtorKind::Fn) |
+                Def::StructCtor(_, CtorKind::Fn) => {
                     match ddpos {
                         Some(ddpos) => {
                             let mut pats: Vec<_> = args[..ddpos].iter().map(|p| {
@@ -939,7 +948,7 @@ pub fn specialize<'a, 'b, 'tcx>(
                         None => Some(args.iter().map(|p| wpat(p)).collect())
                     }
                 }
-                _ => None
+                def => span_bug!(pat_span, "specialize: unexpected definition: {:?}", def),
             }
         }
 
@@ -1229,8 +1238,10 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for AtBindingPatternVisitor<'a, 'b, 'tcx> {
         match pat.node {
             PatKind::Binding(.., ref subpat) => {
                 if !self.bindings_allowed {
-                    span_err!(self.cx.tcx.sess, pat.span, E0303,
-                              "pattern bindings are not allowed after an `@`");
+                    struct_span_err!(self.cx.tcx.sess, pat.span, E0303,
+                                     "pattern bindings are not allowed after an `@`")
+                        .span_label(pat.span,  &format!("not allowed after `@`"))
+                        .emit();
                 }
 
                 if subpat.is_some() {

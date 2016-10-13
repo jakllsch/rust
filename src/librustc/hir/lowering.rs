@@ -94,13 +94,7 @@ pub fn lower_crate(sess: &Session,
     let _ignore = sess.dep_graph.in_ignore();
 
     LoweringContext {
-        crate_root: if std_inject::no_core(krate) {
-            None
-        } else if std_inject::no_std(krate) {
-            Some("core")
-        } else {
-            Some("std")
-        },
+        crate_root: std_inject::injected_crate_name(krate),
         sess: sess,
         parent_def: None,
         resolver: resolver,
@@ -855,10 +849,9 @@ impl<'a> LoweringContext<'a> {
                     })
                 }
                 PatKind::Lit(ref e) => hir::PatKind::Lit(self.lower_expr(e)),
-                PatKind::TupleStruct(ref pth, ref pats, ddpos) => {
-                    hir::PatKind::TupleStruct(self.lower_path(pth),
-                                              pats.iter().map(|x| self.lower_pat(x)).collect(),
-                                              ddpos)
+                PatKind::TupleStruct(ref path, ref pats, ddpos) => {
+                    hir::PatKind::TupleStruct(self.lower_path(path),
+                                        pats.iter().map(|x| self.lower_pat(x)).collect(), ddpos)
                 }
                 PatKind::Path(ref opt_qself, ref path) => {
                     let opt_qself = opt_qself.as_ref().map(|qself| {

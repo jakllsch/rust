@@ -13,7 +13,6 @@
 #![feature(box_syntax)]
 #![feature(rustc_private)]
 #![feature(test)]
-#![feature(question_mark)]
 #![feature(libc)]
 
 #![deny(warnings)]
@@ -464,7 +463,7 @@ pub fn make_test_name(config: &Config, testpaths: &TestPaths) -> test::TestName 
 pub fn make_test_closure(config: &Config, testpaths: &TestPaths) -> test::TestFn {
     let config = config.clone();
     let testpaths = testpaths.clone();
-    test::DynTestFn(Box::new(move || {
+    test::DynTestFn(Box::new(move |()| {
         runtest::run(config, &testpaths)
     }))
 }

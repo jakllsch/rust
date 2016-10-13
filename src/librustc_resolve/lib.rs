@@ -57,6 +57,7 @@ use syntax::ext::base::MultiItemModifier;
 use syntax::ext::hygiene::Mark;
 use syntax::ast::{self, FloatTy};
 use syntax::ast::{CRATE_NODE_ID, Name, NodeId, IntTy, UintTy};
+use syntax::ext::base::SyntaxExtension;
 use syntax::parse::token::{self, keywords};
 use syntax::util::lev_distance::find_best_match_for_name;
 
@@ -77,6 +78,7 @@ use std::mem::replace;
 use std::rc::Rc;
 
 use resolve_imports::{ImportDirective, NameResolution};
+use macros::{InvocationData, LegacyBinding, LegacyScope};
 
 // NB: This module needs to be declared first so diagnostics are
 // registered before they are used.
@@ -485,7 +487,7 @@ fn resolve_struct_error<'b, 'a: 'b, 'c>(resolver: &'b Resolver<'a>,
                              E0531,
                              "unresolved {} `{}`",
                              expected_what,
-                             path.segments.last().unwrap().identifier)
+                             path)
         }
         ResolutionError::PatPathUnexpected(expected_what, found_what, path) => {
             struct_span_err!(resolver.session,
@@ -494,7 +496,7 @@ fn resolve_struct_error<'b, 'a: 'b, 'c>(resolver: &'b Resolver<'a>,
                              "expected {}, found {} `{}`",
                              expected_what,
                              found_what,
-                             path.segments.last().unwrap().identifier)
+                             path)
         }
     }
 }
@@ -791,9 +793,6 @@ pub struct ModuleS<'a> {
     // access the children must be preceded with a
     // `populate_module_if_necessary` call.
     populated: Cell<bool>,
-
-    macros: RefCell<FnvHashMap<Name, macros::NameBinding>>,
-    macros_escape: bool,
 }
 
 pub type Module<'a> = &'a ModuleS<'a>;
@@ -811,8 +810,6 @@ impl<'a> ModuleS<'a> {
             globs: RefCell::new((Vec::new())),
             traits: RefCell::new(None),
             populated: Cell::new(true),
-            macros: RefCell::new(FnvHashMap()),
-            macros_escape: false,
         }
     }
 
@@ -924,7 +921,8 @@ impl<'a> NameBinding<'a> {
 
     fn is_variant(&self) -> bool {
         match self.kind {
-            NameBindingKind::Def(Def::Variant(..)) => true,
+            NameBindingKind::Def(Def::Variant(..)) |
+            NameBindingKind::Def(Def::VariantCtor(..)) => true,
             _ => false,
         }
     }
@@ -1005,7 +1003,9 @@ pub struct Resolver<'a> {
 
     trait_item_map: FnvHashMap<(Name, DefId), bool /* is static method? */>,
 
-    structs: FnvHashMap<DefId, Vec<Name>>,
+    // Names of fields of an item `DefId` accessible with dot syntax.
+    // Used for hints during error reporting.
+    field_names: FnvHashMap<DefId, Vec<Name>>,
 
     // All imports known to succeed or fail.
     determined_imports: Vec<&'a ImportDirective<'a>>,
@@ -1073,7 +1073,7 @@ pub struct Resolver<'a> {
 
     privacy_errors: Vec<PrivacyError<'a>>,
     ambiguity_errors: Vec<AmbiguityError<'a>>,
-    macro_shadowing_errors: FnvHashSet<Span>,
+    disallowed_shadowing: Vec<(Name, Span, LegacyScope<'a>)>,
 
     arenas: &'a ResolverArenas<'a>,
     dummy_binding: &'a NameBinding<'a>,
@@ -1083,9 +1083,10 @@ pub struct Resolver<'a> {
     pub derive_modes: FnvHashMap<Name, Rc<MultiItemModifier>>,
     crate_loader: &'a mut CrateLoader,
     macro_names: FnvHashSet<Name>,
+    builtin_macros: FnvHashMap<Name, Rc<SyntaxExtension>>,
 
     // Maps the `Mark` of an expansion to its containing module or block.
-    expansion_data: FnvHashMap<Mark, macros::ExpansionData<'a>>,
+    invocations: FnvHashMap<Mark, &'a InvocationData<'a>>,
 }
 
 pub struct ResolverArenas<'a> {
@@ -1094,6 +1095,8 @@ pub struct ResolverArenas<'a> {
     name_bindings: arena::TypedArena<NameBinding<'a>>,
     import_directives: arena::TypedArena<ImportDirective<'a>>,
     name_resolutions: arena::TypedArena<RefCell<NameResolution<'a>>>,
+    invocation_data: arena::TypedArena<InvocationData<'a>>,
+    legacy_bindings: arena::TypedArena<LegacyBinding<'a>>,
 }
 
 impl<'a> ResolverArenas<'a> {
@@ -1116,6 +1119,13 @@ impl<'a> ResolverArenas<'a> {
     }
     fn alloc_name_resolution(&'a self) -> &'a RefCell<NameResolution<'a>> {
         self.name_resolutions.alloc(Default::default())
+    }
+    fn alloc_invocation_data(&'a self, expansion_data: InvocationData<'a>)
+                             -> &'a InvocationData<'a> {
+        self.invocation_data.alloc(expansion_data)
+    }
+    fn alloc_legacy_binding(&'a self, binding: LegacyBinding<'a>) -> &'a LegacyBinding<'a> {
+        self.legacy_bindings.alloc(binding)
     }
 }
 
@@ -1202,8 +1212,9 @@ impl<'a> Resolver<'a> {
         let mut definitions = Definitions::new();
         DefCollector::new(&mut definitions).collect_root();
 
-        let mut expansion_data = FnvHashMap();
-        expansion_data.insert(Mark::root(), macros::ExpansionData::root(graph_root));
+        let mut invocations = FnvHashMap();
+        invocations.insert(Mark::root(),
+                           arenas.alloc_invocation_data(InvocationData::root(graph_root)));
 
         Resolver {
             session: session,
@@ -1217,7 +1228,7 @@ impl<'a> Resolver<'a> {
             prelude: None,
 
             trait_item_map: FnvHashMap(),
-            structs: FnvHashMap(),
+            field_names: FnvHashMap(),
 
             determined_imports: Vec::new(),
             indeterminate_imports: Vec::new(),
@@ -1249,7 +1260,7 @@ impl<'a> Resolver<'a> {
 
             privacy_errors: Vec::new(),
             ambiguity_errors: Vec::new(),
-            macro_shadowing_errors: FnvHashSet(),
+            disallowed_shadowing: Vec::new(),
 
             arenas: arenas,
             dummy_binding: arenas.alloc_name_binding(NameBinding {
@@ -1263,7 +1274,8 @@ impl<'a> Resolver<'a> {
             derive_modes: FnvHashMap(),
             crate_loader: crate_loader,
             macro_names: FnvHashSet(),
-            expansion_data: expansion_data,
+            builtin_macros: FnvHashMap(),
+            invocations: invocations,
         }
     }
 
@@ -1274,6 +1286,8 @@ impl<'a> Resolver<'a> {
             name_bindings: arena::TypedArena::new(),
             import_directives: arena::TypedArena::new(),
             name_resolutions: arena::TypedArena::new(),
+            invocation_data: arena::TypedArena::new(),
+            legacy_bindings: arena::TypedArena::new(),
         }
     }
 
@@ -2373,15 +2387,16 @@ impl<'a> Resolver<'a> {
                         let always_binding = !pat_src.is_refutable() || opt_pat.is_some() ||
                                              bmode != BindingMode::ByValue(Mutability::Immutable);
                         match def {
-                            Def::Struct(..) | Def::Variant(..) |
-                            Def::Const(..) | Def::AssociatedConst(..) if !always_binding => {
-                                // A constant, unit variant, etc pattern.
+                            Def::StructCtor(_, CtorKind::Const) |
+                            Def::VariantCtor(_, CtorKind::Const) |
+                            Def::Const(..) if !always_binding => {
+                                // A unit struct/variant or constant pattern.
                                 let name = ident.node.name;
                                 self.record_use(name, ValueNS, binding.unwrap(), ident.span);
                                 Some(PathResolution::new(def))
                             }
-                            Def::Struct(..) | Def::Variant(..) |
-                            Def::Const(..) | Def::AssociatedConst(..) | Def::Static(..) => {
+                            Def::StructCtor(..) | Def::VariantCtor(..) |
+                            Def::Const(..) | Def::Static(..) => {
                                 // A fresh binding that shadows something unacceptable.
                                 resolve_error(
                                     self,
@@ -2398,7 +2413,7 @@ impl<'a> Resolver<'a> {
                             }
                             def => {
                                 span_bug!(ident.span, "unexpected definition for an \
-                                                       identifier in pattern {:?}", def);
+                                                       identifier in pattern: {:?}", def);
                             }
                         }
                     }).unwrap_or_else(|| {
@@ -2411,20 +2426,22 @@ impl<'a> Resolver<'a> {
                 PatKind::TupleStruct(ref path, ..) => {
                     self.resolve_pattern_path(pat.id, None, path, ValueNS, |def| {
                         match def {
-                            Def::Struct(..) | Def::Variant(..) => true,
+                            Def::StructCtor(_, CtorKind::Fn) |
+                            Def::VariantCtor(_, CtorKind::Fn) => true,
                             _ => false,
                         }
-                    }, "variant or struct");
+                    }, "tuple struct/variant");
                 }
 
                 PatKind::Path(ref qself, ref path) => {
                     self.resolve_pattern_path(pat.id, qself.as_ref(), path, ValueNS, |def| {
                         match def {
-                            Def::Struct(..) | Def::Variant(..) |
+                            Def::StructCtor(_, CtorKind::Const) |
+                            Def::VariantCtor(_, CtorKind::Const) |
                             Def::Const(..) | Def::AssociatedConst(..) => true,
                             _ => false,
                         }
-                    }, "variant, struct or constant");
+                    }, "unit struct/variant or constant");
                 }
 
                 PatKind::Struct(ref path, ..) => {
@@ -2776,10 +2793,9 @@ impl<'a> Resolver<'a> {
             // Look for a field with the same name in the current self_type.
             if let Some(resolution) = self.def_map.get(&node_id) {
                 match resolution.base_def {
-                    Def::Enum(did) | Def::TyAlias(did) | Def::Union(did) |
-                    Def::Struct(did) | Def::Variant(did) if resolution.depth == 0 => {
-                        if let Some(fields) = self.structs.get(&did) {
-                            if fields.iter().any(|&field_name| name == field_name) {
+                    Def::Struct(did) | Def::Union(did) if resolution.depth == 0 => {
+                        if let Some(field_names) = self.field_names.get(&did) {
+                            if field_names.iter().any(|&field_name| name == field_name) {
                                 return Field;
                             }
                         }
@@ -2846,13 +2862,11 @@ impl<'a> Resolver<'a> {
                 if let Some(path_res) = self.resolve_possibly_assoc_item(expr.id,
                                                             maybe_qself.as_ref(), path, ValueNS) {
                     // Check if struct variant
-                    let is_struct_variant = if let Def::Variant(variant_id) = path_res.base_def {
-                        self.structs.contains_key(&variant_id)
-                    } else {
-                        false
+                    let is_struct_variant = match path_res.base_def {
+                        Def::VariantCtor(_, CtorKind::Fictive) => true,
+                        _ => false,
                     };
                     if is_struct_variant {
-                        let _ = self.structs.contains_key(&path_res.base_def.def_id());
                         let path_name = path_names_to_string(path, 0);
 
                         let mut err = resolve_struct_error(self,
@@ -2885,9 +2899,6 @@ impl<'a> Resolver<'a> {
                     }
                 } else {
                     // Be helpful if the name refers to a struct
-                    // (The pattern matching def_tys where the id is in self.structs
-                    // matches on regular structs while excluding tuple- and enum-like
-                    // structs, which wouldn't result in this error.)
                     let path_name = path_names_to_string(path, 0);
                     let type_res = self.with_no_errors(|this| {
                         this.resolve_path(expr.id, path, 0, TypeNS)
@@ -3338,7 +3349,8 @@ impl<'a> Resolver<'a> {
         vis.is_accessible_from(module.normal_ancestor_id.unwrap(), self)
     }
 
-    fn report_errors(&self) {
+    fn report_errors(&mut self) {
+        self.report_shadowing_errors();
         let mut reported_spans = FnvHashSet();
 
         for &AmbiguityError { span, name, b1, b2 } in &self.ambiguity_errors {
@@ -3362,6 +3374,20 @@ impl<'a> Resolver<'a> {
             } else {
                 let def = binding.def();
                 self.session.span_err(span, &format!("{} `{}` is private", def.kind_name(), name));
+            }
+        }
+    }
+
+    fn report_shadowing_errors(&mut self) {
+        let mut reported_errors = FnvHashSet();
+        for (name, span, scope) in replace(&mut self.disallowed_shadowing, Vec::new()) {
+            if self.resolve_macro_name(scope, name, false).is_some() &&
+               reported_errors.insert((name, span)) {
+                let msg = format!("`{}` is already in scope", name);
+                self.session.struct_span_err(span, &msg)
+                    .note("macro-expanded `macro_rules!`s may not shadow \
+                           existing macros (see RFC 1560)")
+                    .emit();
             }
         }
     }

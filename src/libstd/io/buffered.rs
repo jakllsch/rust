@@ -12,7 +12,6 @@
 
 use io::prelude::*;
 
-use marker::Reflect;
 use cmp;
 use error;
 use fmt;
@@ -231,7 +230,7 @@ impl<R: Seek> Seek for BufReader<R> {
         if let SeekFrom::Current(n) = pos {
             let remainder = (self.cap - self.pos) as i64;
             // it should be safe to assume that remainder fits within an i64 as the alternative
-            // means we managed to allocate 8 ebibytes and that's absurd.
+            // means we managed to allocate 8 exbibytes and that's absurd.
             // But it's not out of the realm of possibility for some weird underlying reader to
             // support seeking by i64::min_value() so we need to handle underflow when subtracting
             // remainder.
@@ -578,7 +577,7 @@ impl<W> From<IntoInnerError<W>> for Error {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<W: Reflect + Send + fmt::Debug> error::Error for IntoInnerError<W> {
+impl<W: Send + fmt::Debug> error::Error for IntoInnerError<W> {
     fn description(&self) -> &str {
         error::Error::description(self.error())
     }
