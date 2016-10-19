@@ -822,7 +822,7 @@ impl<T> Vec<T> {
     pub fn dedup_by<F>(&mut self, mut same_bucket: F) where F: FnMut(&mut T, &mut T) -> bool {
         unsafe {
             // Although we have a mutable reference to `self`, we cannot make
-            // *arbitrary* changes. The `PartialEq` comparisons could panic, so we
+            // *arbitrary* changes. The `same_bucket` calls could panic, so we
             // must ensure that the vector is in a valid state at all time.
             //
             // The way that we handle this is by using swaps; we iterate
@@ -1614,7 +1614,24 @@ impl<T> Vec<T> {
 #[stable(feature = "extend_ref", since = "1.2.0")]
 impl<'a, T: 'a + Copy> Extend<&'a T> for Vec<T> {
     fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
-        self.extend(iter.into_iter().cloned());
+        <I as SpecExtendVec<T>>::extend_vec(iter, self);
+    }
+}
+
+// helper trait for specialization of Vec's Extend impl
+trait SpecExtendVec<T> {
+    fn extend_vec(self, vec: &mut Vec<T>);
+}
+
+impl <'a, T: 'a + Copy, I: IntoIterator<Item=&'a T>> SpecExtendVec<T> for I {
+    default fn extend_vec(self, vec: &mut Vec<T>) {
+        vec.extend(self.into_iter().cloned());
+    }
+}
+
+impl<'a, T: Copy> SpecExtendVec<T> for &'a [T] {
+    fn extend_vec(self, vec: &mut Vec<T>) {
+        vec.extend_from_slice(self);
     }
 }
 

@@ -36,7 +36,8 @@ use syntax::parse::token;
 use syntax::ast::{self, Block, ForeignItem, ForeignItemKind, Item, ItemKind};
 use syntax::ast::{Mutability, StmtKind, TraitItem, TraitItemKind};
 use syntax::ast::{Variant, ViewPathGlob, ViewPathList, ViewPathSimple};
-use syntax::ext::base::{MultiItemModifier, Resolver as SyntaxResolver};
+use syntax::ext::base::{SyntaxExtension, Resolver as SyntaxResolver};
+use syntax::ext::expand::mark_tts;
 use syntax::ext::hygiene::Mark;
 use syntax::feature_gate::{self, emit_feature_err};
 use syntax::ext::tt::macro_rules;
@@ -95,14 +96,14 @@ impl<'b> Resolver<'b> {
                 // Extract and intern the module part of the path. For
                 // globs and lists, the path is found directly in the AST;
                 // for simple paths we have to munge the path a little.
-                let module_path: Vec<Name> = match view_path.node {
+                let module_path: Vec<_> = match view_path.node {
                     ViewPathSimple(_, ref full_path) => {
                         full_path.segments
                                  .split_last()
                                  .unwrap()
                                  .1
                                  .iter()
-                                 .map(|seg| seg.identifier.name)
+                                 .map(|seg| seg.identifier)
                                  .collect()
                     }
 
@@ -110,7 +111,7 @@ impl<'b> Resolver<'b> {
                     ViewPathList(ref module_ident_path, _) => {
                         module_ident_path.segments
                                          .iter()
-                                         .map(|seg| seg.identifier.name)
+                                         .map(|seg| seg.identifier)
                                          .collect()
                     }
                 };
@@ -159,7 +160,7 @@ impl<'b> Resolver<'b> {
                                     (module_path.clone(), node.name.name, rename)
                                 } else {
                                     let name = match module_path.last() {
-                                        Some(name) => *name,
+                                        Some(ident) => ident.name,
                                         None => {
                                             resolve_error(
                                                 self,
@@ -195,22 +196,30 @@ impl<'b> Resolver<'b> {
                 // We need to error on `#[macro_use] extern crate` when it isn't at the
                 // crate root, because `$crate` won't work properly.
                 let is_crate_root = self.current_module.parent.is_none();
+                let import_macro = |this: &mut Self, name, ext, span| {
+                    let shadowing = this.builtin_macros.insert(name, Rc::new(ext)).is_some();
+                    if shadowing && expansion != Mark::root() {
+                        let msg = format!("`{}` is already in scope", name);
+                        this.session.struct_span_err(span, &msg)
+                            .note("macro-expanded `#[macro_use]`s may not shadow \
+                                   existing macros (see RFC 1560)")
+                            .emit();
+                    }
+                };
+
+                let mut custom_derive_crate = false;
+                // The mark of the expansion that generates the loaded macros.
+                let mut opt_mark = None;
                 for loaded_macro in self.crate_loader.load_macros(item, is_crate_root) {
+                    let mark = opt_mark.unwrap_or_else(Mark::fresh);
+                    opt_mark = Some(mark);
                     match loaded_macro.kind {
                         LoadedMacroKind::Def(mut def) => {
-                            let name = def.ident.name;
                             if def.use_locally {
-                                let ext =
-                                    Rc::new(macro_rules::compile(&self.session.parse_sess, &def));
-                                if self.builtin_macros.insert(name, ext).is_some() &&
-                                   expansion != Mark::root() {
-                                    let msg = format!("`{}` is already in scope", name);
-                                    self.session.struct_span_err(loaded_macro.import_site, &msg)
-                                        .note("macro-expanded `#[macro_use]`s may not shadow \
-                                               existing macros (see RFC 1560)")
-                                        .emit();
-                                }
-                                self.macro_names.insert(name);
+                                self.macro_names.insert(def.ident.name);
+                                def.body = mark_tts(&def.body, mark);
+                                let ext = macro_rules::compile(&self.session.parse_sess, &def);
+                                import_macro(self, def.ident.name, ext, loaded_macro.import_site);
                             }
                             if def.export {
                                 def.id = self.next_node_id();
@@ -218,10 +227,19 @@ impl<'b> Resolver<'b> {
                             }
                         }
                         LoadedMacroKind::CustomDerive(name, ext) => {
-                            self.insert_custom_derive(&name, ext, item.span);
+                            custom_derive_crate = true;
+                            let ext = SyntaxExtension::CustomDerive(ext);
+                            import_macro(self, token::intern(&name), ext, loaded_macro.import_site);
                         }
                     }
                 }
+
+                if custom_derive_crate && !self.session.features.borrow().proc_macro {
+                    let issue = feature_gate::GateIssue::Language;
+                    let msg = "loading custom derive macro crates is experimentally supported";
+                    emit_feature_err(&self.session.parse_sess, "proc_macro", item.span, issue, msg);
+                }
+
                 self.crate_loader.process_item(item, &self.definitions);
 
                 // n.b. we don't need to look at the path option here, because cstore already did
@@ -237,7 +255,24 @@ impl<'b> Resolver<'b> {
                     });
                     self.define(parent, name, TypeNS, (module, sp, vis));
 
+                    if let Some(mark) = opt_mark {
+                        let invocation = self.arenas.alloc_invocation_data(InvocationData {
+                            module: Cell::new(module),
+                            def_index: CRATE_DEF_INDEX,
+                            const_integer: false,
+                            legacy_scope: Cell::new(LegacyScope::Empty),
+                            expansion: Cell::new(LegacyScope::Empty),
+                        });
+                        self.invocations.insert(mark, invocation);
+                    }
+
                     self.populate_module_if_necessary(module);
+                } else if custom_derive_crate {
+                    // Define an empty module
+                    let def = Def::Mod(self.definitions.local_def_id(item.id));
+                    let module = ModuleS::new(Some(parent), ModuleKind::Def(def, name));
+                    let module = self.arenas.alloc_module(module);
+                    self.define(parent, name, TypeNS, (module, sp, vis));
                 }
             }
 
@@ -503,17 +538,6 @@ impl<'b> Resolver<'b> {
         }
 
         false
-    }
-
-    fn insert_custom_derive(&mut self, name: &str, ext: Rc<MultiItemModifier>, sp: Span) {
-        if !self.session.features.borrow().proc_macro {
-            let sess = &self.session.parse_sess;
-            let msg = "loading custom derive macro crates is experimentally supported";
-            emit_feature_err(sess, "proc_macro", sp, feature_gate::GateIssue::Language, msg);
-        }
-        if self.derive_modes.insert(token::intern(name), ext).is_some() {
-            self.session.span_err(sp, &format!("cannot shadow existing derive mode `{}`", name));
-        }
     }
 }
 

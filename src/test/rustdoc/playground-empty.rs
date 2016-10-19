@@ -8,18 +8,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// force-host
-// no-prefer-dynamic
+#![crate_name = "foo"]
 
-#![feature(proc_macro)]
-#![feature(proc_macro_lib)]
-#![crate_type = "proc-macro"]
+#![doc(html_playground_url = "")]
 
-extern crate proc_macro;
+//! module docs
+//!
+//! ```
+//! println!("Hello, world!");
+//! ```
 
-use proc_macro::TokenStream;
-
-#[proc_macro_derive(A)]
-pub fn derive_a(input: TokenStream) -> TokenStream {
-    input
-}
+// @!has foo/index.html '//a[@class="test-arrow"]' "Run"
