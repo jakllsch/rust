@@ -543,6 +543,7 @@ impl<'a> LoweringContext<'a> {
             name: respan(f.ident.span, f.ident.node.name),
             expr: self.lower_expr(&f.expr),
             span: f.span,
+            is_shorthand: f.is_shorthand,
         }
     }
 
@@ -716,8 +717,6 @@ impl<'a> LoweringContext<'a> {
             id: m.id,
             span: m.span,
             imported_from: m.imported_from.map(|x| x.name),
-            export: m.export,
-            use_locally: m.use_locally,
             allow_internal_unstable: m.allow_internal_unstable,
             body: m.body.clone().into(),
         }
@@ -1684,6 +1683,7 @@ impl<'a> LoweringContext<'a> {
             },
             span: span,
             expr: expr,
+            is_shorthand: false,
         }
     }
 

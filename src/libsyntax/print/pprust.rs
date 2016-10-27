@@ -1893,8 +1893,10 @@ impl<'a> State<'a> {
             &fields[..],
             |s, field| {
                 try!(s.ibox(INDENT_UNIT));
-                try!(s.print_ident(field.ident.node));
-                try!(s.word_space(":"));
+                if !field.is_shorthand {
+                    try!(s.print_ident(field.ident.node));
+                    try!(s.word_space(":"));
+                }
                 try!(s.print_expr(&field.expr));
                 s.end()
             },
@@ -2449,13 +2451,10 @@ impl<'a> State<'a> {
                     |s, ty| s.print_type(&ty)));
                 try!(word(&mut self.s, ")"));
 
-                match data.output {
-                    None => { }
-                    Some(ref ty) => {
-                        try!(self.space_if_not_bol());
-                        try!(self.word_space("->"));
-                        try!(self.print_type(&ty));
-                    }
+                if let Some(ref ty) = data.output {
+                    try!(self.space_if_not_bol());
+                    try!(self.word_space("->"));
+                    try!(self.print_type(&ty));
                 }
             }
         }

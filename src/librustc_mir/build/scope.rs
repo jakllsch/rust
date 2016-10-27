@@ -89,14 +89,12 @@ should go to.
 use build::{BlockAnd, BlockAndExtension, Builder, CFG, ScopeAuxiliary, ScopeId};
 use rustc::middle::region::{CodeExtent, CodeExtentData};
 use rustc::middle::lang_items;
-use rustc::ty::subst::{Kind, Substs, Subst};
+use rustc::ty::subst::{Kind, Subst};
 use rustc::ty::{Ty, TyCtxt};
 use rustc::mir::repr::*;
 use syntax_pos::Span;
 use rustc_data_structures::indexed_vec::Idx;
 use rustc_data_structures::fnv::FnvHashMap;
-
-use std::iter;
 
 pub struct Scope<'tcx> {
     /// the scope-id within the scope_auxiliary
@@ -521,8 +519,12 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 if let DropKind::Value { .. } = drop_kind {
                     scope.needs_cleanup = true;
                 }
+                let tcx = self.hir.tcx();
+                let extent_span = extent.span(&tcx.region_maps, &tcx.map).unwrap();
+                // Attribute scope exit drops to scope's closing brace
+                let scope_end = Span { lo: extent_span.hi, .. extent_span};
                 scope.drops.push(DropData {
-                    span: span,
+                    span: scope_end,
                     location: lvalue.clone(),
                     kind: drop_kind
                 });
@@ -800,7 +802,7 @@ fn build_free<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
                               -> TerminatorKind<'tcx> {
     let free_func = tcx.lang_items.require(lang_items::BoxFreeFnLangItem)
                        .unwrap_or_else(|e| tcx.sess.fatal(&e));
-    let substs = Substs::new(tcx, iter::once(Kind::from(data.item_ty)));
+    let substs = tcx.intern_substs(&[Kind::from(data.item_ty)]);
     TerminatorKind::Call {
         func: Operand::Constant(Constant {
             span: data.span,

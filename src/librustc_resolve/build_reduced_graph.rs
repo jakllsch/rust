@@ -21,10 +21,11 @@ use {NameBinding, NameBindingKind, ToNameBinding};
 use Resolver;
 use {resolve_error, resolve_struct_error, ResolutionError};
 
-use rustc::middle::cstore::LoadedMacroKind;
+use rustc::middle::cstore::LoadedMacros;
 use rustc::hir::def::*;
 use rustc::hir::def_id::{CRATE_DEF_INDEX, DefId};
 use rustc::ty;
+use rustc::util::nodemap::FnvHashMap;
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -56,6 +57,14 @@ impl<'a> ToNameBinding<'a> for (Def, Span, ty::Visibility) {
     fn to_name_binding(self) -> NameBinding<'a> {
         NameBinding { kind: NameBindingKind::Def(self.0), span: self.1, vis: self.2 }
     }
+}
+
+#[derive(Default, PartialEq, Eq)]
+struct LegacyMacroImports {
+    import_all: Option<Span>,
+    imports: Vec<(Name, Span)>,
+    reexports: Vec<(Name, Span)>,
+    no_link: bool,
 }
 
 impl<'b> Resolver<'b> {
@@ -121,14 +130,27 @@ impl<'b> Resolver<'b> {
 
                 match view_path.node {
                     ViewPathSimple(binding, ref full_path) => {
-                        let source_name = full_path.segments.last().unwrap().identifier.name;
-                        if source_name.as_str() == "mod" || source_name.as_str() == "self" {
+                        let mut source = full_path.segments.last().unwrap().identifier;
+                        let source_name = source.name.as_str();
+                        if source_name == "mod" || source_name == "self" {
                             resolve_error(self,
                                           view_path.span,
                                           ResolutionError::SelfImportsOnlyAllowedWithin);
+                        } else if source_name == "$crate" && full_path.segments.len() == 1 {
+                            let crate_root = self.resolve_crate_var(source.ctxt);
+                            let crate_name = match crate_root.kind {
+                                ModuleKind::Def(_, name) => name,
+                                ModuleKind::Block(..) => unreachable!(),
+                            };
+                            source.name = crate_name;
+
+                            self.session.struct_span_warn(item.span, "`$crate` may not be imported")
+                                .note("`use $crate;` was erroneously allowed and \
+                                       will become a hard error in a future release")
+                                .emit();
                         }
 
-                        let subclass = ImportDirectiveSubclass::single(binding.name, source_name);
+                        let subclass = ImportDirectiveSubclass::single(binding.name, source.name);
                         let span = view_path.span;
                         self.add_import_directive(module_path, subclass, span, item.id, vis);
                     }
@@ -193,57 +215,27 @@ impl<'b> Resolver<'b> {
             }
 
             ItemKind::ExternCrate(_) => {
-                // We need to error on `#[macro_use] extern crate` when it isn't at the
-                // crate root, because `$crate` won't work properly.
-                let is_crate_root = self.current_module.parent.is_none();
-                let import_macro = |this: &mut Self, name, ext, span| {
-                    let shadowing = this.builtin_macros.insert(name, Rc::new(ext)).is_some();
-                    if shadowing && expansion != Mark::root() {
-                        let msg = format!("`{}` is already in scope", name);
-                        this.session.struct_span_err(span, &msg)
-                            .note("macro-expanded `#[macro_use]`s may not shadow \
-                                   existing macros (see RFC 1560)")
-                            .emit();
+                let legacy_imports = self.legacy_macro_imports(&item.attrs);
+                // `#[macro_use]` and `#[macro_reexport]` are only allowed at the crate root.
+                if self.current_module.parent.is_some() && {
+                    legacy_imports.import_all.is_some() || !legacy_imports.imports.is_empty() ||
+                    !legacy_imports.reexports.is_empty()
+                } {
+                    if self.current_module.parent.is_some() {
+                        span_err!(self.session, item.span, E0468,
+                                  "an `extern crate` loading macros must be at the crate root");
                     }
+                }
+
+                let loaded_macros = if legacy_imports != LegacyMacroImports::default() {
+                    self.crate_loader.process_item(item, &self.definitions, true)
+                } else {
+                    self.crate_loader.process_item(item, &self.definitions, false)
                 };
 
-                let mut custom_derive_crate = false;
-                // The mark of the expansion that generates the loaded macros.
-                let mut opt_mark = None;
-                for loaded_macro in self.crate_loader.load_macros(item, is_crate_root) {
-                    let mark = opt_mark.unwrap_or_else(Mark::fresh);
-                    opt_mark = Some(mark);
-                    match loaded_macro.kind {
-                        LoadedMacroKind::Def(mut def) => {
-                            if def.use_locally {
-                                self.macro_names.insert(def.ident.name);
-                                def.body = mark_tts(&def.body, mark);
-                                let ext = macro_rules::compile(&self.session.parse_sess, &def);
-                                import_macro(self, def.ident.name, ext, loaded_macro.import_site);
-                            }
-                            if def.export {
-                                def.id = self.next_node_id();
-                                self.exported_macros.push(def);
-                            }
-                        }
-                        LoadedMacroKind::CustomDerive(name, ext) => {
-                            custom_derive_crate = true;
-                            let ext = SyntaxExtension::CustomDerive(ext);
-                            import_macro(self, token::intern(&name), ext, loaded_macro.import_site);
-                        }
-                    }
-                }
-
-                if custom_derive_crate && !self.session.features.borrow().proc_macro {
-                    let issue = feature_gate::GateIssue::Language;
-                    let msg = "loading custom derive macro crates is experimentally supported";
-                    emit_feature_err(&self.session.parse_sess, "proc_macro", item.span, issue, msg);
-                }
-
-                self.crate_loader.process_item(item, &self.definitions);
-
                 // n.b. we don't need to look at the path option here, because cstore already did
-                if let Some(crate_id) = self.session.cstore.extern_mod_stmt_cnum(item.id) {
+                let crate_id = self.session.cstore.extern_mod_stmt_cnum(item.id);
+                let module = if let Some(crate_id) = crate_id {
                     let def_id = DefId {
                         krate: crate_id,
                         index: CRATE_DEF_INDEX,
@@ -254,25 +246,21 @@ impl<'b> Resolver<'b> {
                         ..ModuleS::new(Some(parent), ModuleKind::Def(Def::Mod(def_id), name))
                     });
                     self.define(parent, name, TypeNS, (module, sp, vis));
-
-                    if let Some(mark) = opt_mark {
-                        let invocation = self.arenas.alloc_invocation_data(InvocationData {
-                            module: Cell::new(module),
-                            def_index: CRATE_DEF_INDEX,
-                            const_integer: false,
-                            legacy_scope: Cell::new(LegacyScope::Empty),
-                            expansion: Cell::new(LegacyScope::Empty),
-                        });
-                        self.invocations.insert(mark, invocation);
-                    }
-
                     self.populate_module_if_necessary(module);
-                } else if custom_derive_crate {
+                    module
+                } else {
                     // Define an empty module
                     let def = Def::Mod(self.definitions.local_def_id(item.id));
                     let module = ModuleS::new(Some(parent), ModuleKind::Def(def, name));
                     let module = self.arenas.alloc_module(module);
                     self.define(parent, name, TypeNS, (module, sp, vis));
+                    module
+                };
+
+                if let Some(loaded_macros) = loaded_macros {
+                    self.import_extern_crate_macros(
+                        item, module, loaded_macros, legacy_imports, expansion == Mark::root(),
+                    );
                 }
             }
 
@@ -294,7 +282,9 @@ impl<'b> Resolver<'b> {
                 self.current_module = module;
             }
 
-            ItemKind::ForeignMod(..) => self.crate_loader.process_item(item, &self.definitions),
+            ItemKind::ForeignMod(..) => {
+                self.crate_loader.process_item(item, &self.definitions, false);
+            }
 
             // These items live in the value namespace.
             ItemKind::Static(_, m, _) => {
@@ -516,6 +506,94 @@ impl<'b> Resolver<'b> {
         module.populated.set(true)
     }
 
+    fn import_extern_crate_macros(&mut self,
+                                  extern_crate: &Item,
+                                  module: Module<'b>,
+                                  loaded_macros: LoadedMacros,
+                                  legacy_imports: LegacyMacroImports,
+                                  allow_shadowing: bool) {
+        let import_macro = |this: &mut Self, name, ext: Rc<_>, span| {
+            this.used_crates.insert(module.def_id().unwrap().krate);
+            if let SyntaxExtension::NormalTT(..) = *ext {
+                this.macro_names.insert(name);
+            }
+            if this.builtin_macros.insert(name, ext).is_some() && !allow_shadowing {
+                let msg = format!("`{}` is already in scope", name);
+                let note =
+                    "macro-expanded `#[macro_use]`s may not shadow existing macros (see RFC 1560)";
+                this.session.struct_span_err(span, &msg).note(note).emit();
+            }
+        };
+
+        match loaded_macros {
+            LoadedMacros::MacroRules(macros) => {
+                let mark = Mark::fresh();
+                if !macros.is_empty() {
+                    let invocation = self.arenas.alloc_invocation_data(InvocationData {
+                        module: Cell::new(module),
+                        def_index: CRATE_DEF_INDEX,
+                        const_integer: false,
+                        legacy_scope: Cell::new(LegacyScope::Empty),
+                        expansion: Cell::new(LegacyScope::Empty),
+                    });
+                    self.invocations.insert(mark, invocation);
+                }
+
+                let mut macros: FnvHashMap<_, _> = macros.into_iter().map(|mut def| {
+                    def.body = mark_tts(&def.body, mark);
+                    let ext = macro_rules::compile(&self.session.parse_sess, &def);
+                    (def.ident.name, (def, Rc::new(ext)))
+                }).collect();
+
+                if let Some(span) = legacy_imports.import_all {
+                    for (&name, &(_, ref ext)) in macros.iter() {
+                        import_macro(self, name, ext.clone(), span);
+                    }
+                } else {
+                    for (name, span) in legacy_imports.imports {
+                        if let Some(&(_, ref ext)) = macros.get(&name) {
+                            import_macro(self, name, ext.clone(), span);
+                        } else {
+                            span_err!(self.session, span, E0469, "imported macro not found");
+                        }
+                    }
+                }
+                for (name, span) in legacy_imports.reexports {
+                    if let Some((mut def, _)) = macros.remove(&name) {
+                        def.id = self.next_node_id();
+                        self.exported_macros.push(def);
+                    } else {
+                        span_err!(self.session, span, E0470, "reexported macro not found");
+                    }
+                }
+            }
+
+            LoadedMacros::ProcMacros(macros) => {
+                if !self.session.features.borrow().proc_macro {
+                    let sess = &self.session.parse_sess;
+                    let issue = feature_gate::GateIssue::Language;
+                    let msg =
+                        "loading custom derive macro crates is experimentally supported";
+                    emit_feature_err(sess, "proc_macro", extern_crate.span, issue, msg);
+                }
+                if !legacy_imports.imports.is_empty() {
+                    let msg = "`proc-macro` crates cannot be selectively imported from, \
+                               must use `#[macro_use]`";
+                    self.session.span_err(extern_crate.span, msg);
+                }
+                if !legacy_imports.reexports.is_empty() {
+                    let msg = "`proc-macro` crates cannot be reexported from";
+                    self.session.span_err(extern_crate.span, msg);
+                }
+                if let Some(span) = legacy_imports.import_all {
+                    for (name, ext) in macros {
+                        import_macro(self, name, Rc::new(ext), span);
+                    }
+                }
+            }
+        }
+    }
+
     // does this attribute list contain "macro_use"?
     fn contains_macro_use(&mut self, attrs: &[ast::Attribute]) -> bool {
         for attr in attrs {
@@ -538,6 +616,42 @@ impl<'b> Resolver<'b> {
         }
 
         false
+    }
+
+    fn legacy_macro_imports(&mut self, attrs: &[ast::Attribute]) -> LegacyMacroImports {
+        let mut imports = LegacyMacroImports::default();
+        for attr in attrs {
+            if attr.check_name("macro_use") {
+                match attr.meta_item_list() {
+                    Some(names) => for attr in names {
+                        if let Some(word) = attr.word() {
+                            imports.imports.push((token::intern(&word.name()), attr.span()));
+                        } else {
+                            span_err!(self.session, attr.span(), E0466, "bad macro import");
+                        }
+                    },
+                    None => imports.import_all = Some(attr.span),
+                }
+            } else if attr.check_name("macro_reexport") {
+                let bad_macro_reexport = |this: &mut Self, span| {
+                    span_err!(this.session, span, E0467, "bad macro reexport");
+                };
+                if let Some(names) = attr.meta_item_list() {
+                    for attr in names {
+                        if let Some(word) = attr.word() {
+                            imports.reexports.push((token::intern(&word.name()), attr.span()));
+                        } else {
+                            bad_macro_reexport(self, attr.span());
+                        }
+                    }
+                } else {
+                    bad_macro_reexport(self, attr.span());
+                }
+            } else if attr.check_name("no_link") {
+                imports.no_link = true;
+            }
+        }
+        imports
     }
 }
 

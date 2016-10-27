@@ -53,11 +53,12 @@ endif
 # versions in the same place
 CFG_FILENAME_EXTRA=$(shell printf '%s' $(CFG_RELEASE)$(CFG_EXTRA_FILENAME) | $(CFG_HASH_COMMAND))
 
-# If local-rust is the same as the current version, then force a local-rebuild
+# If local-rust is the same major.minor as the current version, then force a local-rebuild
 ifdef CFG_ENABLE_LOCAL_RUST
-ifeq ($(CFG_RELEASE),\
-      $(shell $(S)src/etc/local_stage0.sh --print-rustc-release $(CFG_LOCAL_RUST_ROOT)))
-    CFG_INFO := $(info cfg: auto-detected local-rebuild $(CFG_RELEASE))
+SEMVER_PREFIX=$(shell echo $(CFG_RELEASE_NUM) | grep -E -o '^[[:digit:]]+\.[[:digit:]]+')
+LOCAL_RELEASE=$(shell $(S)src/etc/local_stage0.sh --print-rustc-release $(CFG_LOCAL_RUST_ROOT))
+ifneq (,$(filter $(SEMVER_PREFIX).%,$(LOCAL_RELEASE)))
+    CFG_INFO := $(info cfg: auto-detected local-rebuild using $(LOCAL_RELEASE))
     CFG_ENABLE_LOCAL_REBUILD = 1
 endif
 endif
@@ -141,6 +142,9 @@ endif
 ifdef CFG_ENABLE_DEBUGINFO
   $(info cfg: enabling debuginfo (CFG_ENABLE_DEBUGINFO))
   CFG_RUSTC_FLAGS += -g
+else ifdef CFG_ENABLE_DEBUGINFO_LINES
+  $(info cfg: enabling line number debuginfo (CFG_ENABLE_DEBUGINFO_LINES))
+  CFG_RUSTC_FLAGS += -Cdebuginfo=1
 endif
 
 ifdef SAVE_TEMPS

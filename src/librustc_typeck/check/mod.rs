@@ -531,12 +531,15 @@ pub fn check_drop_impls(ccx: &CrateCtxt) -> CompileResult {
 fn check_bare_fn<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
                            decl: &'tcx hir::FnDecl,
                            body: &'tcx hir::Block,
-                           fn_id: ast::NodeId) {
+                           fn_id: ast::NodeId,
+                           span: Span) {
     let raw_fty = ccx.tcx.lookup_item_type(ccx.tcx.map.local_def_id(fn_id)).ty;
     let fn_ty = match raw_fty.sty {
         ty::TyFnDef(.., f) => f,
         _ => span_bug!(body.span, "check_bare_fn: function type expected")
     };
+
+    check_abi(ccx, span, fn_ty.abi);
 
     ccx.inherited(fn_id).enter(|inh| {
         // Compute the fty from point of view of inside fn.
@@ -559,6 +562,13 @@ fn check_bare_fn<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
         fcx.regionck_fn(fn_id, decl, body);
         fcx.resolve_type_vars_in_fn(decl, body, fn_id);
     });
+}
+
+fn check_abi<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>, span: Span, abi: Abi) {
+    if !ccx.tcx.sess.target.target.is_abi_supported(abi) {
+        struct_span_err!(ccx.tcx.sess, span, E0570,
+            "The ABI `{}` is not supported for the current target", abi).emit()
+    }
 }
 
 struct GatherLocalsVisitor<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
@@ -742,17 +752,14 @@ pub fn check_item_type<'a,'tcx>(ccx: &CrateCtxt<'a,'tcx>, it: &'tcx hir::Item) {
       hir::ItemImpl(.., ref impl_items) => {
           debug!("ItemImpl {} with id {}", it.name, it.id);
           let impl_def_id = ccx.tcx.map.local_def_id(it.id);
-          match ccx.tcx.impl_trait_ref(impl_def_id) {
-              Some(impl_trait_ref) => {
-                  check_impl_items_against_trait(ccx,
-                                                 it.span,
-                                                 impl_def_id,
-                                                 &impl_trait_ref,
-                                                 impl_items);
-                  let trait_def_id = impl_trait_ref.def_id;
-                  check_on_unimplemented(ccx, trait_def_id, it);
-              }
-              None => { }
+          if let Some(impl_trait_ref) = ccx.tcx.impl_trait_ref(impl_def_id) {
+              check_impl_items_against_trait(ccx,
+                                             it.span,
+                                             impl_def_id,
+                                             &impl_trait_ref,
+                                             impl_items);
+              let trait_def_id = impl_trait_ref.def_id;
+              check_on_unimplemented(ccx, trait_def_id, it);
           }
       }
       hir::ItemTrait(..) => {
@@ -770,6 +777,8 @@ pub fn check_item_type<'a,'tcx>(ccx: &CrateCtxt<'a,'tcx>, it: &'tcx hir::Item) {
         check_bounds_are_used(ccx, generics, pty_ty);
       }
       hir::ItemForeignMod(ref m) => {
+        check_abi(ccx, it.span, m.abi);
+
         if m.abi == Abi::RustIntrinsic {
             for item in &m.items {
                 intrinsic::check_intrinsic_type(ccx, item);
@@ -807,7 +816,7 @@ pub fn check_item_body<'a,'tcx>(ccx: &CrateCtxt<'a,'tcx>, it: &'tcx hir::Item) {
     let _indenter = indenter();
     match it.node {
       hir::ItemFn(ref decl, .., ref body) => {
-        check_bare_fn(ccx, &decl, &body, it.id);
+        check_bare_fn(ccx, &decl, &body, it.id, it.span);
       }
       hir::ItemImpl(.., ref impl_items) => {
         debug!("ItemImpl {} with id {}", it.name, it.id);
@@ -818,7 +827,7 @@ pub fn check_item_body<'a,'tcx>(ccx: &CrateCtxt<'a,'tcx>, it: &'tcx hir::Item) {
                     check_const(ccx, &expr, impl_item.id)
                 }
                 hir::ImplItemKind::Method(ref sig, ref body) => {
-                    check_bare_fn(ccx, &sig.decl, body, impl_item.id);
+                    check_bare_fn(ccx, &sig.decl, body, impl_item.id, impl_item.span);
                 }
                 hir::ImplItemKind::Type(_) => {
                     // Nothing to do here.
@@ -833,7 +842,7 @@ pub fn check_item_body<'a,'tcx>(ccx: &CrateCtxt<'a,'tcx>, it: &'tcx hir::Item) {
                     check_const(ccx, &expr, trait_item.id)
                 }
                 hir::MethodTraitItem(ref sig, Some(ref body)) => {
-                    check_bare_fn(ccx, &sig.decl, body, trait_item.id);
+                    check_bare_fn(ccx, &sig.decl, body, trait_item.id, trait_item.span);
                 }
                 hir::MethodTraitItem(_, None) |
                 hir::ConstTraitItem(_, None) |
@@ -1812,9 +1821,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                  f: F) where
         F: FnOnce(&ty::ItemSubsts<'tcx>),
     {
-        match self.tables.borrow().item_substs.get(&id) {
-            Some(s) => { f(s) }
-            None => { }
+        if let Some(s) = self.tables.borrow().item_substs.get(&id) {
+            f(s);
         }
     }
 
@@ -2380,7 +2388,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 
             let err_inputs = match tuple_arguments {
                 DontTupleArguments => err_inputs,
-                TupleArguments => vec![self.tcx.mk_tup(err_inputs)],
+                TupleArguments => vec![self.tcx.intern_tup(&err_inputs[..])],
             };
 
             self.check_argument_types(sp, &err_inputs[..], &[], args_no_rcvr,
@@ -3718,9 +3726,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                     _ => None
                 }
             });
-            let mut err_field = false;
 
-            let elt_ts = elts.iter().enumerate().map(|(i, e)| {
+            let elt_ts_iter = elts.iter().enumerate().map(|(i, e)| {
                 let t = match flds {
                     Some(ref fs) if i < fs.len() => {
                         let ety = fs[i];
@@ -3731,13 +3738,13 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                         self.check_expr_with_expectation(&e, NoExpectation)
                     }
                 };
-                err_field = err_field || t.references_error();
                 t
-            }).collect();
-            if err_field {
+            });
+            let tuple = tcx.mk_tup(elt_ts_iter);
+            if tuple.references_error() {
                 tcx.types.err
             } else {
-                tcx.mk_tup(elt_ts)
+                tuple
             }
           }
           hir::ExprStruct(ref path, ref fields, ref base_expr) => {
@@ -4193,7 +4200,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 let ty = self.normalize_associated_types_in(span, &ty);
                 self.write_ty(node_id, ty);
                 self.write_substs(node_id, ty::ItemSubsts {
-                    substs: Substs::empty(self.tcx)
+                    substs: self.tcx.intern_substs(&[])
                 });
                 return ty;
             }

@@ -36,6 +36,7 @@ use ty::maps;
 use util::common::MemoizationMap;
 use util::nodemap::{NodeMap, NodeSet, DefIdMap, DefIdSet};
 use util::nodemap::{FnvHashMap, FnvHashSet};
+use rustc_data_structures::accumulate_vec::AccumulateVec;
 
 use arena::TypedArena;
 use std::borrow::Borrow;
@@ -44,6 +45,7 @@ use std::hash::{Hash, Hasher};
 use std::mem;
 use std::ops::Deref;
 use std::rc::Rc;
+use std::iter;
 use syntax::ast::{self, Name, NodeId};
 use syntax::attr;
 use syntax::parse::token::{self, keywords};
@@ -54,8 +56,8 @@ use hir;
 pub struct CtxtArenas<'tcx> {
     // internings
     type_: TypedArena<TyS<'tcx>>,
-    type_list: TypedArena<Vec<Ty<'tcx>>>,
-    substs: TypedArena<Vec<Kind<'tcx>>>,
+    type_list: TypedArena<Ty<'tcx>>,
+    substs: TypedArena<Kind<'tcx>>,
     bare_fn: TypedArena<BareFnTy<'tcx>>,
     region: TypedArena<Region>,
     stability: TypedArena<attr::Stability>,
@@ -824,6 +826,9 @@ impl<'a, 'tcx> Lift<'tcx> for Ty<'a> {
 impl<'a, 'tcx> Lift<'tcx> for &'a Substs<'a> {
     type Lifted = &'tcx Substs<'tcx>;
     fn lift_to_tcx<'b, 'gcx>(&self, tcx: TyCtxt<'b, 'gcx, 'tcx>) -> Option<&'tcx Substs<'tcx>> {
+        if self.len() == 0 {
+            return Some(Slice::empty());
+        }
         if let Some(&Interned(substs)) = tcx.interners.substs.borrow().get(&self[..]) {
             if *self as *const _ == substs as *const _ {
                 return Some(substs);
@@ -859,6 +864,9 @@ impl<'a, 'tcx> Lift<'tcx> for &'a Slice<Ty<'a>> {
     type Lifted = &'tcx Slice<Ty<'tcx>>;
     fn lift_to_tcx<'b, 'gcx>(&self, tcx: TyCtxt<'b, 'gcx, 'tcx>)
                              -> Option<&'tcx Slice<Ty<'tcx>>> {
+        if self.len() == 0 {
+            return Some(Slice::empty());
+        }
         if let Some(&Interned(list)) = tcx.interners.type_list.borrow().get(&self[..]) {
             if *self as *const _ == list as *const _ {
                 return Some(list);
@@ -1117,6 +1125,7 @@ impl<'tcx> Borrow<Region> for Interned<'tcx, Region> {
 
 macro_rules! intern_method {
     ($lt_tcx:tt, $name:ident: $method:ident($alloc:ty,
+                                            $alloc_method:ident,
                                             $alloc_to_key:expr,
                                             $alloc_to_ret:expr,
                                             $needs_infer:expr) -> $ty:ty) => {
@@ -1142,7 +1151,8 @@ macro_rules! intern_method {
                         let v = unsafe {
                             mem::transmute(v)
                         };
-                        let i = ($alloc_to_ret)(self.global_interners.arenas.$name.alloc(v));
+                        let i = ($alloc_to_ret)(self.global_interners.arenas.$name
+                                                    .$alloc_method(v));
                         self.global_interners.$name.borrow_mut().insert(Interned(i));
                         return i;
                     }
@@ -1156,7 +1166,7 @@ macro_rules! intern_method {
                     }
                 }
 
-                let i = ($alloc_to_ret)(self.interners.arenas.$name.alloc(v));
+                let i = ($alloc_to_ret)(self.interners.arenas.$name.$alloc_method(v));
                 self.interners.$name.borrow_mut().insert(Interned(i));
                 i
             }
@@ -1180,7 +1190,7 @@ macro_rules! direct_interners {
             }
         }
 
-        intern_method!($lt_tcx, $name: $method($ty, |x| x, |x| x, $needs_infer) -> $ty);)+
+        intern_method!($lt_tcx, $name: $method($ty, alloc, |x| x, |x| x, $needs_infer) -> $ty);)+
     }
 }
 
@@ -1200,16 +1210,18 @@ direct_interners!('tcx,
     }) -> Region
 );
 
-intern_method!('tcx,
-    type_list: mk_type_list(Vec<Ty<'tcx>>, Deref::deref, |xs: &[Ty]| -> &Slice<Ty> {
-        unsafe { mem::transmute(xs) }
-    }, keep_local) -> Slice<Ty<'tcx>>
-);
+macro_rules! slice_interners {
+    ($($field:ident: $method:ident($ty:ident)),+) => (
+        $(intern_method!('tcx, $field: $method(&[$ty<'tcx>], alloc_slice, Deref::deref,
+                                               |xs: &[$ty]| -> &Slice<$ty> {
+            unsafe { mem::transmute(xs) }
+        }, |xs: &[$ty]| xs.iter().any(keep_local)) -> Slice<$ty<'tcx>>);)+
+    )
+}
 
-intern_method!('tcx,
-    substs: mk_substs(Vec<Kind<'tcx>>, Deref::deref, |xs: &[Kind]| -> &Slice<Kind> {
-        unsafe { mem::transmute(xs) }
-    }, keep_local) -> Slice<Kind<'tcx>>
+slice_interners!(
+    type_list: _intern_type_list(Ty),
+    substs: _intern_substs(Kind)
 );
 
 impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
@@ -1314,12 +1326,16 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         self.mk_ty(TySlice(ty))
     }
 
-    pub fn mk_tup(self, ts: Vec<Ty<'tcx>>) -> Ty<'tcx> {
-        self.mk_ty(TyTuple(self.mk_type_list(ts)))
+    pub fn intern_tup(self, ts: &[Ty<'tcx>]) -> Ty<'tcx> {
+        self.mk_ty(TyTuple(self.intern_type_list(ts)))
+    }
+
+    pub fn mk_tup<I: InternAs<[Ty<'tcx>], Ty<'tcx>>>(self, iter: I) -> I::Output {
+        iter.intern_with(|ts| self.mk_ty(TyTuple(self.intern_type_list(ts))))
     }
 
     pub fn mk_nil(self) -> Ty<'tcx> {
-        self.mk_tup(Vec::new())
+        self.intern_tup(&[])
     }
 
     pub fn mk_diverging_default(self) -> Ty<'tcx> {
@@ -1361,11 +1377,11 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     pub fn mk_closure(self,
                       closure_id: DefId,
                       substs: &'tcx Substs<'tcx>,
-                      tys: Vec<Ty<'tcx>>)
+                      tys: &[Ty<'tcx>])
                       -> Ty<'tcx> {
         self.mk_closure_from_closure_substs(closure_id, ClosureSubsts {
             func_substs: substs,
-            upvar_tys: self.mk_type_list(tys)
+            upvar_tys: self.intern_type_list(tys)
         })
     }
 
@@ -1410,6 +1426,40 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         self.mk_ty(TyAnon(def_id, substs))
     }
 
+    pub fn intern_type_list(self, ts: &[Ty<'tcx>]) -> &'tcx Slice<Ty<'tcx>> {
+        if ts.len() == 0 {
+            Slice::empty()
+        } else {
+            self._intern_type_list(ts)
+        }
+    }
+
+    pub fn intern_substs(self, ts: &[Kind<'tcx>]) -> &'tcx Slice<Kind<'tcx>> {
+        if ts.len() == 0 {
+            Slice::empty()
+        } else {
+            self._intern_substs(ts)
+        }
+    }
+
+    pub fn mk_type_list<I: InternAs<[Ty<'tcx>],
+                        &'tcx Slice<Ty<'tcx>>>>(self, iter: I) -> I::Output {
+        iter.intern_with(|xs| self.intern_type_list(xs))
+    }
+
+    pub fn mk_substs<I: InternAs<[Kind<'tcx>],
+                     &'tcx Slice<Kind<'tcx>>>>(self, iter: I) -> I::Output {
+        iter.intern_with(|xs| self.intern_substs(xs))
+    }
+
+    pub fn mk_substs_trait(self,
+                     s: Ty<'tcx>,
+                     t: &[Ty<'tcx>])
+                    -> &'tcx Substs<'tcx>
+    {
+        self.mk_substs(iter::once(s).chain(t.into_iter().cloned()).map(Kind::from))
+    }
+
     pub fn trait_items(self, trait_did: DefId) -> Rc<Vec<ty::ImplOrTraitItem<'gcx>>> {
         self.trait_items_cache.memoize(trait_did, || {
             let def_ids = self.impl_or_trait_items(trait_did);
@@ -1428,3 +1478,39 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         })
     }
 }
+
+pub trait InternAs<T: ?Sized, R> {
+    type Output;
+    fn intern_with<F>(self, F) -> Self::Output
+        where F: FnOnce(&T) -> R;
+}
+
+impl<I, T, R, E> InternAs<[T], R> for I
+    where E: InternIteratorElement<T, R>,
+          I: Iterator<Item=E> {
+    type Output = E::Output;
+    fn intern_with<F>(self, f: F) -> Self::Output
+        where F: FnOnce(&[T]) -> R {
+        E::intern_with(self, f)
+    }
+}
+
+pub trait InternIteratorElement<T, R>: Sized {
+    type Output;
+    fn intern_with<I: Iterator<Item=Self>, F: FnOnce(&[T]) -> R>(iter: I, f: F) -> Self::Output;
+}
+
+impl<T, R> InternIteratorElement<T, R> for T {
+    type Output = R;
+    fn intern_with<I: Iterator<Item=Self>, F: FnOnce(&[T]) -> R>(iter: I, f: F) -> Self::Output {
+        f(&iter.collect::<AccumulateVec<[_; 8]>>())
+    }
+}
+
+impl<T, R, E> InternIteratorElement<T, R> for Result<T, E> {
+    type Output = Result<R, E>;
+    fn intern_with<I: Iterator<Item=Self>, F: FnOnce(&[T]) -> R>(iter: I, f: F) -> Self::Output {
+        Ok(f(&iter.collect::<Result<AccumulateVec<[_; 8]>, _>>()?))
+    }
+}
+

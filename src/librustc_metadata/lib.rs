@@ -53,12 +53,11 @@ mod index_builder;
 mod index;
 mod encoder;
 mod decoder;
-mod csearch;
+mod cstore_impl;
 mod schema;
 
 pub mod creader;
 pub mod cstore;
-pub mod loader;
-pub mod macro_import;
+pub mod locator;
 
 __build_diagnostic_array! { librustc_metadata, DIAGNOSTICS }

@@ -135,10 +135,10 @@ use boxed::Box;
 /// Indexing is intended to be a constant-time operation, but UTF-8 encoding
 /// does not allow us to do this. Furthermore, it's not clear what sort of
 /// thing the index should return: a byte, a codepoint, or a grapheme cluster.
-/// The [`as_bytes()`] and [`chars()`] methods return iterators over the first
+/// The [`bytes()`] and [`chars()`] methods return iterators over the first
 /// two, respectively.
 ///
-/// [`as_bytes()`]: #method.as_bytes
+/// [`bytes()`]: #method.bytes
 /// [`chars()`]: #method.chars
 ///
 /// # Deref
@@ -1857,6 +1857,13 @@ impl AsRef<[u8]> for String {
 impl<'a> From<&'a str> for String {
     fn from(s: &'a str) -> String {
         s.to_owned()
+    }
+}
+
+#[stable(feature = "string_from_cow_str", since = "1.14.0")]
+impl<'a> From<Cow<'a, str>> for String {
+    fn from(s: Cow<'a, str>) -> String {
+        s.into_owned()
     }
 }
 
