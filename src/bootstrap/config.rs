@@ -23,6 +23,7 @@ use std::process;
 use num_cpus;
 use rustc_serialize::Decodable;
 use toml::{Parser, Decoder, Value};
+use util::push_exe_path;
 
 /// Global configuration for the entire build and/or bootstrap.
 ///
@@ -43,13 +44,16 @@ pub struct Config {
     pub submodules: bool,
     pub compiler_docs: bool,
     pub docs: bool,
+    pub vendor: bool,
     pub target_config: HashMap<String, Target>,
 
     // llvm codegen options
     pub llvm_assertions: bool,
     pub llvm_optimize: bool,
+    pub llvm_release_debuginfo: bool,
     pub llvm_version_check: bool,
     pub llvm_static_stdcpp: bool,
+    pub llvm_link_shared: bool,
 
     // rust codegen options
     pub rust_optimize: bool,
@@ -77,6 +81,7 @@ pub struct Config {
 
     // misc
     pub channel: String,
+    pub quiet_tests: bool,
     // Fallback musl-root for all targets
     pub musl_root: Option<PathBuf>,
     pub prefix: Option<String>,
@@ -85,6 +90,8 @@ pub struct Config {
     pub mandir: Option<String>,
     pub codegen_tests: bool,
     pub nodejs: Option<PathBuf>,
+    pub gdb: Option<PathBuf>,
+    pub python: Option<PathBuf>,
 }
 
 /// Per-target configuration stored in the global configuration structure.
@@ -122,6 +129,10 @@ struct Build {
     compiler_docs: Option<bool>,
     docs: Option<bool>,
     submodules: Option<bool>,
+    gdb: Option<String>,
+    vendor: Option<bool>,
+    nodejs: Option<String>,
+    python: Option<String>,
 }
 
 /// TOML representation of how the LLVM build is configured.
@@ -131,6 +142,7 @@ struct Llvm {
     ninja: Option<bool>,
     assertions: Option<bool>,
     optimize: Option<bool>,
+    release_debuginfo: Option<bool>,
     version_check: Option<bool>,
     static_libstdcpp: Option<bool>,
 }
@@ -226,15 +238,20 @@ impl Config {
         }
         config.rustc = build.rustc.map(PathBuf::from);
         config.cargo = build.cargo.map(PathBuf::from);
+        config.nodejs = build.nodejs.map(PathBuf::from);
+        config.gdb = build.gdb.map(PathBuf::from);
+        config.python = build.python.map(PathBuf::from);
         set(&mut config.compiler_docs, build.compiler_docs);
         set(&mut config.docs, build.docs);
         set(&mut config.submodules, build.submodules);
+        set(&mut config.vendor, build.vendor);
 
         if let Some(ref llvm) = toml.llvm {
             set(&mut config.ccache, llvm.ccache);
             set(&mut config.ninja, llvm.ninja);
             set(&mut config.llvm_assertions, llvm.assertions);
             set(&mut config.llvm_optimize, llvm.optimize);
+            set(&mut config.llvm_release_debuginfo, llvm.release_debuginfo);
             set(&mut config.llvm_version_check, llvm.version_check);
             set(&mut config.llvm_static_stdcpp, llvm.static_libstdcpp);
         }
@@ -326,9 +343,11 @@ impl Config {
                 ("COMPILER_DOCS", self.compiler_docs),
                 ("DOCS", self.docs),
                 ("LLVM_ASSERTIONS", self.llvm_assertions),
+                ("LLVM_RELEASE_DEBUGINFO", self.llvm_release_debuginfo),
                 ("OPTIMIZE_LLVM", self.llvm_optimize),
                 ("LLVM_VERSION_CHECK", self.llvm_version_check),
                 ("LLVM_STATIC_STDCPP", self.llvm_static_stdcpp),
+                ("LLVM_LINK_SHARED", self.llvm_link_shared),
                 ("OPTIMIZE", self.rust_optimize),
                 ("DEBUG_ASSERTIONS", self.rust_debug_assertions),
                 ("DEBUGINFO", self.rust_debuginfo),
@@ -338,9 +357,11 @@ impl Config {
                 ("RPATH", self.rust_rpath),
                 ("OPTIMIZE_TESTS", self.rust_optimize_tests),
                 ("DEBUGINFO_TESTS", self.rust_debuginfo_tests),
+                ("QUIET_TESTS", self.quiet_tests),
                 ("LOCAL_REBUILD", self.local_rebuild),
                 ("NINJA", self.ninja),
                 ("CODEGEN_TESTS", self.codegen_tests),
+                ("VENDOR", self.vendor),
             }
 
             match key {
@@ -354,43 +375,46 @@ impl Config {
                                        .collect();
                 }
                 "CFG_MUSL_ROOT" if value.len() > 0 => {
-                    self.musl_root = Some(PathBuf::from(value));
+                    self.musl_root = Some(parse_configure_path(value));
                 }
                 "CFG_MUSL_ROOT_X86_64" if value.len() > 0 => {
                     let target = "x86_64-unknown-linux-musl".to_string();
                     let target = self.target_config.entry(target)
                                      .or_insert(Target::default());
-                    target.musl_root = Some(PathBuf::from(value));
+                    target.musl_root = Some(parse_configure_path(value));
                 }
                 "CFG_MUSL_ROOT_I686" if value.len() > 0 => {
                     let target = "i686-unknown-linux-musl".to_string();
                     let target = self.target_config.entry(target)
                                      .or_insert(Target::default());
-                    target.musl_root = Some(PathBuf::from(value));
+                    target.musl_root = Some(parse_configure_path(value));
                 }
                 "CFG_MUSL_ROOT_ARM" if value.len() > 0 => {
                     let target = "arm-unknown-linux-musleabi".to_string();
                     let target = self.target_config.entry(target)
                                      .or_insert(Target::default());
-                    target.musl_root = Some(PathBuf::from(value));
+                    target.musl_root = Some(parse_configure_path(value));
                 }
                 "CFG_MUSL_ROOT_ARMHF" if value.len() > 0 => {
                     let target = "arm-unknown-linux-musleabihf".to_string();
                     let target = self.target_config.entry(target)
                                      .or_insert(Target::default());
-                    target.musl_root = Some(PathBuf::from(value));
+                    target.musl_root = Some(parse_configure_path(value));
                 }
                 "CFG_MUSL_ROOT_ARMV7" if value.len() > 0 => {
                     let target = "armv7-unknown-linux-musleabihf".to_string();
                     let target = self.target_config.entry(target)
                                      .or_insert(Target::default());
-                    target.musl_root = Some(PathBuf::from(value));
+                    target.musl_root = Some(parse_configure_path(value));
                 }
                 "CFG_DEFAULT_AR" if value.len() > 0 => {
                     self.rustc_default_ar = Some(value.to_string());
                 }
                 "CFG_DEFAULT_LINKER" if value.len() > 0 => {
                     self.rustc_default_linker = Some(value.to_string());
+                }
+                "CFG_GDB" if value.len() > 0 => {
+                    self.gdb = Some(parse_configure_path(value));
                 }
                 "CFG_RELEASE_CHANNEL" => {
                     self.channel = value.to_string();
@@ -410,46 +434,75 @@ impl Config {
                 "CFG_LLVM_ROOT" if value.len() > 0 => {
                     let target = self.target_config.entry(self.build.clone())
                                      .or_insert(Target::default());
-                    let root = PathBuf::from(value);
-                    target.llvm_config = Some(root.join("bin/llvm-config"));
+                    let root = parse_configure_path(value);
+                    target.llvm_config = Some(push_exe_path(root, &["bin", "llvm-config"]));
                 }
                 "CFG_JEMALLOC_ROOT" if value.len() > 0 => {
                     let target = self.target_config.entry(self.build.clone())
                                      .or_insert(Target::default());
-                    target.jemalloc = Some(PathBuf::from(value));
+                    target.jemalloc = Some(parse_configure_path(value));
                 }
                 "CFG_ARM_LINUX_ANDROIDEABI_NDK" if value.len() > 0 => {
                     let target = "arm-linux-androideabi".to_string();
                     let target = self.target_config.entry(target)
                                      .or_insert(Target::default());
-                    target.ndk = Some(PathBuf::from(value));
+                    target.ndk = Some(parse_configure_path(value));
                 }
                 "CFG_ARMV7_LINUX_ANDROIDEABI_NDK" if value.len() > 0 => {
                     let target = "armv7-linux-androideabi".to_string();
                     let target = self.target_config.entry(target)
                                      .or_insert(Target::default());
-                    target.ndk = Some(PathBuf::from(value));
+                    target.ndk = Some(parse_configure_path(value));
                 }
                 "CFG_I686_LINUX_ANDROID_NDK" if value.len() > 0 => {
                     let target = "i686-linux-android".to_string();
                     let target = self.target_config.entry(target)
                                      .or_insert(Target::default());
-                    target.ndk = Some(PathBuf::from(value));
+                    target.ndk = Some(parse_configure_path(value));
                 }
                 "CFG_AARCH64_LINUX_ANDROID_NDK" if value.len() > 0 => {
                     let target = "aarch64-linux-android".to_string();
                     let target = self.target_config.entry(target)
                                      .or_insert(Target::default());
-                    target.ndk = Some(PathBuf::from(value));
+                    target.ndk = Some(parse_configure_path(value));
                 }
                 "CFG_LOCAL_RUST_ROOT" if value.len() > 0 => {
-                    self.rustc = Some(PathBuf::from(value).join("bin/rustc"));
-                    self.cargo = Some(PathBuf::from(value).join("bin/cargo"));
+                    let path = parse_configure_path(value);
+                    self.rustc = Some(push_exe_path(path.clone(), &["bin", "rustc"]));
+                    self.cargo = Some(push_exe_path(path, &["bin", "cargo"]));
+                }
+                "CFG_PYTHON" if value.len() > 0 => {
+                    let path = parse_configure_path(value);
+                    self.python = Some(path);
                 }
                 _ => {}
             }
         }
     }
+}
+
+#[cfg(not(windows))]
+fn parse_configure_path(path: &str) -> PathBuf {
+    path.into()
+}
+
+#[cfg(windows)]
+fn parse_configure_path(path: &str) -> PathBuf {
+    // on windows, configure produces unix style paths e.g. /c/some/path but we
+    // only want real windows paths
+
+    use std::process::Command;
+    use build_helper;
+
+    // '/' is invalid in windows paths, so we can detect unix paths by the presence of it
+    if !path.contains('/') {
+        return path.into();
+    }
+
+    let win_path = build_helper::output(Command::new("cygpath").arg("-w").arg(path));
+    let win_path = win_path.trim();
+
+    win_path.into()
 }
 
 fn set<T>(field: &mut T, val: Option<T>) {

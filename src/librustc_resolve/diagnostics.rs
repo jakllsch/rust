@@ -860,31 +860,6 @@ match (A, B, C) {
 ```
 "##,
 
-E0422: r##"
-You are trying to use an identifier that is either undefined or not a struct.
-
-Erroneous code example:
-
-``` compile_fail,E0422
-fn main () {
-    let x = Foo { x: 1, y: 2 };
-}
-```
-
-In this case, `Foo` is undefined, so it inherently isn't anything, and
-definitely not a struct.
-
-```compile_fail,E0422
-fn main () {
-    let foo = 1;
-    let x = foo { x: 1, y: 2 };
-}
-```
-
-In this case, `foo` is defined, but is not a struct, so Rust can't use it as
-one.
-"##,
-
 E0423: r##"
 A `struct` variant name was used like a function name.
 
@@ -1486,6 +1461,47 @@ match r {
 ```
 "##,
 
+E0532: r##"
+Pattern arm did not match expected kind.
+
+Erroneous code example:
+
+```compile_fail,E0532
+enum State {
+    Succeeded,
+    Failed(String),
+}
+
+fn print_on_failure(state: &State) {
+    match *state {
+        // error: expected unit struct/variant or constant, found tuple
+        //        variant `State::Failed`
+        State::Failed => println!("Failed"),
+        _ => ()
+    }
+}
+```
+
+To fix this error, ensure the match arm kind is the same as the expression
+matched.
+
+Fixed example:
+
+```
+enum State {
+    Succeeded,
+    Failed(String),
+}
+
+fn print_on_failure(state: &State) {
+    match *state {
+        State::Failed(ref msg) => println!("Failed with {}", msg),
+        _ => ()
+    }
+}
+```
+"##,
+
 }
 
 register_diagnostics! {
@@ -1503,7 +1519,7 @@ register_diagnostics! {
 //  E0419, merged into 531
 //  E0420, merged into 532
 //  E0421, merged into 531
+//  E0422, merged into 531/532
     E0531, // unresolved pattern path kind `name`
-    E0532, // expected pattern path kind, found another pattern path kind
 //  E0427, merged into 530
 }

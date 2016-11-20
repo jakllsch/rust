@@ -26,16 +26,18 @@ use super::{
 
 use fmt_macros::{Parser, Piece, Position};
 use hir::def_id::DefId;
-use infer::{self, InferCtxt, TypeOrigin};
+use infer::{self, InferCtxt};
+use rustc::lint::builtin::EXTRA_REQUIREMENT_IN_IMPL;
 use ty::{self, AdtKind, ToPredicate, ToPolyTraitRef, Ty, TyCtxt, TypeFoldable};
 use ty::error::ExpectedFound;
 use ty::fast_reject;
 use ty::fold::TypeFolder;
 use ty::subst::Subst;
-use util::nodemap::{FnvHashMap, FnvHashSet};
+use util::nodemap::{FxHashMap, FxHashSet};
 
 use std::cmp;
 use std::fmt;
+use syntax::ast;
 use syntax_pos::Span;
 use errors::DiagnosticBuilder;
 
@@ -98,7 +100,6 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         }
 
         self.probe(|_| {
-            let origin = TypeOrigin::Misc(obligation.cause.span);
             let err_buf;
             let mut err = &error.err;
             let mut values = None;
@@ -119,9 +120,8 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                     obligation.cause.clone(),
                     0
                 );
-                let origin = TypeOrigin::Misc(obligation.cause.span);
                 if let Err(error) = self.eq_types(
-                    false, origin,
+                    false, &obligation.cause,
                     data.ty, normalized.value
                 ) {
                     values = Some(infer::ValuePairs::Types(ExpectedFound {
@@ -134,10 +134,10 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             }
 
             let mut diag = struct_span_err!(
-                self.tcx.sess, origin.span(), E0271,
+                self.tcx.sess, obligation.cause.span, E0271,
                 "type mismatch resolving `{}`", predicate
             );
-            self.note_type_err(&mut diag, origin, None, values, err);
+            self.note_type_err(&mut diag, &obligation.cause, None, values, err);
             self.note_obligation_cause(&mut diag, obligation);
             diag.emit();
         });
@@ -250,7 +250,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                     let generic_map = def.generics.types.iter().map(|param| {
                         (param.name.as_str().to_string(),
                          trait_ref.substs.type_for_def(param).to_string())
-                    }).collect::<FnvHashMap<String, String>>();
+                    }).collect::<FxHashMap<String, String>>();
                     let parser = Parser::new(&istring);
                     let mut errored = false;
                     let err: String = parser.filter_map(|p| {
@@ -417,6 +417,45 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         self.report_overflow_error(&cycle[0], false);
     }
 
+    pub fn report_extra_impl_obligation(&self,
+                                        error_span: Span,
+                                        item_name: ast::Name,
+                                        _impl_item_def_id: DefId,
+                                        trait_item_def_id: DefId,
+                                        requirement: &fmt::Display,
+                                        lint_id: Option<ast::NodeId>) // (*)
+                                        -> DiagnosticBuilder<'tcx>
+    {
+        // (*) This parameter is temporary and used only for phasing
+        // in the bug fix to #18937. If it is `Some`, it has a kind of
+        // weird effect -- the diagnostic is reported as a lint, and
+        // the builder which is returned is marked as canceled.
+
+        let mut err =
+            struct_span_err!(self.tcx.sess,
+                             error_span,
+                             E0276,
+                             "impl has stricter requirements than trait");
+
+        if let Some(trait_item_span) = self.tcx.map.span_if_local(trait_item_def_id) {
+            err.span_label(trait_item_span,
+                           &format!("definition of `{}` from trait", item_name));
+        }
+
+        err.span_label(
+            error_span,
+            &format!("impl has extra requirement {}", requirement));
+
+        if let Some(node_id) = lint_id {
+            self.tcx.sess.add_lint_diagnostic(EXTRA_REQUIREMENT_IN_IMPL,
+                                              node_id,
+                                              (*err).clone());
+            err.cancel();
+        }
+
+        err
+    }
+
     pub fn report_selection_error(&self,
                                   obligation: &PredicateObligation<'tcx>,
                                   error: &SelectionError<'tcx>)
@@ -424,12 +463,17 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         let span = obligation.cause.span;
         let mut err = match *error {
             SelectionError::Unimplemented => {
-                if let ObligationCauseCode::CompareImplMethodObligation = obligation.cause.code {
-                    span_err!(
-                        self.tcx.sess, span, E0276,
-                        "the requirement `{}` appears on the impl \
-                         method but not on the corresponding trait method",
-                        obligation.predicate);
+                if let ObligationCauseCode::CompareImplMethodObligation {
+                    item_name, impl_item_def_id, trait_item_def_id, lint_id
+                } = obligation.cause.code {
+                    self.report_extra_impl_obligation(
+                        span,
+                        item_name,
+                        impl_item_def_id,
+                        trait_item_def_id,
+                        &format!("`{}`", obligation.predicate),
+                        lint_id)
+                        .emit();
                     return;
                 } else {
                     match obligation.predicate {
@@ -483,7 +527,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
 
                         ty::Predicate::Equate(ref predicate) => {
                             let predicate = self.resolve_type_vars_if_possible(predicate);
-                            let err = self.equality_predicate(span,
+                            let err = self.equality_predicate(&obligation.cause,
                                                               &predicate).err().unwrap();
                             struct_span_err!(self.tcx.sess, span, E0278,
                                 "the requirement `{}` is not satisfied (`{}`)",
@@ -492,7 +536,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
 
                         ty::Predicate::RegionOutlives(ref predicate) => {
                             let predicate = self.resolve_type_vars_if_possible(predicate);
-                            let err = self.region_outlives_predicate(span,
+                            let err = self.region_outlives_predicate(&obligation.cause,
                                                                      &predicate).err().unwrap();
                             struct_span_err!(self.tcx.sess, span, E0279,
                                 "the requirement `{}` is not satisfied (`{}`)",
@@ -601,7 +645,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             "the trait `{}` cannot be made into an object", trait_str
         ));
 
-        let mut reported_violations = FnvHashSet();
+        let mut reported_violations = FxHashSet();
         for violation in violations {
             if !reported_violations.insert(violation.clone()) {
                 continue;
@@ -617,25 +661,23 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                          in the supertrait listing"
                 }
 
-                ObjectSafetyViolation::Method(method,
+                ObjectSafetyViolation::Method(name,
                                               MethodViolationCode::StaticMethod) => {
-                    buf = format!("method `{}` has no receiver",
-                                  method.name);
+                    buf = format!("method `{}` has no receiver", name);
                     &buf
                 }
 
-                ObjectSafetyViolation::Method(method,
+                ObjectSafetyViolation::Method(name,
                                               MethodViolationCode::ReferencesSelf) => {
                     buf = format!("method `{}` references the `Self` type \
                                        in its arguments or return type",
-                                  method.name);
+                                  name);
                     &buf
                 }
 
-                ObjectSafetyViolation::Method(method,
+                ObjectSafetyViolation::Method(name,
                                               MethodViolationCode::Generic) => {
-                    buf = format!("method `{}` has generic type parameters",
-                                  method.name);
+                    buf = format!("method `{}` has generic type parameters", name);
                     &buf
                 }
             };
@@ -740,7 +782,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     fn predicate_can_apply(&self, pred: ty::PolyTraitRef<'tcx>) -> bool {
         struct ParamToVarFolder<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
             infcx: &'a InferCtxt<'a, 'gcx, 'tcx>,
-            var_map: FnvHashMap<Ty<'tcx>, Ty<'tcx>>
+            var_map: FxHashMap<Ty<'tcx>, Ty<'tcx>>
         }
 
         impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for ParamToVarFolder<'a, 'gcx, 'tcx> {
@@ -761,7 +803,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
 
             let cleaned_pred = pred.fold_with(&mut ParamToVarFolder {
                 infcx: self,
-                var_map: FnvHashMap()
+                var_map: FxHashMap()
             });
 
             let cleaned_pred = super::project::normalize(
@@ -807,7 +849,17 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     {
         let tcx = self.tcx;
         match *cause_code {
-            ObligationCauseCode::MiscObligation => { }
+            ObligationCauseCode::ExprAssignable |
+            ObligationCauseCode::MatchExpressionArm { .. } |
+            ObligationCauseCode::IfExpression |
+            ObligationCauseCode::IfExpressionWithNoElse |
+            ObligationCauseCode::EquatePredicate |
+            ObligationCauseCode::MainFunctionType |
+            ObligationCauseCode::StartFunctionType |
+            ObligationCauseCode::IntrinsicType |
+            ObligationCauseCode::MethodReceiver |
+            ObligationCauseCode::MiscObligation => {
+            }
             ObligationCauseCode::SliceOrArrayElem => {
                 err.note("slice and array elements must have `Sized` type");
             }
@@ -821,6 +873,11 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             ObligationCauseCode::ReferenceOutlivesReferent(ref_ty) => {
                 err.note(&format!("required so that reference `{}` does not outlive its referent",
                                   ref_ty));
+            }
+            ObligationCauseCode::ObjectTypeBound(object_ty, region) => {
+                err.note(&format!("required so that the lifetime bound of `{}` for `{}` \
+                                   is satisfied",
+                                  region, object_ty));
             }
             ObligationCauseCode::ItemObligation(item_def_id) => {
                 let item_name = tcx.item_path_str(item_def_id);
@@ -886,7 +943,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                                                 &parent_predicate,
                                                 &data.parent_code);
             }
-            ObligationCauseCode::CompareImplMethodObligation => {
+            ObligationCauseCode::CompareImplMethodObligation { .. } => {
                 err.note(
                     &format!("the requirement `{}` appears on the impl method \
                               but not on the corresponding trait method",

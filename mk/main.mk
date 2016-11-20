@@ -13,7 +13,7 @@
 ######################################################################
 
 # The version number
-CFG_RELEASE_NUM=1.14.0
+CFG_RELEASE_NUM=1.15.0
 
 # An optional number to put after the label, e.g. '.2' -> '-beta.2'
 # NB Make sure it starts with a dot to conform to semver pre-release
@@ -285,7 +285,7 @@ endif
 # LLVM macros
 ######################################################################
 
-LLVM_OPTIONAL_COMPONENTS=x86 arm aarch64 mips powerpc pnacl systemz jsbackend
+LLVM_OPTIONAL_COMPONENTS=x86 arm aarch64 mips powerpc pnacl systemz jsbackend msp430
 LLVM_REQUIRED_COMPONENTS=ipo bitreader bitwriter linker asmparser mcjit \
                 interpreter instrumentation
 
@@ -372,7 +372,7 @@ CFG_INFO := $(info cfg: disabling unstable features (CFG_DISABLE_UNSTABLE_FEATUR
 # Turn on feature-staging
 export CFG_DISABLE_UNSTABLE_FEATURES
 # Subvert unstable feature lints to do the self-build
-export RUSTC_BOOTSTRAP
+export RUSTC_BOOTSTRAP=1
 endif
 ifdef CFG_MUSL_ROOT
 export CFG_MUSL_ROOT

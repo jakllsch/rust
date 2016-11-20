@@ -12,11 +12,11 @@
 //! intrinsics that the compiler exposes.
 
 use intrinsics;
-use rustc::infer::TypeOrigin;
+use rustc::traits::{ObligationCause, ObligationCauseCode};
 use rustc::ty::subst::Substs;
 use rustc::ty::FnSig;
 use rustc::ty::{self, Ty};
-use rustc::util::nodemap::FnvHashMap;
+use rustc::util::nodemap::FxHashMap;
 use {CrateCtxt, require_same_types};
 
 use syntax::abi::Abi;
@@ -34,7 +34,6 @@ fn equate_intrinsic_type<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
                                    output: Ty<'tcx>) {
     let tcx = ccx.tcx;
     let def_id = tcx.map.local_def_id(it.id);
-    let i_ty = tcx.lookup_item_type(def_id);
 
     let substs = Substs::for_item(tcx, def_id,
                                   |_, _| tcx.mk_region(ty::ReErased),
@@ -49,7 +48,7 @@ fn equate_intrinsic_type<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
             variadic: false,
         }),
     }));
-    let i_n_tps = i_ty.generics.types.len();
+    let i_n_tps = tcx.item_generics(def_id).types.len();
     if i_n_tps != n_tps {
         let span = match it.node {
             hir::ForeignItemFn(_, ref generics) => generics.span,
@@ -64,8 +63,10 @@ fn equate_intrinsic_type<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
             .emit();
     } else {
         require_same_types(ccx,
-                           TypeOrigin::IntrinsicType(it.span),
-                           i_ty.ty,
+                           &ObligationCause::new(it.span,
+                                                 it.id,
+                                                 ObligationCauseCode::IntrinsicType),
+                           tcx.item_type(def_id),
                            fty);
     }
 }
@@ -86,18 +87,18 @@ pub fn check_intrinsic_type(ccx: &CrateCtxt, it: &hir::ForeignItem) {
 
         //We only care about the operation here
         let (n_tps, inputs, output) = match split[1] {
-            "cxchg" | "cxchgweak" => (1, vec!(tcx.mk_mut_ptr(param(ccx, 0)),
+            "cxchg" | "cxchgweak" => (1, vec![tcx.mk_mut_ptr(param(ccx, 0)),
                                               param(ccx, 0),
-                                              param(ccx, 0)),
+                                              param(ccx, 0)],
                                       tcx.intern_tup(&[param(ccx, 0), tcx.types.bool])),
-            "load" => (1, vec!(tcx.mk_imm_ptr(param(ccx, 0))),
+            "load" => (1, vec![tcx.mk_imm_ptr(param(ccx, 0))],
                        param(ccx, 0)),
-            "store" => (1, vec!(tcx.mk_mut_ptr(param(ccx, 0)), param(ccx, 0)),
+            "store" => (1, vec![tcx.mk_mut_ptr(param(ccx, 0)), param(ccx, 0)],
                         tcx.mk_nil()),
 
             "xchg" | "xadd" | "xsub" | "and"  | "nand" | "or" | "xor" | "max" |
             "min"  | "umax" | "umin" => {
-                (1, vec!(tcx.mk_mut_ptr(param(ccx, 0)), param(ccx, 0)),
+                (1, vec![tcx.mk_mut_ptr(param(ccx, 0)), param(ccx, 0)],
                  param(ccx, 0))
             }
             "fence" | "singlethreadfence" => {
@@ -129,14 +130,14 @@ pub fn check_intrinsic_type(ccx: &CrateCtxt, it: &hir::ForeignItem) {
             "rustc_peek" => (1, vec![param(ccx, 0)], param(ccx, 0)),
             "init" => (1, Vec::new(), param(ccx, 0)),
             "uninit" => (1, Vec::new(), param(ccx, 0)),
-            "forget" => (1, vec!( param(ccx, 0) ), tcx.mk_nil()),
-            "transmute" => (2, vec!( param(ccx, 0) ), param(ccx, 1)),
+            "forget" => (1, vec![ param(ccx, 0) ], tcx.mk_nil()),
+            "transmute" => (2, vec![ param(ccx, 0) ], param(ccx, 1)),
             "move_val_init" => {
                 (1,
-                 vec!(
+                 vec![
                     tcx.mk_mut_ptr(param(ccx, 0)),
                     param(ccx, 0)
-                  ),
+                  ],
                tcx.mk_nil())
             }
             "drop_in_place" => {
@@ -148,13 +149,13 @@ pub fn check_intrinsic_type(ccx: &CrateCtxt, it: &hir::ForeignItem) {
             "type_id" => (1, Vec::new(), ccx.tcx.types.u64),
             "offset" | "arith_offset" => {
               (1,
-               vec!(
+               vec![
                   tcx.mk_ptr(ty::TypeAndMut {
                       ty: param(ccx, 0),
                       mutbl: hir::MutImmutable
                   }),
                   ccx.tcx.types.isize
-               ),
+               ],
                tcx.mk_ptr(ty::TypeAndMut {
                    ty: param(ccx, 0),
                    mutbl: hir::MutImmutable
@@ -162,7 +163,7 @@ pub fn check_intrinsic_type(ccx: &CrateCtxt, it: &hir::ForeignItem) {
             }
             "copy" | "copy_nonoverlapping" => {
               (1,
-               vec!(
+               vec![
                   tcx.mk_ptr(ty::TypeAndMut {
                       ty: param(ccx, 0),
                       mutbl: hir::MutImmutable
@@ -172,12 +173,12 @@ pub fn check_intrinsic_type(ccx: &CrateCtxt, it: &hir::ForeignItem) {
                       mutbl: hir::MutMutable
                   }),
                   tcx.types.usize,
-               ),
+               ],
                tcx.mk_nil())
             }
             "volatile_copy_memory" | "volatile_copy_nonoverlapping_memory" => {
               (1,
-               vec!(
+               vec![
                   tcx.mk_ptr(ty::TypeAndMut {
                       ty: param(ccx, 0),
                       mutbl: hir::MutMutable
@@ -187,93 +188,93 @@ pub fn check_intrinsic_type(ccx: &CrateCtxt, it: &hir::ForeignItem) {
                       mutbl: hir::MutImmutable
                   }),
                   tcx.types.usize,
-               ),
+               ],
                tcx.mk_nil())
             }
             "write_bytes" | "volatile_set_memory" => {
               (1,
-               vec!(
+               vec![
                   tcx.mk_ptr(ty::TypeAndMut {
                       ty: param(ccx, 0),
                       mutbl: hir::MutMutable
                   }),
                   tcx.types.u8,
                   tcx.types.usize,
-               ),
+               ],
                tcx.mk_nil())
             }
-            "sqrtf32" => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "sqrtf64" => (0, vec!( tcx.types.f64 ), tcx.types.f64),
+            "sqrtf32" => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "sqrtf64" => (0, vec![ tcx.types.f64 ], tcx.types.f64),
             "powif32" => {
                (0,
-                vec!( tcx.types.f32, tcx.types.i32 ),
+                vec![ tcx.types.f32, tcx.types.i32 ],
                 tcx.types.f32)
             }
             "powif64" => {
                (0,
-                vec!( tcx.types.f64, tcx.types.i32 ),
+                vec![ tcx.types.f64, tcx.types.i32 ],
                 tcx.types.f64)
             }
-            "sinf32" => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "sinf64" => (0, vec!( tcx.types.f64 ), tcx.types.f64),
-            "cosf32" => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "cosf64" => (0, vec!( tcx.types.f64 ), tcx.types.f64),
+            "sinf32" => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "sinf64" => (0, vec![ tcx.types.f64 ], tcx.types.f64),
+            "cosf32" => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "cosf64" => (0, vec![ tcx.types.f64 ], tcx.types.f64),
             "powf32" => {
                (0,
-                vec!( tcx.types.f32, tcx.types.f32 ),
+                vec![ tcx.types.f32, tcx.types.f32 ],
                 tcx.types.f32)
             }
             "powf64" => {
                (0,
-                vec!( tcx.types.f64, tcx.types.f64 ),
+                vec![ tcx.types.f64, tcx.types.f64 ],
                 tcx.types.f64)
             }
-            "expf32"   => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "expf64"   => (0, vec!( tcx.types.f64 ), tcx.types.f64),
-            "exp2f32"  => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "exp2f64"  => (0, vec!( tcx.types.f64 ), tcx.types.f64),
-            "logf32"   => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "logf64"   => (0, vec!( tcx.types.f64 ), tcx.types.f64),
-            "log10f32" => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "log10f64" => (0, vec!( tcx.types.f64 ), tcx.types.f64),
-            "log2f32"  => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "log2f64"  => (0, vec!( tcx.types.f64 ), tcx.types.f64),
+            "expf32"   => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "expf64"   => (0, vec![ tcx.types.f64 ], tcx.types.f64),
+            "exp2f32"  => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "exp2f64"  => (0, vec![ tcx.types.f64 ], tcx.types.f64),
+            "logf32"   => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "logf64"   => (0, vec![ tcx.types.f64 ], tcx.types.f64),
+            "log10f32" => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "log10f64" => (0, vec![ tcx.types.f64 ], tcx.types.f64),
+            "log2f32"  => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "log2f64"  => (0, vec![ tcx.types.f64 ], tcx.types.f64),
             "fmaf32" => {
                 (0,
-                 vec!( tcx.types.f32, tcx.types.f32, tcx.types.f32 ),
+                 vec![ tcx.types.f32, tcx.types.f32, tcx.types.f32 ],
                  tcx.types.f32)
             }
             "fmaf64" => {
                 (0,
-                 vec!( tcx.types.f64, tcx.types.f64, tcx.types.f64 ),
+                 vec![ tcx.types.f64, tcx.types.f64, tcx.types.f64 ],
                  tcx.types.f64)
             }
-            "fabsf32"      => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "fabsf64"      => (0, vec!( tcx.types.f64 ), tcx.types.f64),
-            "copysignf32"  => (0, vec!( tcx.types.f32, tcx.types.f32 ), tcx.types.f32),
-            "copysignf64"  => (0, vec!( tcx.types.f64, tcx.types.f64 ), tcx.types.f64),
-            "floorf32"     => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "floorf64"     => (0, vec!( tcx.types.f64 ), tcx.types.f64),
-            "ceilf32"      => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "ceilf64"      => (0, vec!( tcx.types.f64 ), tcx.types.f64),
-            "truncf32"     => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "truncf64"     => (0, vec!( tcx.types.f64 ), tcx.types.f64),
-            "rintf32"      => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "rintf64"      => (0, vec!( tcx.types.f64 ), tcx.types.f64),
-            "nearbyintf32" => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "nearbyintf64" => (0, vec!( tcx.types.f64 ), tcx.types.f64),
-            "roundf32"     => (0, vec!( tcx.types.f32 ), tcx.types.f32),
-            "roundf64"     => (0, vec!( tcx.types.f64 ), tcx.types.f64),
+            "fabsf32"      => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "fabsf64"      => (0, vec![ tcx.types.f64 ], tcx.types.f64),
+            "copysignf32"  => (0, vec![ tcx.types.f32, tcx.types.f32 ], tcx.types.f32),
+            "copysignf64"  => (0, vec![ tcx.types.f64, tcx.types.f64 ], tcx.types.f64),
+            "floorf32"     => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "floorf64"     => (0, vec![ tcx.types.f64 ], tcx.types.f64),
+            "ceilf32"      => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "ceilf64"      => (0, vec![ tcx.types.f64 ], tcx.types.f64),
+            "truncf32"     => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "truncf64"     => (0, vec![ tcx.types.f64 ], tcx.types.f64),
+            "rintf32"      => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "rintf64"      => (0, vec![ tcx.types.f64 ], tcx.types.f64),
+            "nearbyintf32" => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "nearbyintf64" => (0, vec![ tcx.types.f64 ], tcx.types.f64),
+            "roundf32"     => (0, vec![ tcx.types.f32 ], tcx.types.f32),
+            "roundf64"     => (0, vec![ tcx.types.f64 ], tcx.types.f64),
 
             "volatile_load" =>
-                (1, vec!( tcx.mk_imm_ptr(param(ccx, 0)) ), param(ccx, 0)),
+                (1, vec![ tcx.mk_imm_ptr(param(ccx, 0)) ], param(ccx, 0)),
             "volatile_store" =>
-                (1, vec!( tcx.mk_mut_ptr(param(ccx, 0)), param(ccx, 0) ), tcx.mk_nil()),
+                (1, vec![ tcx.mk_mut_ptr(param(ccx, 0)), param(ccx, 0) ], tcx.mk_nil()),
 
-            "ctpop" | "ctlz" | "cttz" | "bswap" => (1, vec!(param(ccx, 0)), param(ccx, 0)),
+            "ctpop" | "ctlz" | "cttz" | "bswap" => (1, vec![param(ccx, 0)], param(ccx, 0)),
 
             "add_with_overflow" | "sub_with_overflow"  | "mul_with_overflow" =>
-                (1, vec!(param(ccx, 0), param(ccx, 0)),
+                (1, vec![param(ccx, 0), param(ccx, 0)],
                 tcx.intern_tup(&[param(ccx, 0), tcx.types.bool])),
 
             "unchecked_div" | "unchecked_rem" =>
@@ -330,8 +331,8 @@ pub fn check_platform_intrinsic_type(ccx: &CrateCtxt,
     };
 
     let tcx = ccx.tcx;
-    let i_ty = tcx.lookup_item_type(tcx.map.local_def_id(it.id));
-    let i_n_tps = i_ty.generics.types.len();
+    let def_id = tcx.map.local_def_id(it.id);
+    let i_n_tps = tcx.item_generics(def_id).types.len();
     let name = it.name.as_str();
 
     let (n_tps, inputs, output) = match &*name {
@@ -372,9 +373,10 @@ pub fn check_platform_intrinsic_type(ccx: &CrateCtxt,
                         return
                     }
 
-                    let mut structural_to_nomimal = FnvHashMap();
+                    let mut structural_to_nomimal = FxHashMap();
 
-                    let sig = tcx.no_late_bound_regions(i_ty.ty.fn_sig()).unwrap();
+                    let sig = tcx.item_type(def_id).fn_sig();
+                    let sig = tcx.no_late_bound_regions(sig).unwrap();
                     if intr.inputs.len() != sig.inputs.len() {
                         span_err!(tcx.sess, it.span, E0444,
                                   "platform-specific intrinsic has invalid number of \
@@ -412,7 +414,7 @@ fn match_intrinsic_type_to_type<'tcx, 'a>(
         ccx: &CrateCtxt<'a, 'tcx>,
         position: &str,
         span: Span,
-        structural_to_nominal: &mut FnvHashMap<&'a intrinsics::Type, ty::Ty<'tcx>>,
+        structural_to_nominal: &mut FxHashMap<&'a intrinsics::Type, ty::Ty<'tcx>>,
         expected: &'a intrinsics::Type, t: ty::Ty<'tcx>)
 {
     use intrinsics::Type::*;

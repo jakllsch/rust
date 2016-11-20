@@ -33,16 +33,17 @@ use lint::{Level, LevelSource, Lint, LintId, LintPass, LintSource};
 use lint::{EarlyLintPassObject, LateLintPassObject};
 use lint::{Default, CommandLine, Node, Allow, Warn, Deny, Forbid};
 use lint::builtin;
-use util::nodemap::FnvHashMap;
+use util::nodemap::FxHashMap;
 
 use std::cmp;
 use std::default::Default as StdDefault;
 use std::mem;
+use std::fmt;
 use syntax::attr;
 use syntax::parse::token::InternedString;
 use syntax::ast;
-use syntax_pos::Span;
-use errors::DiagnosticBuilder;
+use syntax_pos::{MultiSpan, Span};
+use errors::{self, Diagnostic, DiagnosticBuilder};
 use hir;
 use hir::intravisit as hir_visit;
 use syntax::visit as ast_visit;
@@ -63,21 +64,61 @@ pub struct LintStore {
     late_passes: Option<Vec<LateLintPassObject>>,
 
     /// Lints indexed by name.
-    by_name: FnvHashMap<String, TargetLint>,
+    by_name: FxHashMap<String, TargetLint>,
 
     /// Current levels of each lint, and where they were set.
-    levels: FnvHashMap<LintId, LevelSource>,
+    levels: FxHashMap<LintId, LevelSource>,
 
     /// Map of registered lint groups to what lints they expand to. The bool
     /// is true if the lint group was added by a plugin.
-    lint_groups: FnvHashMap<&'static str, (Vec<LintId>, bool)>,
+    lint_groups: FxHashMap<&'static str, (Vec<LintId>, bool)>,
 
     /// Extra info for future incompatibility lints, descibing the
     /// issue or RFC that caused the incompatibility.
-    future_incompatible: FnvHashMap<LintId, FutureIncompatibleInfo>,
+    future_incompatible: FxHashMap<LintId, FutureIncompatibleInfo>,
 
     /// Maximum level a lint can be
     lint_cap: Option<Level>,
+}
+
+/// When you call `add_lint` on the session, you wind up storing one
+/// of these, which records a "potential lint" at a particular point.
+#[derive(PartialEq)]
+pub struct EarlyLint {
+    /// what lint is this? (e.g., `dead_code`)
+    pub id: LintId,
+
+    /// the main message
+    pub diagnostic: Diagnostic,
+}
+
+impl fmt::Debug for EarlyLint {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("EarlyLint")
+            .field("id", &self.id)
+            .field("span", &self.diagnostic.span)
+            .field("diagnostic", &self.diagnostic)
+            .finish()
+    }
+}
+
+pub trait IntoEarlyLint {
+    fn into_early_lint(self, id: LintId) -> EarlyLint;
+}
+
+impl<'a, S: Into<MultiSpan>> IntoEarlyLint for (S, &'a str) {
+    fn into_early_lint(self, id: LintId) -> EarlyLint {
+        let (span, msg) = self;
+        let mut diagnostic = Diagnostic::new(errors::Level::Warning, msg);
+        diagnostic.set_span(span);
+        EarlyLint { id: id, diagnostic: diagnostic }
+    }
+}
+
+impl IntoEarlyLint for Diagnostic {
+    fn into_early_lint(self, id: LintId) -> EarlyLint {
+        EarlyLint { id: id, diagnostic: self }
+    }
 }
 
 /// Extra information for a future incompatibility lint. See the call
@@ -127,13 +168,13 @@ impl LintStore {
 
     pub fn new() -> LintStore {
         LintStore {
-            lints: vec!(),
-            early_passes: Some(vec!()),
-            late_passes: Some(vec!()),
-            by_name: FnvHashMap(),
-            levels: FnvHashMap(),
-            future_incompatible: FnvHashMap(),
-            lint_groups: FnvHashMap(),
+            lints: vec![],
+            early_passes: Some(vec![]),
+            late_passes: Some(vec![]),
+            by_name: FxHashMap(),
+            levels: FxHashMap(),
+            future_incompatible: FxHashMap(),
+            lint_groups: FxHashMap(),
             lint_cap: None,
         }
     }
@@ -263,8 +304,8 @@ impl LintStore {
                 Err(FindLintError::Removed) => { }
                 Err(_) => {
                     match self.lint_groups.iter().map(|(&x, pair)| (x, pair.0.clone()))
-                                                 .collect::<FnvHashMap<&'static str,
-                                                                       Vec<LintId>>>()
+                                                 .collect::<FxHashMap<&'static str,
+                                                                      Vec<LintId>>>()
                                                  .get(&lint_name[..]) {
                         Some(v) => {
                             v.iter()
@@ -345,7 +386,7 @@ macro_rules! run_lints { ($cx:expr, $f:ident, $ps:ident, $($args:expr),*) => ({
 // See also the hir version just below.
 pub fn gather_attrs(attrs: &[ast::Attribute])
                     -> Vec<Result<(InternedString, Level, Span), Span>> {
-    let mut out = vec!();
+    let mut out = vec![];
     for attr in attrs {
         let r = gather_attr(attr);
         out.extend(r.into_iter());
@@ -355,7 +396,7 @@ pub fn gather_attrs(attrs: &[ast::Attribute])
 
 pub fn gather_attr(attr: &ast::Attribute)
                    -> Vec<Result<(InternedString, Level, Span), Span>> {
-    let mut out = vec!();
+    let mut out = vec![];
 
     let level = match Level::from_str(&attr.name()) {
         None => return out,
@@ -388,22 +429,24 @@ pub fn gather_attr(attr: &ast::Attribute)
 /// in trans that run after the main lint pass is finished. Most
 /// lints elsewhere in the compiler should call
 /// `Session::add_lint()` instead.
-pub fn raw_emit_lint(sess: &Session,
-                     lints: &LintStore,
-                     lint: &'static Lint,
-                     lvlsrc: LevelSource,
-                     span: Option<Span>,
-                     msg: &str) {
+pub fn raw_emit_lint<S: Into<MultiSpan>>(sess: &Session,
+                                         lints: &LintStore,
+                                         lint: &'static Lint,
+                                         lvlsrc: LevelSource,
+                                         span: Option<S>,
+                                         msg: &str) {
     raw_struct_lint(sess, lints, lint, lvlsrc, span, msg).emit();
 }
 
-pub fn raw_struct_lint<'a>(sess: &'a Session,
-                           lints: &LintStore,
-                           lint: &'static Lint,
-                           lvlsrc: LevelSource,
-                           span: Option<Span>,
-                           msg: &str)
-                           -> DiagnosticBuilder<'a> {
+pub fn raw_struct_lint<'a, S>(sess: &'a Session,
+                              lints: &LintStore,
+                              lint: &'static Lint,
+                              lvlsrc: LevelSource,
+                              span: Option<S>,
+                              msg: &str)
+                              -> DiagnosticBuilder<'a>
+    where S: Into<MultiSpan>
+{
     let (mut level, source) = lvlsrc;
     if level == Allow {
         return sess.diagnostic().struct_dummy();
@@ -452,8 +495,7 @@ pub fn raw_struct_lint<'a>(sess: &'a Session,
     }
 
     if let Some(span) = def {
-        let explanation = "lint level defined here";
-        err.span_note(span, &explanation);
+        sess.diag_span_note_once(&mut err, lint, span, "lint level defined here");
     }
 
     err
@@ -488,7 +530,10 @@ pub trait LintContext: Sized {
         })
     }
 
-    fn lookup_and_emit(&self, lint: &'static Lint, span: Option<Span>, msg: &str) {
+    fn lookup_and_emit<S: Into<MultiSpan>>(&self,
+                                           lint: &'static Lint,
+                                           span: Option<S>,
+                                           msg: &str) {
         let (level, src) = match self.level_src(lint) {
             None => return,
             Some(pair) => pair,
@@ -497,11 +542,11 @@ pub trait LintContext: Sized {
         raw_emit_lint(&self.sess(), self.lints(), lint, (level, src), span, msg);
     }
 
-    fn lookup(&self,
-              lint: &'static Lint,
-              span: Option<Span>,
-              msg: &str)
-              -> DiagnosticBuilder {
+    fn lookup<S: Into<MultiSpan>>(&self,
+                                  lint: &'static Lint,
+                                  span: Option<S>,
+                                  msg: &str)
+                                  -> DiagnosticBuilder {
         let (level, src) = match self.level_src(lint) {
             None => return self.sess().diagnostic().struct_dummy(),
             Some(pair) => pair,
@@ -511,15 +556,24 @@ pub trait LintContext: Sized {
     }
 
     /// Emit a lint at the appropriate level, for a particular span.
-    fn span_lint(&self, lint: &'static Lint, span: Span, msg: &str) {
+    fn span_lint<S: Into<MultiSpan>>(&self, lint: &'static Lint, span: S, msg: &str) {
         self.lookup_and_emit(lint, Some(span), msg);
     }
 
-    fn struct_span_lint(&self,
-                        lint: &'static Lint,
-                        span: Span,
-                        msg: &str)
-                        -> DiagnosticBuilder {
+    fn early_lint(&self, early_lint: EarlyLint) {
+        let span = early_lint.diagnostic.span.primary_span().expect("early lint w/o primary span");
+        let mut err = self.struct_span_lint(early_lint.id.lint,
+                                            span,
+                                            &early_lint.diagnostic.message);
+        err.copy_details_not_message(&early_lint.diagnostic);
+        err.emit();
+    }
+
+    fn struct_span_lint<S: Into<MultiSpan>>(&self,
+                                            lint: &'static Lint,
+                                            span: S,
+                                            msg: &str)
+                                            -> DiagnosticBuilder {
         self.lookup(lint, Some(span), msg)
     }
 
@@ -550,7 +604,7 @@ pub trait LintContext: Sized {
 
     /// Emit a lint at the appropriate level, with no associated span.
     fn lint(&self, lint: &'static Lint, msg: &str) {
-        self.lookup_and_emit(lint, None, msg);
+        self.lookup_and_emit(lint, None as Option<Span>, msg);
     }
 
     /// Merge the lints specified by any lint attributes into the
@@ -738,16 +792,15 @@ impl<'a> LintContext for EarlyContext<'a> {
     }
 }
 
-impl<'a, 'tcx, 'v> hir_visit::Visitor<'v> for LateContext<'a, 'tcx> {
+impl<'a, 'tcx> hir_visit::Visitor<'tcx> for LateContext<'a, 'tcx> {
     /// Because lints are scoped lexically, we want to walk nested
     /// items in the context of the outer item, so enable
     /// deep-walking.
-    fn visit_nested_item(&mut self, item: hir::ItemId) {
-        let tcx = self.tcx;
-        self.visit_item(tcx.map.expect_item(item.id))
+    fn nested_visit_map(&mut self) -> Option<&hir::map::Map<'tcx>> {
+        Some(&self.tcx.map)
     }
 
-    fn visit_item(&mut self, it: &hir::Item) {
+    fn visit_item(&mut self, it: &'tcx hir::Item) {
         self.with_lint_attrs(&it.attrs, |cx| {
             run_lints!(cx, check_item, late_passes, it);
             cx.visit_ids(|v| v.visit_item(it));
@@ -756,7 +809,7 @@ impl<'a, 'tcx, 'v> hir_visit::Visitor<'v> for LateContext<'a, 'tcx> {
         })
     }
 
-    fn visit_foreign_item(&mut self, it: &hir::ForeignItem) {
+    fn visit_foreign_item(&mut self, it: &'tcx hir::ForeignItem) {
         self.with_lint_attrs(&it.attrs, |cx| {
             run_lints!(cx, check_foreign_item, late_passes, it);
             hir_visit::walk_foreign_item(cx, it);
@@ -764,19 +817,19 @@ impl<'a, 'tcx, 'v> hir_visit::Visitor<'v> for LateContext<'a, 'tcx> {
         })
     }
 
-    fn visit_pat(&mut self, p: &hir::Pat) {
+    fn visit_pat(&mut self, p: &'tcx hir::Pat) {
         run_lints!(self, check_pat, late_passes, p);
         hir_visit::walk_pat(self, p);
     }
 
-    fn visit_expr(&mut self, e: &hir::Expr) {
+    fn visit_expr(&mut self, e: &'tcx hir::Expr) {
         self.with_lint_attrs(&e.attrs, |cx| {
             run_lints!(cx, check_expr, late_passes, e);
             hir_visit::walk_expr(cx, e);
         })
     }
 
-    fn visit_stmt(&mut self, s: &hir::Stmt) {
+    fn visit_stmt(&mut self, s: &'tcx hir::Stmt) {
         // statement attributes are actually just attributes on one of
         // - item
         // - local
@@ -786,17 +839,17 @@ impl<'a, 'tcx, 'v> hir_visit::Visitor<'v> for LateContext<'a, 'tcx> {
         hir_visit::walk_stmt(self, s);
     }
 
-    fn visit_fn(&mut self, fk: hir_visit::FnKind<'v>, decl: &'v hir::FnDecl,
-                body: &'v hir::Block, span: Span, id: ast::NodeId) {
+    fn visit_fn(&mut self, fk: hir_visit::FnKind<'tcx>, decl: &'tcx hir::FnDecl,
+                body: &'tcx hir::Expr, span: Span, id: ast::NodeId) {
         run_lints!(self, check_fn, late_passes, fk, decl, body, span, id);
         hir_visit::walk_fn(self, fk, decl, body, span, id);
         run_lints!(self, check_fn_post, late_passes, fk, decl, body, span, id);
     }
 
     fn visit_variant_data(&mut self,
-                        s: &hir::VariantData,
+                        s: &'tcx hir::VariantData,
                         name: ast::Name,
-                        g: &hir::Generics,
+                        g: &'tcx hir::Generics,
                         item_id: ast::NodeId,
                         _: Span) {
         run_lints!(self, check_struct_def, late_passes, s, name, g, item_id);
@@ -804,14 +857,17 @@ impl<'a, 'tcx, 'v> hir_visit::Visitor<'v> for LateContext<'a, 'tcx> {
         run_lints!(self, check_struct_def_post, late_passes, s, name, g, item_id);
     }
 
-    fn visit_struct_field(&mut self, s: &hir::StructField) {
+    fn visit_struct_field(&mut self, s: &'tcx hir::StructField) {
         self.with_lint_attrs(&s.attrs, |cx| {
             run_lints!(cx, check_struct_field, late_passes, s);
             hir_visit::walk_struct_field(cx, s);
         })
     }
 
-    fn visit_variant(&mut self, v: &hir::Variant, g: &hir::Generics, item_id: ast::NodeId) {
+    fn visit_variant(&mut self,
+                     v: &'tcx hir::Variant,
+                     g: &'tcx hir::Generics,
+                     item_id: ast::NodeId) {
         self.with_lint_attrs(&v.node.attrs, |cx| {
             run_lints!(cx, check_variant, late_passes, v, g);
             hir_visit::walk_variant(cx, v, g, item_id);
@@ -819,7 +875,7 @@ impl<'a, 'tcx, 'v> hir_visit::Visitor<'v> for LateContext<'a, 'tcx> {
         })
     }
 
-    fn visit_ty(&mut self, t: &hir::Ty) {
+    fn visit_ty(&mut self, t: &'tcx hir::Ty) {
         run_lints!(self, check_ty, late_passes, t);
         hir_visit::walk_ty(self, t);
     }
@@ -828,45 +884,45 @@ impl<'a, 'tcx, 'v> hir_visit::Visitor<'v> for LateContext<'a, 'tcx> {
         run_lints!(self, check_name, late_passes, sp, name);
     }
 
-    fn visit_mod(&mut self, m: &hir::Mod, s: Span, n: ast::NodeId) {
+    fn visit_mod(&mut self, m: &'tcx hir::Mod, s: Span, n: ast::NodeId) {
         run_lints!(self, check_mod, late_passes, m, s, n);
         hir_visit::walk_mod(self, m, n);
         run_lints!(self, check_mod_post, late_passes, m, s, n);
     }
 
-    fn visit_local(&mut self, l: &hir::Local) {
+    fn visit_local(&mut self, l: &'tcx hir::Local) {
         self.with_lint_attrs(&l.attrs, |cx| {
             run_lints!(cx, check_local, late_passes, l);
             hir_visit::walk_local(cx, l);
         })
     }
 
-    fn visit_block(&mut self, b: &hir::Block) {
+    fn visit_block(&mut self, b: &'tcx hir::Block) {
         run_lints!(self, check_block, late_passes, b);
         hir_visit::walk_block(self, b);
         run_lints!(self, check_block_post, late_passes, b);
     }
 
-    fn visit_arm(&mut self, a: &hir::Arm) {
+    fn visit_arm(&mut self, a: &'tcx hir::Arm) {
         run_lints!(self, check_arm, late_passes, a);
         hir_visit::walk_arm(self, a);
     }
 
-    fn visit_decl(&mut self, d: &hir::Decl) {
+    fn visit_decl(&mut self, d: &'tcx hir::Decl) {
         run_lints!(self, check_decl, late_passes, d);
         hir_visit::walk_decl(self, d);
     }
 
-    fn visit_expr_post(&mut self, e: &hir::Expr) {
+    fn visit_expr_post(&mut self, e: &'tcx hir::Expr) {
         run_lints!(self, check_expr_post, late_passes, e);
     }
 
-    fn visit_generics(&mut self, g: &hir::Generics) {
+    fn visit_generics(&mut self, g: &'tcx hir::Generics) {
         run_lints!(self, check_generics, late_passes, g);
         hir_visit::walk_generics(self, g);
     }
 
-    fn visit_trait_item(&mut self, trait_item: &hir::TraitItem) {
+    fn visit_trait_item(&mut self, trait_item: &'tcx hir::TraitItem) {
         self.with_lint_attrs(&trait_item.attrs, |cx| {
             run_lints!(cx, check_trait_item, late_passes, trait_item);
             cx.visit_ids(|v| hir_visit::walk_trait_item(v, trait_item));
@@ -875,7 +931,7 @@ impl<'a, 'tcx, 'v> hir_visit::Visitor<'v> for LateContext<'a, 'tcx> {
         });
     }
 
-    fn visit_impl_item(&mut self, impl_item: &hir::ImplItem) {
+    fn visit_impl_item(&mut self, impl_item: &'tcx hir::ImplItem) {
         self.with_lint_attrs(&impl_item.attrs, |cx| {
             run_lints!(cx, check_impl_item, late_passes, impl_item);
             cx.visit_ids(|v| hir_visit::walk_impl_item(v, impl_item));
@@ -884,20 +940,20 @@ impl<'a, 'tcx, 'v> hir_visit::Visitor<'v> for LateContext<'a, 'tcx> {
         });
     }
 
-    fn visit_lifetime(&mut self, lt: &hir::Lifetime) {
+    fn visit_lifetime(&mut self, lt: &'tcx hir::Lifetime) {
         run_lints!(self, check_lifetime, late_passes, lt);
     }
 
-    fn visit_lifetime_def(&mut self, lt: &hir::LifetimeDef) {
+    fn visit_lifetime_def(&mut self, lt: &'tcx hir::LifetimeDef) {
         run_lints!(self, check_lifetime_def, late_passes, lt);
     }
 
-    fn visit_path(&mut self, p: &hir::Path, id: ast::NodeId) {
+    fn visit_path(&mut self, p: &'tcx hir::Path, id: ast::NodeId) {
         run_lints!(self, check_path, late_passes, p, id);
         hir_visit::walk_path(self, p);
     }
 
-    fn visit_path_list_item(&mut self, prefix: &hir::Path, item: &hir::PathListItem) {
+    fn visit_path_list_item(&mut self, prefix: &'tcx hir::Path, item: &'tcx hir::PathListItem) {
         run_lints!(self, check_path_list_item, late_passes, item);
         hir_visit::walk_path_list_item(self, prefix, item);
     }
@@ -943,10 +999,10 @@ impl<'a> ast_visit::Visitor for EarlyContext<'a> {
     }
 
     fn visit_fn(&mut self, fk: ast_visit::FnKind, decl: &ast::FnDecl,
-                body: &ast::Block, span: Span, id: ast::NodeId) {
-        run_lints!(self, check_fn, early_passes, fk, decl, body, span, id);
-        ast_visit::walk_fn(self, fk, decl, body, span);
-        run_lints!(self, check_fn_post, early_passes, fk, decl, body, span, id);
+                span: Span, id: ast::NodeId) {
+        run_lints!(self, check_fn, early_passes, fk, decl, span, id);
+        ast_visit::walk_fn(self, fk, decl, span);
+        run_lints!(self, check_fn_post, early_passes, fk, decl, span, id);
     }
 
     fn visit_variant_data(&mut self,
@@ -1062,12 +1118,11 @@ struct IdVisitor<'a, 'b: 'a, 'tcx: 'a+'b> {
 
 // Output any lints that were previously added to the session.
 impl<'a, 'b, 'tcx, 'v> hir_visit::Visitor<'v> for IdVisitor<'a, 'b, 'tcx> {
-
     fn visit_id(&mut self, id: ast::NodeId) {
         if let Some(lints) = self.cx.sess().lints.borrow_mut().remove(&id) {
             debug!("LateContext::visit_id: id={:?} lints={:?}", id, lints);
-            for (lint_id, span, msg) in lints {
-                self.cx.span_lint(lint_id.lint, span, &msg[..])
+            for early_lint in lints {
+                self.cx.early_lint(early_lint);
             }
         }
     }
@@ -1212,10 +1267,10 @@ pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     // If we missed any lints added to the session, then there's a bug somewhere
     // in the iteration code.
     for (id, v) in tcx.sess.lints.borrow().iter() {
-        for &(lint, span, ref msg) in v {
-            span_bug!(span,
-                      "unprocessed lint {} at {}: {}",
-                      lint.to_string(), tcx.map.node_to_string(*id), *msg)
+        for early_lint in v {
+            span_bug!(early_lint.diagnostic.span.clone(),
+                      "unprocessed lint {:?} at {}",
+                      early_lint, tcx.map.node_to_string(*id));
         }
     }
 
@@ -1230,8 +1285,8 @@ pub fn check_ast_crate(sess: &Session, krate: &ast::Crate) {
     cx.with_lint_attrs(&krate.attrs, |cx| {
         // Lints may be assigned to the whole crate.
         if let Some(lints) = cx.sess.lints.borrow_mut().remove(&ast::CRATE_NODE_ID) {
-            for (lint_id, span, msg) in lints {
-                cx.span_lint(lint_id.lint, span, &msg[..])
+            for early_lint in lints {
+                cx.early_lint(early_lint);
             }
         }
 
@@ -1250,8 +1305,8 @@ pub fn check_ast_crate(sess: &Session, krate: &ast::Crate) {
     // If we missed any lints added to the session, then there's a bug somewhere
     // in the iteration code.
     for (_, v) in sess.lints.borrow().iter() {
-        for &(lint, span, ref msg) in v {
-            span_bug!(span, "unprocessed lint {}: {}", lint.to_string(), *msg)
+        for early_lint in v {
+            span_bug!(early_lint.diagnostic.span.clone(), "unprocessed lint {:?}", early_lint);
         }
     }
 }

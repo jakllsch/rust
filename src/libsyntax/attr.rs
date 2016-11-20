@@ -32,7 +32,8 @@ use std::cell::{RefCell, Cell};
 use std::collections::HashSet;
 
 thread_local! {
-    static USED_ATTRS: RefCell<Vec<u64>> = RefCell::new(Vec::new())
+    static USED_ATTRS: RefCell<Vec<u64>> = RefCell::new(Vec::new());
+    static KNOWN_ATTRS: RefCell<Vec<u64>> = RefCell::new(Vec::new());
 }
 
 enum AttrError {
@@ -74,6 +75,29 @@ pub fn mark_used(attr: &Attribute) {
 pub fn is_used(attr: &Attribute) -> bool {
     let AttrId(id) = attr.node.id;
     USED_ATTRS.with(|slot| {
+        let idx = (id / 64) as usize;
+        let shift = id % 64;
+        slot.borrow().get(idx).map(|bits| bits & (1 << shift) != 0)
+            .unwrap_or(false)
+    })
+}
+
+pub fn mark_known(attr: &Attribute) {
+    debug!("Marking {:?} as known.", attr);
+    let AttrId(id) = attr.node.id;
+    KNOWN_ATTRS.with(|slot| {
+        let idx = (id / 64) as usize;
+        let shift = id % 64;
+        if slot.borrow().len() <= idx {
+            slot.borrow_mut().resize(idx + 1, 0);
+        }
+        slot.borrow_mut()[idx] |= 1 << shift;
+    });
+}
+
+pub fn is_known(attr: &Attribute) -> bool {
+    let AttrId(id) = attr.node.id;
+    KNOWN_ATTRS.with(|slot| {
         let idx = (id / 64) as usize;
         let shift = id % 64;
         slot.borrow().get(idx).map(|bits| bits & (1 << shift) != 0)
@@ -501,10 +525,7 @@ pub fn requests_inline(attrs: &[Attribute]) -> bool {
 }
 
 /// Tests if a cfg-pattern matches the cfg set
-pub fn cfg_matches(cfgs: &[P<MetaItem>], cfg: &ast::MetaItem,
-                   sess: &ParseSess,
-                   features: Option<&Features>)
-                   -> bool {
+pub fn cfg_matches(cfg: &ast::MetaItem, sess: &ParseSess, features: Option<&Features>) -> bool {
     match cfg.node {
         ast::MetaItemKind::List(ref pred, ref mis) => {
             for mi in mis.iter() {
@@ -518,10 +539,10 @@ pub fn cfg_matches(cfgs: &[P<MetaItem>], cfg: &ast::MetaItem,
             // that they won't fail with the loop above.
             match &pred[..] {
                 "any" => mis.iter().any(|mi| {
-                    cfg_matches(cfgs, mi.meta_item().unwrap(), sess, features)
+                    cfg_matches(mi.meta_item().unwrap(), sess, features)
                 }),
                 "all" => mis.iter().all(|mi| {
-                    cfg_matches(cfgs, mi.meta_item().unwrap(), sess, features)
+                    cfg_matches(mi.meta_item().unwrap(), sess, features)
                 }),
                 "not" => {
                     if mis.len() != 1 {
@@ -529,7 +550,7 @@ pub fn cfg_matches(cfgs: &[P<MetaItem>], cfg: &ast::MetaItem,
                         return false;
                     }
 
-                    !cfg_matches(cfgs, mis[0].meta_item().unwrap(), sess, features)
+                    !cfg_matches(mis[0].meta_item().unwrap(), sess, features)
                 },
                 p => {
                     span_err!(sess.span_diagnostic, cfg.span, E0537, "invalid predicate `{}`", p);
@@ -541,7 +562,7 @@ pub fn cfg_matches(cfgs: &[P<MetaItem>], cfg: &ast::MetaItem,
             if let (Some(feats), Some(gated_cfg)) = (features, GatedCfg::gate(cfg)) {
                 gated_cfg.check_and_emit(sess, feats);
             }
-            contains(cfgs, cfg)
+            contains(&sess.config, cfg)
         }
     }
 }
@@ -768,9 +789,6 @@ fn find_stability_generic<'a, I>(diagnostic: &Handler,
     // Merge the deprecation info into the stability info
     if let Some(rustc_depr) = rustc_depr {
         if let Some(ref mut stab) = stab {
-            if let Unstable {reason: ref mut reason @ None, ..} = stab.level {
-                *reason = Some(rustc_depr.reason.clone())
-            }
             stab.rustc_depr = Some(rustc_depr);
         } else {
             span_err!(diagnostic, item_sp, E0549,

@@ -11,6 +11,7 @@
 //! misc. type-system utilities too small to deserve their own file
 
 use hir::def_id::DefId;
+use hir::map::DefPathData;
 use infer::InferCtxt;
 use hir::map as ast_map;
 use hir::pat_util;
@@ -20,7 +21,7 @@ use ty::{Disr, ParameterEnvironment};
 use ty::fold::TypeVisitor;
 use ty::layout::{Layout, LayoutError};
 use ty::TypeVariants::*;
-use util::nodemap::FnvHashMap;
+use util::nodemap::FxHashMap;
 
 use rustc_const_math::{ConstInt, ConstIsize, ConstUsize};
 
@@ -390,6 +391,16 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         // (e.g. calling `foo.0.clone()` of `Foo<T:Clone>`).
         return !self.has_attr(dtor_method, "unsafe_destructor_blind_to_params");
     }
+
+    pub fn closure_base_def_id(&self, def_id: DefId) -> DefId {
+        let mut def_id = def_id;
+        while self.def_key(def_id).disambiguated_data.data == DefPathData::ClosureExpr {
+            def_id = self.parent_def_id(def_id).unwrap_or_else(|| {
+                bug!("closure {:?} has no parent", def_id);
+            });
+        }
+        def_id
+    }
 }
 
 /// When hashing a type this ends up affecting properties like symbol names. We
@@ -405,6 +416,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 ///
 /// The same goes for endianess: We always convert multi-byte integers to little
 /// endian before hashing.
+#[derive(Debug)]
 pub struct ArchIndependentHasher<H> {
     inner: H,
 }
@@ -412,6 +424,10 @@ pub struct ArchIndependentHasher<H> {
 impl<H> ArchIndependentHasher<H> {
     pub fn new(inner: H) -> ArchIndependentHasher<H> {
         ArchIndependentHasher { inner: inner }
+    }
+
+    pub fn into_inner(self) -> H {
+        self.inner
     }
 }
 
@@ -589,7 +605,7 @@ impl<'a, 'tcx> ty::TyS<'tcx> {
     fn impls_bound(&'tcx self, tcx: TyCtxt<'a, 'tcx, 'tcx>,
                    param_env: &ParameterEnvironment<'tcx>,
                    bound: ty::BuiltinBound,
-                   cache: &RefCell<FnvHashMap<Ty<'tcx>, bool>>,
+                   cache: &RefCell<FxHashMap<Ty<'tcx>, bool>>,
                    span: Span) -> bool
     {
         if self.has_param_types() || self.has_self_ty() {

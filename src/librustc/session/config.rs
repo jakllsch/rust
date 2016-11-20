@@ -715,7 +715,7 @@ macro_rules! options {
                     true
                 }
                 v => {
-                    let mut passes = vec!();
+                    let mut passes = vec![];
                     if parse_list(&mut passes, v) {
                         *slot = SomePasses(passes);
                         true
@@ -793,7 +793,7 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
     remark: Passes = (SomePasses(Vec::new()), parse_passes, [UNTRACKED],
         "print remarks for these optimization passes (space separated, or \"all\")"),
     no_stack_check: bool = (false, parse_bool, [UNTRACKED],
-        "disable checks for stack exhaustion (a memory-safety hazard!)"),
+        "the --no-stack-check flag is deprecated and does nothing"),
     debuginfo: Option<usize> = (None, parse_opt_uint, [TRACKED],
         "debug info emission level, 0 = no debug info, 1 = line tables only, \
          2 = full debug info with variable and type information"),
@@ -918,6 +918,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
           "the directory the MIR is dumped into"),
     perf_stats: bool = (false, parse_bool, [UNTRACKED],
           "print some performance-related statistics"),
+    hir_stats: bool = (false, parse_bool, [UNTRACKED],
+          "print some statistics about AST and HIR"),
 }
 
 pub fn default_lib_output() -> CrateType {
@@ -1237,10 +1239,9 @@ pub fn rustc_optgroups() -> Vec<RustcOptGroup> {
 pub fn parse_cfgspecs(cfgspecs: Vec<String> ) -> ast::CrateConfig {
     cfgspecs.into_iter().map(|s| {
         let sess = parse::ParseSess::new();
-        let mut parser = parse::new_parser_from_source_str(&sess,
-                                                           Vec::new(),
-                                                           "cfgspec".to_string(),
-                                                           s.to_string());
+        let mut parser =
+            parse::new_parser_from_source_str(&sess, "cfgspec".to_string(), s.to_string());
+
         let meta_item = panictry!(parser.parse_meta_item());
 
         if !parser.reader.is_eof() {
@@ -1294,7 +1295,7 @@ pub fn build_session_options_and_crate_config(matches: &getopts::Matches)
     let crate_types = parse_crate_types_from_list(unparsed_crate_types)
         .unwrap_or_else(|e| early_error(error_format, &e[..]));
 
-    let mut lint_opts = vec!();
+    let mut lint_opts = vec![];
     let mut describe_lints = false;
 
     for &level in &[lint::Allow, lint::Warn, lint::Deny, lint::Forbid] {

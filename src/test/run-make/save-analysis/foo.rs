@@ -10,7 +10,6 @@
 
 #![ crate_name = "test" ]
 #![feature(box_syntax)]
-#![feature(dotdot_in_tuple_patterns)]
 #![feature(rustc_private)]
 
 extern crate graphviz;
@@ -56,6 +55,12 @@ fn test_alias<I: Iterator>(i: Option<<I as Iterator>::Item>) {
 
     let x = (3isize, 4usize);
     let y = x.1;
+}
+
+// Issue #37700
+const LUT_BITS: usize = 3;
+pub struct HuffmanTable {
+    ac_lut: Option<[(i16, u8); 1 << LUT_BITS]>,
 }
 
 struct TupStruct(isize, isize, Box<str>);

@@ -45,9 +45,9 @@ use super::load::DirtyNodes;
 use rustc::dep_graph::{DepGraphQuery, DepNode};
 use rustc::hir;
 use rustc::hir::def_id::DefId;
-use rustc::hir::intravisit::Visitor;
+use rustc::hir::itemlikevisit::ItemLikeVisitor;
 use syntax::ast::{self, Attribute, NestedMetaItem};
-use rustc_data_structures::fnv::{FnvHashSet, FnvHashMap};
+use rustc_data_structures::fx::{FxHashSet, FxHashMap};
 use syntax::parse::token::InternedString;
 use syntax_pos::Span;
 use rustc::ty::TyCtxt;
@@ -67,14 +67,14 @@ pub fn check_dirty_clean_annotations<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     }
 
     let _ignore = tcx.dep_graph.in_ignore();
-    let dirty_inputs: FnvHashSet<DepNode<DefId>> =
+    let dirty_inputs: FxHashSet<DepNode<DefId>> =
         dirty_inputs.iter()
                    .filter_map(|d| retraced.map(d))
                    .collect();
     let query = tcx.dep_graph.query();
     debug!("query-nodes: {:?}", query.nodes());
     let krate = tcx.map.krate();
-    krate.visit_all_items(&mut DirtyCleanVisitor {
+    krate.visit_all_item_likes(&mut DirtyCleanVisitor {
         tcx: tcx,
         query: &query,
         dirty_inputs: dirty_inputs,
@@ -84,7 +84,7 @@ pub fn check_dirty_clean_annotations<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 pub struct DirtyCleanVisitor<'a, 'tcx:'a> {
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     query: &'a DepGraphQuery<DefId>,
-    dirty_inputs: FnvHashSet<DepNode<DefId>>,
+    dirty_inputs: FxHashSet<DepNode<DefId>>,
 }
 
 impl<'a, 'tcx> DirtyCleanVisitor<'a, 'tcx> {
@@ -169,7 +169,7 @@ impl<'a, 'tcx> DirtyCleanVisitor<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> Visitor<'tcx> for DirtyCleanVisitor<'a, 'tcx> {
+impl<'a, 'tcx> ItemLikeVisitor<'tcx> for DirtyCleanVisitor<'a, 'tcx> {
     fn visit_item(&mut self, item: &'tcx hir::Item) {
         let def_id = self.tcx.map.local_def_id(item.id);
         for attr in self.tcx.get_attrs(def_id).iter() {
@@ -184,18 +184,21 @@ impl<'a, 'tcx> Visitor<'tcx> for DirtyCleanVisitor<'a, 'tcx> {
             }
         }
     }
+
+    fn visit_impl_item(&mut self, _impl_item: &hir::ImplItem) {
+    }
 }
 
 pub fn check_dirty_clean_metadata<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                  prev_metadata_hashes: &FnvHashMap<DefId, Fingerprint>,
-                                  current_metadata_hashes: &FnvHashMap<DefId, Fingerprint>) {
+                                  prev_metadata_hashes: &FxHashMap<DefId, Fingerprint>,
+                                  current_metadata_hashes: &FxHashMap<DefId, Fingerprint>) {
     if !tcx.sess.opts.debugging_opts.query_dep_graph {
         return;
     }
 
     tcx.dep_graph.with_ignore(||{
         let krate = tcx.map.krate();
-        krate.visit_all_items(&mut DirtyCleanMetadataVisitor {
+        krate.visit_all_item_likes(&mut DirtyCleanMetadataVisitor {
             tcx: tcx,
             prev_metadata_hashes: prev_metadata_hashes,
             current_metadata_hashes: current_metadata_hashes,
@@ -205,11 +208,11 @@ pub fn check_dirty_clean_metadata<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 
 pub struct DirtyCleanMetadataVisitor<'a, 'tcx:'a, 'm> {
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    prev_metadata_hashes: &'m FnvHashMap<DefId, Fingerprint>,
-    current_metadata_hashes: &'m FnvHashMap<DefId, Fingerprint>,
+    prev_metadata_hashes: &'m FxHashMap<DefId, Fingerprint>,
+    current_metadata_hashes: &'m FxHashMap<DefId, Fingerprint>,
 }
 
-impl<'a, 'tcx, 'm> Visitor<'tcx> for DirtyCleanMetadataVisitor<'a, 'tcx, 'm> {
+impl<'a, 'tcx, 'm> ItemLikeVisitor<'tcx> for DirtyCleanMetadataVisitor<'a, 'tcx, 'm> {
     fn visit_item(&mut self, item: &'tcx hir::Item) {
         let def_id = self.tcx.map.local_def_id(item.id);
 
@@ -224,6 +227,9 @@ impl<'a, 'tcx, 'm> Visitor<'tcx> for DirtyCleanMetadataVisitor<'a, 'tcx, 'm> {
                 }
             }
         }
+    }
+
+    fn visit_impl_item(&mut self, _impl_item: &hir::ImplItem) {
     }
 }
 
@@ -264,7 +270,7 @@ impl<'a, 'tcx, 'm> DirtyCleanMetadataVisitor<'a, 'tcx, 'm> {
 /// flag called `foo`.
 fn check_config(tcx: TyCtxt, attr: &ast::Attribute) -> bool {
     debug!("check_config(attr={:?})", attr);
-    let config = &tcx.map.krate().config;
+    let config = &tcx.sess.parse_sess.config;
     debug!("check_config: config={:?}", config);
     for item in attr.meta_item_list().unwrap_or(&[]) {
         if item.check_name(CFG) {

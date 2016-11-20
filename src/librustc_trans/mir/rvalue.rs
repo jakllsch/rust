@@ -12,7 +12,7 @@ use llvm::{self, ValueRef};
 use rustc::ty::{self, Ty};
 use rustc::ty::cast::{CastTy, IntTy};
 use rustc::ty::layout::Layout;
-use rustc::mir::repr as mir;
+use rustc::mir;
 
 use asm;
 use base;
@@ -133,15 +133,6 @@ impl<'bcx, 'tcx> MirContext<'bcx, 'tcx> {
                         }
                     },
                     _ => {
-                        // FIXME Shouldn't need to manually trigger closure instantiations.
-                        if let mir::AggregateKind::Closure(def_id, substs) = *kind {
-                            use closure;
-
-                            closure::trans_closure_body_via_mir(bcx.ccx(),
-                                                                def_id,
-                                                                bcx.monomorphize(&substs));
-                        }
-
                         for (i, operand) in operands.iter().enumerate() {
                             let op = self.trans_operand(&bcx, operand);
                             // Do not generate stores and GEPis for zero-sized fields.
@@ -729,11 +720,13 @@ fn get_overflow_intrinsic(oop: OverflowOp, bcx: &BlockAndBuilder, ty: Ty) -> Val
 
     let new_sty = match ty.sty {
         TyInt(Is) => match &tcx.sess.target.target.target_pointer_width[..] {
+            "16" => TyInt(I16),
             "32" => TyInt(I32),
             "64" => TyInt(I64),
             _ => panic!("unsupported target word size")
         },
         TyUint(Us) => match &tcx.sess.target.target.target_pointer_width[..] {
+            "16" => TyUint(U16),
             "32" => TyUint(U32),
             "64" => TyUint(U64),
             _ => panic!("unsupported target word size")

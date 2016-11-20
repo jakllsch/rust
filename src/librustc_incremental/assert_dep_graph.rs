@@ -48,10 +48,10 @@ use rustc::dep_graph::{DepGraphQuery, DepNode};
 use rustc::dep_graph::debug::{DepNodeFilter, EdgeFilter};
 use rustc::hir::def_id::DefId;
 use rustc::ty::TyCtxt;
-use rustc_data_structures::fnv::FnvHashSet;
+use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::graph::{Direction, INCOMING, OUTGOING, NodeIndex};
 use rustc::hir;
-use rustc::hir::intravisit::Visitor;
+use rustc::hir::itemlikevisit::ItemLikeVisitor;
 use graphviz::IntoCow;
 use std::env;
 use std::fs::File;
@@ -81,7 +81,7 @@ pub fn assert_dep_graph<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
                                           if_this_changed: vec![],
                                           then_this_would_need: vec![] };
         visitor.process_attrs(ast::CRATE_NODE_ID, &tcx.map.krate().attrs);
-        tcx.map.krate().visit_all_items(&mut visitor);
+        tcx.map.krate().visit_all_item_likes(&mut visitor);
         (visitor.if_this_changed, visitor.then_this_would_need)
     };
 
@@ -167,9 +167,13 @@ impl<'a, 'tcx> IfThisChanged<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> Visitor<'tcx> for IfThisChanged<'a, 'tcx> {
+impl<'a, 'tcx> ItemLikeVisitor<'tcx> for IfThisChanged<'a, 'tcx> {
     fn visit_item(&mut self, item: &'tcx hir::Item) {
         self.process_attrs(item.id, &item.attrs);
+    }
+
+    fn visit_impl_item(&mut self, impl_item: &'tcx hir::ImplItem) {
+        self.process_attrs(impl_item.id, &impl_item.attrs);
     }
 }
 
@@ -244,7 +248,7 @@ fn dump_graph(tcx: TyCtxt) {
     }
 }
 
-pub struct GraphvizDepGraph<'q>(FnvHashSet<&'q DepNode<DefId>>,
+pub struct GraphvizDepGraph<'q>(FxHashSet<&'q DepNode<DefId>>,
                                 Vec<(&'q DepNode<DefId>, &'q DepNode<DefId>)>);
 
 impl<'a, 'tcx, 'q> dot::GraphWalk<'a> for GraphvizDepGraph<'q> {
@@ -288,7 +292,7 @@ impl<'a, 'tcx, 'q> dot::Labeller<'a> for GraphvizDepGraph<'q> {
 // filter) or the set of nodes whose labels contain all of those
 // substrings.
 fn node_set<'q>(query: &'q DepGraphQuery<DefId>, filter: &DepNodeFilter)
-                -> Option<FnvHashSet<&'q DepNode<DefId>>>
+                -> Option<FxHashSet<&'q DepNode<DefId>>>
 {
     debug!("node_set(filter={:?})", filter);
 
@@ -300,9 +304,9 @@ fn node_set<'q>(query: &'q DepGraphQuery<DefId>, filter: &DepNodeFilter)
 }
 
 fn filter_nodes<'q>(query: &'q DepGraphQuery<DefId>,
-                    sources: &Option<FnvHashSet<&'q DepNode<DefId>>>,
-                    targets: &Option<FnvHashSet<&'q DepNode<DefId>>>)
-                    -> FnvHashSet<&'q DepNode<DefId>>
+                    sources: &Option<FxHashSet<&'q DepNode<DefId>>>,
+                    targets: &Option<FxHashSet<&'q DepNode<DefId>>>)
+                    -> FxHashSet<&'q DepNode<DefId>>
 {
     if let &Some(ref sources) = sources {
         if let &Some(ref targets) = targets {
@@ -318,11 +322,11 @@ fn filter_nodes<'q>(query: &'q DepGraphQuery<DefId>,
 }
 
 fn walk_nodes<'q>(query: &'q DepGraphQuery<DefId>,
-                  starts: &FnvHashSet<&'q DepNode<DefId>>,
+                  starts: &FxHashSet<&'q DepNode<DefId>>,
                   direction: Direction)
-                  -> FnvHashSet<&'q DepNode<DefId>>
+                  -> FxHashSet<&'q DepNode<DefId>>
 {
-    let mut set = FnvHashSet();
+    let mut set = FxHashSet();
     for &start in starts {
         debug!("walk_nodes: start={:?} outgoing?={:?}", start, direction == OUTGOING);
         if set.insert(start) {
@@ -342,9 +346,9 @@ fn walk_nodes<'q>(query: &'q DepGraphQuery<DefId>,
 }
 
 fn walk_between<'q>(query: &'q DepGraphQuery<DefId>,
-                    sources: &FnvHashSet<&'q DepNode<DefId>>,
-                    targets: &FnvHashSet<&'q DepNode<DefId>>)
-                    -> FnvHashSet<&'q DepNode<DefId>>
+                    sources: &FxHashSet<&'q DepNode<DefId>>,
+                    targets: &FxHashSet<&'q DepNode<DefId>>)
+                    -> FxHashSet<&'q DepNode<DefId>>
 {
     // This is a bit tricky. We want to include a node only if it is:
     // (a) reachable from a source and (b) will reach a target. And we
@@ -410,7 +414,7 @@ fn walk_between<'q>(query: &'q DepGraphQuery<DefId>,
 }
 
 fn filter_edges<'q>(query: &'q DepGraphQuery<DefId>,
-                    nodes: &FnvHashSet<&'q DepNode<DefId>>)
+                    nodes: &FxHashSet<&'q DepNode<DefId>>)
                     -> Vec<(&'q DepNode<DefId>, &'q DepNode<DefId>)>
 {
     query.edges()

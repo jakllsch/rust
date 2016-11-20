@@ -79,17 +79,34 @@ pub fn check(build: &mut Build) {
         break
     }
 
-    need_cmd("python".as_ref());
-
-    // Look for the nodejs command, needed for emscripten testing
-    if let Some(node) = have_cmd("node".as_ref()) {
-        build.config.nodejs = Some(node);
-    } else if let Some(node) = have_cmd("nodejs".as_ref()) {
-        build.config.nodejs = Some(node);
+    if build.config.python.is_none() {
+        build.config.python = have_cmd("python2.7".as_ref());
     }
+    if build.config.python.is_none() {
+        build.config.python = have_cmd("python2".as_ref());
+    }
+    if build.config.python.is_none() {
+        need_cmd("python".as_ref());
+        build.config.python = Some("python".into());
+    }
+    need_cmd(build.config.python.as_ref().unwrap().as_ref());
+
 
     if let Some(ref s) = build.config.nodejs {
         need_cmd(s.as_ref());
+    } else {
+        // Look for the nodejs command, needed for emscripten testing
+        if let Some(node) = have_cmd("node".as_ref()) {
+            build.config.nodejs = Some(node);
+        } else if let Some(node) = have_cmd("nodejs".as_ref()) {
+            build.config.nodejs = Some(node);
+        }
+    }
+
+    if let Some(ref gdb) = build.config.gdb {
+        need_cmd(gdb.as_ref());
+    } else {
+        build.config.gdb = have_cmd("gdb".as_ref());
     }
 
     // We're gonna build some custom C code here and there, host triples
@@ -198,7 +215,6 @@ $ pacman -R cmake && pacman -S mingw-w64-x86_64-cmake
                    .to_string()
         })
     };
-    build.gdb_version = run(Command::new("gdb").arg("--version")).ok();
     build.lldb_version = run(Command::new("lldb").arg("--version")).ok();
     if build.lldb_version.is_some() {
         build.lldb_python_dir = run(Command::new("lldb").arg("-P")).ok();

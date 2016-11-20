@@ -17,11 +17,11 @@ use super::{DropFlagState, MoveDataParamEnv};
 use super::patch::MirPatch;
 use rustc::ty::{self, Ty, TyCtxt};
 use rustc::ty::subst::{Kind, Subst, Substs};
-use rustc::mir::repr::*;
+use rustc::mir::*;
 use rustc::mir::transform::{Pass, MirPass, MirSource};
 use rustc::middle::const_val::ConstVal;
 use rustc::middle::lang_items;
-use rustc::util::nodemap::FnvHashMap;
+use rustc::util::nodemap::FxHashMap;
 use rustc_data_structures::indexed_set::IdxSetBuf;
 use rustc_data_structures::indexed_vec::Idx;
 use syntax_pos::Span;
@@ -63,7 +63,7 @@ impl<'tcx> MirPass<'tcx> for ElaborateDrops {
                 env: &env,
                 flow_inits: flow_inits,
                 flow_uninits: flow_uninits,
-                drop_flags: FnvHashMap(),
+                drop_flags: FxHashMap(),
                 patch: MirPatch::new(mir),
             }.elaborate()
         };
@@ -118,7 +118,7 @@ struct ElaborateDropsCtxt<'a, 'tcx: 'a> {
     env: &'a MoveDataParamEnv<'tcx>,
     flow_inits: DataflowResults<MaybeInitializedLvals<'a, 'tcx>>,
     flow_uninits:  DataflowResults<MaybeUninitializedLvals<'a, 'tcx>>,
-    drop_flags: FnvHashMap<MovePathIndex, Local>,
+    drop_flags: FxHashMap<MovePathIndex, Local>,
     patch: MirPatch<'tcx>,
 }
 
@@ -709,9 +709,11 @@ impl<'b, 'tcx> ElaborateDropsCtxt<'b, 'tcx> {
             ty::TyAdt(def, substs) => {
                 self.open_drop_for_adt(c, def, substs)
             }
-            ty::TyTuple(tys) | ty::TyClosure(_, ty::ClosureSubsts {
-                upvar_tys: tys, ..
-            }) => {
+            ty::TyClosure(def_id, substs) => {
+                let tys : Vec<_> = substs.upvar_tys(def_id, self.tcx).collect();
+                self.open_drop_for_tuple(c, &tys)
+            }
+            ty::TyTuple(tys) => {
                 self.open_drop_for_tuple(c, tys)
             }
             ty::TyBox(ty) => {
@@ -858,7 +860,7 @@ impl<'b, 'tcx> ElaborateDropsCtxt<'b, 'tcx> {
         let free_func = tcx.lang_items.require(lang_items::BoxFreeFnLangItem)
             .unwrap_or_else(|e| tcx.sess.fatal(&e));
         let substs = tcx.mk_substs(iter::once(Kind::from(ty)));
-        let fty = tcx.lookup_item_type(free_func).ty.subst(tcx, substs);
+        let fty = tcx.item_type(free_func).subst(tcx, substs);
 
         self.patch.new_block(BasicBlockData {
             statements: statements,

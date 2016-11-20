@@ -440,7 +440,7 @@ impl MacResult for DummyResult {
         if self.expr_only {
             None
         } else {
-            Some(SmallVector::zero())
+            Some(SmallVector::new())
         }
     }
 
@@ -448,7 +448,7 @@ impl MacResult for DummyResult {
         if self.expr_only {
             None
         } else {
-            Some(SmallVector::zero())
+            Some(SmallVector::new())
         }
     }
 
@@ -456,7 +456,7 @@ impl MacResult for DummyResult {
         if self.expr_only {
             None
         } else {
-            Some(SmallVector::zero())
+            Some(SmallVector::new())
         }
     }
 
@@ -517,12 +517,14 @@ pub type NamedSyntaxExtension = (Name, SyntaxExtension);
 pub trait Resolver {
     fn next_node_id(&mut self) -> ast::NodeId;
     fn get_module_scope(&mut self, id: ast::NodeId) -> Mark;
+    fn eliminate_crate_var(&mut self, item: P<ast::Item>) -> P<ast::Item>;
 
     fn visit_expansion(&mut self, mark: Mark, expansion: &Expansion);
     fn add_macro(&mut self, scope: Mark, def: ast::MacroDef, export: bool);
     fn add_ext(&mut self, ident: ast::Ident, ext: Rc<SyntaxExtension>);
     fn add_expansions_at_stmt(&mut self, id: ast::NodeId, macros: Vec<Mark>);
 
+    fn resolve_imports(&mut self);
     fn find_attr_invoc(&mut self, attrs: &mut Vec<Attribute>) -> Option<Attribute>;
     fn resolve_macro(&mut self, scope: Mark, path: &ast::Path, force: bool)
                      -> Result<Rc<SyntaxExtension>, Determinacy>;
@@ -539,12 +541,14 @@ pub struct DummyResolver;
 impl Resolver for DummyResolver {
     fn next_node_id(&mut self) -> ast::NodeId { ast::DUMMY_NODE_ID }
     fn get_module_scope(&mut self, _id: ast::NodeId) -> Mark { Mark::root() }
+    fn eliminate_crate_var(&mut self, item: P<ast::Item>) -> P<ast::Item> { item }
 
     fn visit_expansion(&mut self, _invoc: Mark, _expansion: &Expansion) {}
     fn add_macro(&mut self, _scope: Mark, _def: ast::MacroDef, _export: bool) {}
     fn add_ext(&mut self, _ident: ast::Ident, _ext: Rc<SyntaxExtension>) {}
     fn add_expansions_at_stmt(&mut self, _id: ast::NodeId, _macros: Vec<Mark>) {}
 
+    fn resolve_imports(&mut self) {}
     fn find_attr_invoc(&mut self, _attrs: &mut Vec<Attribute>) -> Option<Attribute> { None }
     fn resolve_macro(&mut self, _scope: Mark, _path: &ast::Path, _force: bool)
                      -> Result<Rc<SyntaxExtension>, Determinacy> {
@@ -574,7 +578,6 @@ pub struct ExpansionData {
 /// -> expn_info of their expansion context stored into their span.
 pub struct ExtCtxt<'a> {
     pub parse_sess: &'a parse::ParseSess,
-    pub cfg: ast::CrateConfig,
     pub ecfg: expand::ExpansionConfig<'a>,
     pub crate_root: Option<&'static str>,
     pub resolver: &'a mut Resolver,
@@ -583,13 +586,12 @@ pub struct ExtCtxt<'a> {
 }
 
 impl<'a> ExtCtxt<'a> {
-    pub fn new(parse_sess: &'a parse::ParseSess, cfg: ast::CrateConfig,
+    pub fn new(parse_sess: &'a parse::ParseSess,
                ecfg: expand::ExpansionConfig<'a>,
                resolver: &'a mut Resolver)
                -> ExtCtxt<'a> {
         ExtCtxt {
             parse_sess: parse_sess,
-            cfg: cfg,
             ecfg: ecfg,
             crate_root: None,
             resolver: resolver,
@@ -617,11 +619,13 @@ impl<'a> ExtCtxt<'a> {
 
     pub fn new_parser_from_tts(&self, tts: &[tokenstream::TokenTree])
         -> parser::Parser<'a> {
-        parse::tts_to_parser(self.parse_sess, tts.to_vec(), self.cfg().clone())
+        let mut parser = parse::tts_to_parser(self.parse_sess, tts.to_vec());
+        parser.allow_interpolated_tts = false; // FIXME(jseyfried) `quote!` can't handle these yet
+        parser
     }
     pub fn codemap(&self) -> &'a CodeMap { self.parse_sess.codemap() }
     pub fn parse_sess(&self) -> &'a parse::ParseSess { self.parse_sess }
-    pub fn cfg(&self) -> &ast::CrateConfig { &self.cfg }
+    pub fn cfg(&self) -> &ast::CrateConfig { &self.parse_sess.config }
     pub fn call_site(&self) -> Span {
         self.codemap().with_expn_info(self.backtrace(), |ei| match ei {
             Some(expn_info) => expn_info.call_site,

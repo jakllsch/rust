@@ -52,7 +52,7 @@ pub type FileName = String;
 /// able to use many of the functions on spans in codemap and you cannot assume
 /// that the length of the span = hi - lo; there may be space in the BytePos
 /// range between files.
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Span {
     pub lo: BytePos,
     pub hi: BytePos,
@@ -67,7 +67,7 @@ pub struct Span {
 ///   the error, and would be rendered with `^^^`.
 /// - they can have a *label*. In this case, the label is written next
 ///   to the mark in the snippet when we render.
-#[derive(Clone)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct MultiSpan {
     primary_spans: Vec<Span>,
     span_labels: Vec<(Span, String)>,
@@ -254,7 +254,7 @@ impl From<Span> for MultiSpan {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Debug, Hash, RustcEncodable, RustcDecodable, Copy)]
+#[derive(PartialEq, Eq, Clone, Debug, Hash, RustcEncodable, RustcDecodable, Copy, Ord, PartialOrd)]
 pub struct ExpnId(pub u32);
 
 pub const NO_EXPANSION: ExpnId = ExpnId(!0);
@@ -481,6 +481,9 @@ impl FileMap {
         self.src.is_none()
     }
 
+    pub fn byte_length(&self) -> u32 {
+        self.end_pos.0 - self.start_pos.0
+    }
     pub fn count_lines(&self) -> usize {
         self.lines.borrow().len()
     }

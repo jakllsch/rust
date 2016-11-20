@@ -20,7 +20,7 @@
 
 #![feature(box_patterns)]
 #![feature(box_syntax)]
-#![feature(dotdot_in_tuple_patterns)]
+#![cfg_attr(stage0, feature(dotdot_in_tuple_patterns))]
 #![feature(libc)]
 #![feature(rustc_private)]
 #![feature(set_stdio)]
@@ -111,7 +111,7 @@ fn unstable(g: getopts::OptGroup) -> RustcOptGroup { RustcOptGroup::unstable(g) 
 
 pub fn opts() -> Vec<RustcOptGroup> {
     use getopts::*;
-    vec!(
+    vec![
         stable(optflag("h", "help", "show this help message")),
         stable(optflag("V", "version", "print rustdoc's version")),
         stable(optflag("v", "verbose", "use verbose output")),
@@ -162,7 +162,11 @@ pub fn opts() -> Vec<RustcOptGroup> {
         unstable(optmulti("Z", "",
                           "internal and debugging options (only on nightly build)", "FLAG")),
         stable(optopt("", "sysroot", "Override the system root", "PATH")),
-    )
+        stable(optopt("", "playground-url",
+                      "URL to send code snippets to, may be reset by --markdown-playground-url \
+                       or `#![doc(html_playground_url=...)]`",
+                      "URL")),
+    ]
 }
 
 pub fn usage(argv0: &str) {
@@ -229,6 +233,10 @@ pub fn main_args(args: &[String]) -> isize {
             return 1;
         }
     };
+
+    if let Some(playground) = matches.opt_str("playground-url") {
+        html::markdown::PLAYGROUND.with(|s| { *s.borrow_mut() = Some((None, playground)); });
+    }
 
     let test_args = matches.opt_strs("test-args");
     let test_args: Vec<String> = test_args.iter()

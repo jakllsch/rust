@@ -115,7 +115,7 @@ fn generic_extension<'cx>(cx: &'cx ExtCtxt,
                 // rhs has holes ( `$id` and `$(...)` that need filled)
                 let trncbr =
                     new_tt_reader(&cx.parse_sess.span_diagnostic, Some(named_matches), rhs);
-                let mut p = Parser::new(cx.parse_sess(), cx.cfg().clone(), Box::new(trncbr));
+                let mut p = Parser::new(cx.parse_sess(), Box::new(trncbr));
                 p.directory = cx.current_expansion.module.directory.clone();
                 p.restrictions = match cx.current_expansion.no_noninline_mod {
                     true => Restrictions::NO_NONINLINE_MOD,
@@ -220,7 +220,7 @@ pub fn compile(sess: &ParseSess, def: &ast::MacroDef) -> SyntaxExtension {
     // Parse the macro_rules! invocation (`none` is for no interpolations):
     let arg_reader = new_tt_reader(&sess.span_diagnostic, None, def.body.clone());
 
-    let argument_map = match parse(sess, &Vec::new(), arg_reader, &argument_gram) {
+    let argument_map = match parse(sess, arg_reader, &argument_gram) {
         Success(m) => m,
         Failure(sp, tok) => {
             let s = parse_failure_msg(tok);
@@ -236,12 +236,14 @@ pub fn compile(sess: &ParseSess, def: &ast::MacroDef) -> SyntaxExtension {
     // Extract the arguments:
     let lhses = match **argument_map.get(&lhs_nm).unwrap() {
         MatchedSeq(ref s, _) => {
-            s.iter().map(|m| match **m {
-                MatchedNonterminal(NtTT(ref tt)) => {
-                    valid &= check_lhs_nt_follows(sess, tt);
-                    (**tt).clone()
+            s.iter().map(|m| {
+                if let MatchedNonterminal(ref nt) = **m {
+                    if let NtTT(ref tt) = **nt {
+                        valid &= check_lhs_nt_follows(sess, tt);
+                        return (*tt).clone();
+                    }
                 }
-                _ => sess.span_diagnostic.span_bug(def.span, "wrong-structured lhs")
+                sess.span_diagnostic.span_bug(def.span, "wrong-structured lhs")
             }).collect::<Vec<TokenTree>>()
         }
         _ => sess.span_diagnostic.span_bug(def.span, "wrong-structured lhs")
@@ -249,9 +251,13 @@ pub fn compile(sess: &ParseSess, def: &ast::MacroDef) -> SyntaxExtension {
 
     let rhses = match **argument_map.get(&rhs_nm).unwrap() {
         MatchedSeq(ref s, _) => {
-            s.iter().map(|m| match **m {
-                MatchedNonterminal(NtTT(ref tt)) => (**tt).clone(),
-                _ => sess.span_diagnostic.span_bug(def.span, "wrong-structured rhs")
+            s.iter().map(|m| {
+                if let MatchedNonterminal(ref nt) = **m {
+                    if let NtTT(ref tt) = **nt {
+                        return (*tt).clone();
+                    }
+                }
+                sess.span_diagnostic.span_bug(def.span, "wrong-structured lhs")
             }).collect()
         }
         _ => sess.span_diagnostic.span_bug(def.span, "wrong-structured rhs")

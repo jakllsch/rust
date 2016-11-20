@@ -10,7 +10,7 @@
 
 use build::{BlockAnd, BlockAndExtension, Builder};
 use hair::*;
-use rustc::mir::repr::*;
+use rustc::mir::*;
 use rustc::hir;
 
 impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
@@ -54,7 +54,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                         let tcx = this.hir.tcx();
 
                         // Enter the remainder scope, i.e. the bindings' destruction scope.
-                        this.push_scope(remainder_scope, block);
+                        this.push_scope(remainder_scope);
                         let_extent_stack.push(remainder_scope);
 
                         // Declare the bindings, which may create a visibility scope.

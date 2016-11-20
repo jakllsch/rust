@@ -30,13 +30,13 @@ use rustc::ty::fold::TypeVisitor;
 use rustc::ty::subst::Substs;
 use rustc::ty::util::TypeIdHasher;
 use rustc::hir;
-use rustc_data_structures::blake2b;
+use rustc_data_structures::blake2b::Blake2bHasher;
 use {type_of, machine, monomorphize};
 use common::CrateContext;
 use type_::Type;
 use rustc::ty::{self, AdtKind, Ty, layout};
 use session::config;
-use util::nodemap::FnvHashMap;
+use util::nodemap::FxHashMap;
 use util::common::path2cstr;
 
 use libc::{c_uint, c_longlong};
@@ -84,20 +84,20 @@ pub struct TypeMap<'tcx> {
     // The UniqueTypeIds created so far
     unique_id_interner: Interner,
     // A map from UniqueTypeId to debuginfo metadata for that type. This is a 1:1 mapping.
-    unique_id_to_metadata: FnvHashMap<UniqueTypeId, DIType>,
+    unique_id_to_metadata: FxHashMap<UniqueTypeId, DIType>,
     // A map from types to debuginfo metadata. This is a N:1 mapping.
-    type_to_metadata: FnvHashMap<Ty<'tcx>, DIType>,
+    type_to_metadata: FxHashMap<Ty<'tcx>, DIType>,
     // A map from types to UniqueTypeId. This is a N:1 mapping.
-    type_to_unique_id: FnvHashMap<Ty<'tcx>, UniqueTypeId>
+    type_to_unique_id: FxHashMap<Ty<'tcx>, UniqueTypeId>
 }
 
 impl<'tcx> TypeMap<'tcx> {
     pub fn new() -> TypeMap<'tcx> {
         TypeMap {
             unique_id_interner: Interner::new(),
-            type_to_metadata: FnvHashMap(),
-            unique_id_to_metadata: FnvHashMap(),
-            type_to_unique_id: FnvHashMap(),
+            type_to_metadata: FxHashMap(),
+            unique_id_to_metadata: FxHashMap(),
+            type_to_unique_id: FxHashMap(),
         }
     }
 
@@ -149,10 +149,16 @@ impl<'tcx> TypeMap<'tcx> {
             None => { /* generate one */}
         };
 
+        // The hasher we are using to generate the UniqueTypeId. We want
+        // something that provides more than the 64 bits of the DefaultHasher.
+        const TYPE_ID_HASH_LENGTH: usize = 20;
+
         let mut type_id_hasher = TypeIdHasher::new(cx.tcx(),
-                                                   DebugInfoTypeIdHasher::new());
+                                                   Blake2bHasher::new(TYPE_ID_HASH_LENGTH, &[]));
         type_id_hasher.visit_ty(type_);
-        let hash = type_id_hasher.into_inner().into_hash();
+        let mut hash_state = type_id_hasher.into_inner();
+        let hash: &[u8] = hash_state.finalize();
+        debug_assert!(hash.len() == TYPE_ID_HASH_LENGTH);
 
         let mut unique_type_id = String::with_capacity(TYPE_ID_HASH_LENGTH * 2);
 
@@ -164,39 +170,6 @@ impl<'tcx> TypeMap<'tcx> {
         self.type_to_unique_id.insert(type_, UniqueTypeId(key));
 
         return UniqueTypeId(key);
-
-        // The hasher we are using to generate the UniqueTypeId. We want
-        // something that provides more than the 64 bits of the DefaultHasher.
-        const TYPE_ID_HASH_LENGTH: usize = 20;
-
-        struct DebugInfoTypeIdHasher {
-            state: blake2b::Blake2bCtx
-        }
-
-        impl ::std::hash::Hasher for DebugInfoTypeIdHasher {
-            fn finish(&self) -> u64 {
-                unimplemented!()
-            }
-
-            #[inline]
-            fn write(&mut self, bytes: &[u8]) {
-                blake2b::blake2b_update(&mut self.state, bytes);
-            }
-        }
-
-        impl DebugInfoTypeIdHasher {
-            fn new() -> DebugInfoTypeIdHasher {
-                DebugInfoTypeIdHasher {
-                    state: blake2b::blake2b_new(TYPE_ID_HASH_LENGTH, &[])
-                }
-            }
-
-            fn into_hash(self) -> [u8; TYPE_ID_HASH_LENGTH] {
-                let mut hash = [0u8; TYPE_ID_HASH_LENGTH];
-                blake2b::blake2b_final(self.state, &mut hash);
-                hash
-            }
-        }
     }
 
     // Get the UniqueTypeId for an enum variant. Enum variants are not really
@@ -601,10 +574,11 @@ pub fn type_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             MetadataCreationResult::new(pointer_type_metadata(cx, t, fn_metadata), false)
 
         }
-        ty::TyClosure(_, ref substs) => {
+        ty::TyClosure(def_id, substs) => {
+            let upvar_tys : Vec<_> = substs.upvar_tys(def_id, cx.tcx()).collect();
             prepare_tuple_metadata(cx,
                                    t,
-                                   &substs.upvar_tys,
+                                   &upvar_tys,
                                    unique_type_id,
                                    usage_site_span).finalize(cx)
         }
@@ -1792,7 +1766,7 @@ pub fn create_global_var_metadata(cx: &CrateContext,
     };
 
     let is_local_to_unit = is_node_local_to_unit(cx, node_id);
-    let variable_type = tcx.erase_regions(&tcx.node_id_to_type(node_id));
+    let variable_type = tcx.erase_regions(&tcx.item_type(node_def_id));
     let type_metadata = type_metadata(cx, variable_type, span);
     let var_name = tcx.item_name(node_def_id).to_string();
     let linkage_name = mangled_name_of_item(cx, node_def_id, "");

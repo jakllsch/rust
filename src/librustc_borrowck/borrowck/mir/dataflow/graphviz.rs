@@ -11,7 +11,7 @@
 //! Hook into libgraphviz for rendering dataflow graphs for MIR.
 
 use syntax::ast::NodeId;
-use rustc::mir::repr::{BasicBlock, Mir};
+use rustc::mir::{BasicBlock, Mir};
 use rustc_data_structures::bitslice::bits_to_string;
 use rustc_data_structures::indexed_set::{IdxSet};
 use rustc_data_structures::indexed_vec::Idx;
@@ -88,7 +88,7 @@ pub trait MirWithFlowState<'tcx> {
 }
 
 impl<'a, 'tcx: 'a, BD> MirWithFlowState<'tcx> for MirBorrowckCtxtPreDataflow<'a, 'tcx, BD>
-    where 'a, 'tcx: 'a, BD: BitDenotation<Ctxt=MoveDataParamEnv<'tcx>>
+    where 'tcx: 'a, BD: BitDenotation<Ctxt=MoveDataParamEnv<'tcx>>
 {
     type BD = BD;
     fn node_id(&self) -> NodeId { self.node_id }

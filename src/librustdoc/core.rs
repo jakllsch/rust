@@ -14,12 +14,12 @@ use rustc_driver::{driver, target_features, abort_on_err};
 use rustc::dep_graph::DepGraph;
 use rustc::session::{self, config};
 use rustc::hir::def_id::DefId;
-use rustc::hir::def::Def;
+use rustc::hir::def::{Def, ExportMap};
 use rustc::middle::privacy::AccessLevels;
 use rustc::ty::{self, TyCtxt};
 use rustc::hir::map as hir_map;
 use rustc::lint;
-use rustc::util::nodemap::FnvHashMap;
+use rustc::util::nodemap::FxHashMap;
 use rustc_trans::back::link;
 use rustc_resolve as resolve;
 use rustc_metadata::cstore::CStore;
@@ -48,7 +48,7 @@ pub enum MaybeTyped<'a, 'tcx: 'a> {
     NotTyped(&'a session::Session)
 }
 
-pub type ExternalPaths = FnvHashMap<DefId, (Vec<String>, clean::TypeKind)>;
+pub type ExternalPaths = FxHashMap<DefId, (Vec<String>, clean::TypeKind)>;
 
 pub struct DocContext<'a, 'tcx: 'a> {
     pub map: &'a hir_map::Map<'tcx>,
@@ -65,15 +65,16 @@ pub struct DocContext<'a, 'tcx: 'a> {
     /// Later on moved into `html::render::CACHE_KEY`
     pub renderinfo: RefCell<RenderInfo>,
     /// Later on moved through `clean::Crate` into `html::render::CACHE_KEY`
-    pub external_traits: RefCell<FnvHashMap<DefId, clean::Trait>>,
+    pub external_traits: RefCell<FxHashMap<DefId, clean::Trait>>,
 
     // The current set of type and lifetime substitutions,
     // for expanding type aliases at the HIR level:
 
     /// Table type parameter definition -> substituted type
-    pub ty_substs: RefCell<FnvHashMap<Def, clean::Type>>,
+    pub ty_substs: RefCell<FxHashMap<Def, clean::Type>>,
     /// Table node id of lifetime parameter definition -> substituted lifetime
-    pub lt_substs: RefCell<FnvHashMap<ast::NodeId, clean::Lifetime>>,
+    pub lt_substs: RefCell<FxHashMap<ast::NodeId, clean::Lifetime>>,
+    pub export_map: ExportMap,
 }
 
 impl<'b, 'tcx> DocContext<'b, 'tcx> {
@@ -99,8 +100,8 @@ impl<'b, 'tcx> DocContext<'b, 'tcx> {
     /// Call the closure with the given parameters set as
     /// the substitutions for a type alias' RHS.
     pub fn enter_alias<F, R>(&self,
-                             ty_substs: FnvHashMap<Def, clean::Type>,
-                             lt_substs: FnvHashMap<ast::NodeId, clean::Lifetime>,
+                             ty_substs: FxHashMap<Def, clean::Type>,
+                             lt_substs: FxHashMap<ast::NodeId, clean::Lifetime>,
                              f: F) -> R
     where F: FnOnce() -> R {
         let (old_tys, old_lts) =
@@ -143,8 +144,8 @@ pub fn run_core(search_paths: SearchPaths,
     let sessopts = config::Options {
         maybe_sysroot: maybe_sysroot,
         search_paths: search_paths,
-        crate_types: vec!(config::CrateTypeRlib),
-        lint_opts: vec!((warning_lint, lint::Allow)),
+        crate_types: vec![config::CrateTypeRlib],
+        lint_opts: vec![(warning_lint, lint::Allow)],
         lint_cap: Some(lint::Allow),
         externs: externs,
         target_triple: triple.unwrap_or(config::host_triple().to_string()),
@@ -163,14 +164,16 @@ pub fn run_core(search_paths: SearchPaths,
     let dep_graph = DepGraph::new(false);
     let _ignore = dep_graph.in_ignore();
     let cstore = Rc::new(CStore::new(&dep_graph));
-    let sess = session::build_session_(sessopts, &dep_graph, cpath, diagnostic_handler,
-                                       codemap, cstore.clone());
+    let mut sess = session::build_session_(
+        sessopts, &dep_graph, cpath, diagnostic_handler, codemap, cstore.clone()
+    );
     rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
 
     let mut cfg = config::build_configuration(&sess, config::parse_cfgspecs(cfgs));
     target_features::add_configuration(&mut cfg, &sess);
+    sess.parse_sess.config = cfg;
 
-    let krate = panictry!(driver::phase_1_parse_input(&sess, cfg, &input));
+    let krate = panictry!(driver::phase_1_parse_input(&sess, &input));
 
     let name = link::find_crate_name(Some(&sess), &krate.attrs, &input);
 
@@ -189,12 +192,12 @@ pub fn run_core(search_paths: SearchPaths,
                                                      resolutions,
                                                      &arenas,
                                                      &name,
-                                                     |tcx, _, analysis, _, result| {
+                                                     |tcx, analysis, _, result| {
         if let Err(_) = result {
             sess.fatal("Compilation failed, aborting rustdoc");
         }
 
-        let ty::CrateAnalysis { access_levels, .. } = analysis;
+        let ty::CrateAnalysis { access_levels, export_map, .. } = analysis;
 
         // Convert from a NodeId set to a DefId set since we don't always have easy access
         // to the map from defid -> nodeid
@@ -216,6 +219,7 @@ pub fn run_core(search_paths: SearchPaths,
             renderinfo: Default::default(),
             ty_substs: Default::default(),
             lt_substs: Default::default(),
+            export_map: export_map,
         };
         debug!("crate: {:?}", ctxt.map.krate());
 

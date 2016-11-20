@@ -214,15 +214,7 @@ pub fn stdin() -> Stdin {
             _ => Maybe::Fake
         };
 
-        // The default buffer capacity is 64k, but apparently windows
-        // doesn't like 64k reads on stdin. See #13304 for details, but the
-        // idea is that on windows we use a slightly smaller buffer that's
-        // been seen to be acceptable.
-        Arc::new(Mutex::new(if cfg!(windows) {
-            BufReader::with_capacity(8 * 1024, stdin)
-        } else {
-            BufReader::new(stdin)
-        }))
+        Arc::new(Mutex::new(BufReader::with_capacity(stdio::STDIN_BUF_SIZE, stdin)))
     }
 }
 
@@ -326,10 +318,11 @@ impl<'a> BufRead for StdinLock<'a> {
 ///
 /// Each handle shares a global buffer of data to be written to the standard
 /// output stream. Access is also synchronized via a lock and explicit control
-/// over locking is available via the `lock` method.
+/// over locking is available via the [`lock()`] method.
 ///
 /// Created by the [`io::stdout`] method.
 ///
+/// [`lock()`]: #method.lock
 /// [`io::stdout`]: fn.stdout.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Stdout {

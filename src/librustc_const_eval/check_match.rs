@@ -65,7 +65,7 @@ impl<'a, 'v, 'tcx> Visitor<'v> for OuterVisitor<'a, 'tcx> {
     }
 
     fn visit_fn(&mut self, fk: FnKind<'v>, fd: &'v hir::FnDecl,
-                b: &'v hir::Block, s: Span, id: ast::NodeId) {
+                b: &'v hir::Expr, s: Span, id: ast::NodeId) {
         if let FnKind::Closure(..) = fk {
             span_bug!(s, "check_match: closure outside of function")
         }
@@ -78,7 +78,8 @@ impl<'a, 'v, 'tcx> Visitor<'v> for OuterVisitor<'a, 'tcx> {
 }
 
 pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
-    tcx.visit_all_items_in_krate(DepNode::MatchCheck, &mut OuterVisitor { tcx: tcx });
+    tcx.visit_all_item_likes_in_krate(DepNode::MatchCheck,
+                                      &mut OuterVisitor { tcx: tcx }.as_deep_visitor());
     tcx.sess.abort_if_errors();
 }
 
@@ -113,7 +114,7 @@ impl<'a, 'tcx, 'v> Visitor<'v> for MatchVisitor<'a, 'tcx> {
     }
 
     fn visit_fn(&mut self, fk: FnKind<'v>, fd: &'v hir::FnDecl,
-                b: &'v hir::Block, s: Span, n: ast::NodeId) {
+                b: &'v hir::Expr, s: Span, n: ast::NodeId) {
         intravisit::walk_fn(self, fk, fd, b, s, n);
 
         for input in &fd.inputs {
@@ -201,7 +202,7 @@ impl<'a, 'tcx> MatchVisitor<'a, 'tcx> {
 
             // Finally, check if the whole match expression is exhaustive.
             // Check for empty enum, because is_useful only works on inhabited types.
-            let pat_ty = self.tcx.node_id_to_type(scrut.id);
+            let pat_ty = self.tcx.tables().node_id_to_type(scrut.id);
             if inlined_arms.is_empty() {
                 if !pat_ty.is_uninhabited(self.tcx) {
                     // We know the type is inhabited, so this must be wrong
@@ -262,7 +263,7 @@ impl<'a, 'tcx> MatchVisitor<'a, 'tcx> {
 fn check_for_bindings_named_the_same_as_variants(cx: &MatchVisitor, pat: &Pat) {
     pat.walk(|p| {
         if let PatKind::Binding(hir::BindByValue(hir::MutImmutable), name, None) = p.node {
-            let pat_ty = cx.tcx.pat_ty(p);
+            let pat_ty = cx.tcx.tables().pat_ty(p);
             if let ty::TyAdt(edef, _) = pat_ty.sty {
                 if edef.is_enum() {
                     if let Def::Local(..) = cx.tcx.expect_def(p.id) {
@@ -486,7 +487,7 @@ fn check_legality_of_move_bindings(cx: &MatchVisitor,
     for pat in pats {
         pat.walk(|p| {
             if let PatKind::Binding(hir::BindByValue(..), _, ref sub) = p.node {
-                let pat_ty = cx.tcx.node_id_to_type(p.id);
+                let pat_ty = cx.tcx.tables().node_id_to_type(p.id);
                 if pat_ty.moves_by_default(cx.tcx, cx.param_env, pat.span) {
                     check_move(p, sub.as_ref().map(|p| &**p));
                 }

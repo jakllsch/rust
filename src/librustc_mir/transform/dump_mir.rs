@@ -13,7 +13,7 @@
 use std::fmt;
 
 use rustc::ty::TyCtxt;
-use rustc::mir::repr::*;
+use rustc::mir::*;
 use rustc::mir::transform::{Pass, MirPass, MirPassHook, MirSource};
 use pretty;
 
@@ -64,8 +64,7 @@ impl<'tcx> MirPassHook<'tcx> for DumpMir {
                 is_after: is_after
             },
             src,
-            mir,
-            None
+            mir
         );
     }
 }

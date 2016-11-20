@@ -713,7 +713,9 @@ impl<'a> State<'a> {
                               typarams,
                               &item.vis)?;
                 word(&mut self.s, " ")?;
-                self.print_block_with_attrs(&body, &item.attrs)?;
+                self.end()?; // need to close a box
+                self.end()?; // need to close a box
+                self.print_expr(&body)?;
             }
             hir::ItemMod(ref _mod) => {
                 self.head(&visibility_qualified(&item.vis, "mod"))?;
@@ -807,7 +809,7 @@ impl<'a> State<'a> {
                 self.bopen()?;
                 self.print_inner_attributes(&item.attrs)?;
                 for impl_item in impl_items {
-                    self.print_impl_item(impl_item)?;
+                    self.print_impl_item_ref(impl_item)?;
                 }
                 self.bclose(item.span)?;
             }
@@ -1002,7 +1004,9 @@ impl<'a> State<'a> {
                 self.print_method_sig(ti.name, sig, &hir::Inherited)?;
                 if let Some(ref body) = *body {
                     self.nbsp()?;
-                    self.print_block_with_attrs(body, &ti.attrs)?;
+                    self.end()?; // need to close a box
+                    self.end()?; // need to close a box
+                    self.print_expr(body)?;
                 } else {
                     word(&mut self.s, ";")?;
                 }
@@ -1016,14 +1020,25 @@ impl<'a> State<'a> {
         self.ann.post(self, NodeSubItem(ti.id))
     }
 
+    pub fn print_impl_item_ref(&mut self, item_ref: &hir::ImplItemRef) -> io::Result<()> {
+        if let Some(krate) = self.krate {
+            // skip nested items if krate context was not provided
+            let item = &krate.impl_item(item_ref.id);
+            self.print_impl_item(item)
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn print_impl_item(&mut self, ii: &hir::ImplItem) -> io::Result<()> {
         self.ann.pre(self, NodeSubItem(ii.id))?;
         self.hardbreak_if_not_bol()?;
         self.maybe_print_comment(ii.span.lo)?;
         self.print_outer_attributes(&ii.attrs)?;
 
-        if let hir::Defaultness::Default = ii.defaultness {
-            self.word_nbsp("default")?;
+        match ii.defaultness {
+            hir::Defaultness::Default { .. } => self.word_nbsp("default")?,
+            hir::Defaultness::Final => (),
         }
 
         match ii.node {
@@ -1034,7 +1049,9 @@ impl<'a> State<'a> {
                 self.head("")?;
                 self.print_method_sig(ii.name, sig, &ii.vis)?;
                 self.nbsp()?;
-                self.print_block_with_attrs(body, &ii.attrs)?;
+                self.end()?; // need to close a box
+                self.end()?; // need to close a box
+                self.print_expr(body)?;
             }
             hir::ImplItemKind::Type(ref ty) => {
                 self.print_associated_type(ii.name, None, Some(ty))?;
@@ -1402,26 +1419,10 @@ impl<'a> State<'a> {
                 self.print_fn_block_args(&decl)?;
                 space(&mut self.s)?;
 
-                let default_return = match decl.output {
-                    hir::DefaultReturn(..) => true,
-                    _ => false,
-                };
+                // this is a bare expression
+                self.print_expr(body)?;
+                self.end()?; // need to close a box
 
-                if !default_return || !body.stmts.is_empty() || body.expr.is_none() {
-                    self.print_block_unclosed(&body)?;
-                } else {
-                    // we extract the block, so as not to create another set of boxes
-                    match body.expr.as_ref().unwrap().node {
-                        hir::ExprBlock(ref blk) => {
-                            self.print_block_unclosed(&blk)?;
-                        }
-                        _ => {
-                            // this is a bare expression
-                            self.print_expr(body.expr.as_ref().map(|e| &**e).unwrap())?;
-                            self.end()?; // need to close a box
-                        }
-                    }
-                }
                 // a box will be closed by print_expr, but we didn't want an overall
                 // wrapper so we closed the corresponding opening. so create an
                 // empty box to satisfy the close.

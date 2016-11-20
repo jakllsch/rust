@@ -18,24 +18,24 @@ use rustc::ty::{self, TyCtxt, ParameterEnvironment};
 use rustc::traits::Reveal;
 
 use rustc::hir;
-use rustc::hir::intravisit;
+use rustc::hir::intravisit::{self, Visitor};
 use syntax::ast;
 use syntax_pos::Span;
 
 pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
     let mut rvcx = RvalueContext { tcx: tcx };
-    tcx.visit_all_items_in_krate(DepNode::RvalueCheck, &mut rvcx);
+    tcx.visit_all_item_likes_in_krate(DepNode::RvalueCheck, &mut rvcx.as_deep_visitor());
 }
 
 struct RvalueContext<'a, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
 }
 
-impl<'a, 'tcx, 'v> intravisit::Visitor<'v> for RvalueContext<'a, 'tcx> {
+impl<'a, 'tcx, 'v> Visitor<'v> for RvalueContext<'a, 'tcx> {
     fn visit_fn(&mut self,
                 fk: intravisit::FnKind<'v>,
                 fd: &'v hir::FnDecl,
-                b: &'v hir::Block,
+                b: &'v hir::Expr,
                 s: Span,
                 fn_id: ast::NodeId) {
         // FIXME (@jroesch) change this to be an inference context

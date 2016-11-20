@@ -20,7 +20,7 @@
 #![feature(box_patterns)]
 #![feature(conservative_impl_trait)]
 #![feature(core_intrinsics)]
-#![feature(dotdot_in_tuple_patterns)]
+#![cfg_attr(stage0, feature(dotdot_in_tuple_patterns))]
 #![feature(proc_macro_internals)]
 #![feature(proc_macro_lib)]
 #![cfg_attr(stage0, feature(question_mark))]
@@ -30,8 +30,10 @@
 #![feature(specialization)]
 #![feature(staged_api)]
 
-#[macro_use] extern crate log;
-#[macro_use] extern crate syntax;
+#[macro_use]
+extern crate log;
+#[macro_use]
+extern crate syntax;
 extern crate syntax_pos;
 extern crate flate;
 extern crate serialize as rustc_serialize; // used by deriving

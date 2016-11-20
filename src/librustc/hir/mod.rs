@@ -33,7 +33,7 @@ pub use self::PathParameters::*;
 
 use hir::def::Def;
 use hir::def_id::DefId;
-use util::nodemap::{NodeMap, FnvHashSet};
+use util::nodemap::{NodeMap, FxHashSet};
 
 use syntax_pos::{mk_sp, Span, ExpnId, DUMMY_SP};
 use syntax::codemap::{self, respan, Spanned};
@@ -68,6 +68,7 @@ pub mod check_attr;
 pub mod def;
 pub mod def_id;
 pub mod intravisit;
+pub mod itemlikevisit;
 pub mod lowering;
 pub mod map;
 pub mod pat_util;
@@ -413,7 +414,6 @@ pub type CrateConfig = HirVec<P<MetaItem>>;
 pub struct Crate {
     pub module: Mod,
     pub attrs: HirVec<Attribute>,
-    pub config: CrateConfig,
     pub span: Span,
     pub exported_macros: HirVec<MacroDef>,
 
@@ -424,11 +424,17 @@ pub struct Crate {
     // detected, which in turn can make compile-fail tests yield
     // slightly different results.
     pub items: BTreeMap<NodeId, Item>,
+
+    pub impl_items: BTreeMap<ImplItemId, ImplItem>,
 }
 
 impl Crate {
     pub fn item(&self, id: NodeId) -> &Item {
         &self.items[&id]
+    }
+
+    pub fn impl_item(&self, id: ImplItemId) -> &ImplItem {
+        &self.impl_items[&id]
     }
 
     /// Visits all items in the crate in some determinstic (but
@@ -439,11 +445,15 @@ impl Crate {
     /// follows lexical scoping rules -- then you want a different
     /// approach. You should override `visit_nested_item` in your
     /// visitor and then call `intravisit::walk_crate` instead.
-    pub fn visit_all_items<'hir, V>(&'hir self, visitor: &mut V)
-        where V: intravisit::Visitor<'hir>
+    pub fn visit_all_item_likes<'hir, V>(&'hir self, visitor: &mut V)
+        where V: itemlikevisit::ItemLikeVisitor<'hir>
     {
         for (_, item) in &self.items {
             visitor.visit_item(item);
+        }
+
+        for (_, impl_item) in &self.impl_items {
+            visitor.visit_impl_item(impl_item);
         }
     }
 }
@@ -841,8 +851,8 @@ pub enum UnsafeSource {
 #[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash)]
 pub struct Expr {
     pub id: NodeId,
-    pub node: Expr_,
     pub span: Span,
+    pub node: Expr_,
     pub attrs: ThinVec<Attribute>,
 }
 
@@ -905,7 +915,7 @@ pub enum Expr_ {
     /// A closure (for example, `move |a, b, c| {a + b + c}`).
     ///
     /// The final span is the span of the argument block `|...|`
-    ExprClosure(CaptureClause, P<FnDecl>, P<Block>, Span),
+    ExprClosure(CaptureClause, P<FnDecl>, P<Expr>, Span),
     /// A block (`{ ... }`)
     ExprBlock(P<Block>),
 
@@ -941,13 +951,13 @@ pub enum Expr_ {
     ExprRet(Option<P<Expr>>),
 
     /// Inline assembly (from `asm!`), with its outputs and inputs.
-    ExprInlineAsm(InlineAsm, Vec<P<Expr>>, Vec<P<Expr>>),
+    ExprInlineAsm(P<InlineAsm>, HirVec<P<Expr>>, HirVec<P<Expr>>),
 
     /// A struct or struct-like variant literal expression.
     ///
     /// For example, `Foo {x: 1, y: 2}`, or
     /// `Foo {x: 1, .. base}`, where `base` is the `Option<Expr>`.
-    ExprStruct(Path, HirVec<Field>, Option<P<Expr>>),
+    ExprStruct(P<Path>, HirVec<Field>, Option<P<Expr>>),
 
     /// An array literal constructed from one repeated element.
     ///
@@ -1036,10 +1046,18 @@ pub enum TraitItem_ {
     /// must contain a value)
     ConstTraitItem(P<Ty>, Option<P<Expr>>),
     /// A method with an optional body
-    MethodTraitItem(MethodSig, Option<P<Block>>),
+    MethodTraitItem(MethodSig, Option<P<Expr>>),
     /// An associated type with (possibly empty) bounds and optional concrete
     /// type
     TypeTraitItem(TyParamBounds, Option<P<Ty>>),
+}
+
+// The bodies for items are stored "out of line", in a separate
+// hashmap in the `Crate`. Here we just record the node-id of the item
+// so it can fetched later.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RustcEncodable, RustcDecodable, Hash, Debug)]
+pub struct ImplItemId {
+    pub node_id: NodeId,
 }
 
 /// Represents anything within an `impl` block
@@ -1061,7 +1079,7 @@ pub enum ImplItemKind {
     /// of the expression
     Const(P<Ty>, P<Expr>),
     /// A method implementation with the given signature and body
-    Method(MethodSig, P<Block>),
+    Method(MethodSig, P<Expr>),
     /// An associated type
     Type(P<Ty>),
 }
@@ -1241,17 +1259,27 @@ pub enum Constness {
 
 #[derive(Copy, Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
 pub enum Defaultness {
-    Default,
+    Default { has_value: bool },
     Final,
 }
 
 impl Defaultness {
+    pub fn has_value(&self) -> bool {
+        match *self {
+            Defaultness::Default { has_value, .. } => has_value,
+            Defaultness::Final => true,
+        }
+    }
+
     pub fn is_final(&self) -> bool {
         *self == Defaultness::Final
     }
 
     pub fn is_default(&self) -> bool {
-        *self == Defaultness::Default
+        match *self {
+            Defaultness::Default { .. } => true,
+            _ => false,
+        }
     }
 }
 
@@ -1502,7 +1530,7 @@ pub enum Item_ {
     /// A `const` item
     ItemConst(P<Ty>, P<Expr>),
     /// A function declaration
-    ItemFn(P<FnDecl>, Unsafety, Constness, Abi, Generics, P<Block>),
+    ItemFn(P<FnDecl>, Unsafety, Constness, Abi, Generics, P<Expr>),
     /// A module
     ItemMod(Mod),
     /// An external module
@@ -1528,7 +1556,7 @@ pub enum Item_ {
              Generics,
              Option<TraitRef>, // (optional) trait this impl implements
              P<Ty>, // self
-             HirVec<ImplItem>),
+             HirVec<ImplItemRef>),
 }
 
 impl Item_ {
@@ -1550,6 +1578,29 @@ impl Item_ {
             ItemDefaultImpl(..) => "item",
         }
     }
+}
+
+/// A reference from an impl to one of its associated items. This
+/// contains the item's id, naturally, but also the item's name and
+/// some other high-level details (like whether it is an associated
+/// type or method, and whether it is public). This allows other
+/// passes to find the impl they want without loading the id (which
+/// means fewer edges in the incremental compilation graph).
+#[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
+pub struct ImplItemRef {
+    pub id: ImplItemId,
+    pub name: Name,
+    pub kind: AssociatedItemKind,
+    pub span: Span,
+    pub vis: Visibility,
+    pub defaultness: Defaultness,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
+pub enum AssociatedItemKind {
+    Const,
+    Method { has_self: bool },
+    Type,
 }
 
 #[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
@@ -1606,4 +1657,4 @@ pub type TraitMap = NodeMap<Vec<TraitCandidate>>;
 
 // Map from the NodeId of a glob import to a list of items which are actually
 // imported.
-pub type GlobMap = NodeMap<FnvHashSet<Name>>;
+pub type GlobMap = NodeMap<FxHashSet<Name>>;

@@ -139,23 +139,23 @@ fn expand_deriving_encodable_imp(cx: &mut ExtCtxt,
         generics: LifetimeBounds::empty(),
         is_unsafe: false,
         supports_unions: false,
-        methods: vec!(
+        methods: vec![
             MethodDef {
                 name: "encode",
                 generics: LifetimeBounds {
                     lifetimes: Vec::new(),
                     bounds: vec![(typaram,
-                                  vec![Path::new_(vec![krate, "Encoder"], None, vec!(), true)])]
+                                  vec![Path::new_(vec![krate, "Encoder"], None, vec![], true)])]
                 },
                 explicit_self: borrowed_explicit_self(),
-                args: vec!(Ptr(Box::new(Literal(Path::new_local(typaram))),
-                           Borrowed(None, Mutability::Mutable))),
+                args: vec![Ptr(Box::new(Literal(Path::new_local(typaram))),
+                           Borrowed(None, Mutability::Mutable))],
                 ret_ty: Literal(Path::new_(
                     pathvec_std!(cx, core::result::Result),
                     None,
-                    vec!(Box::new(Tuple(Vec::new())), Box::new(Literal(Path::new_(
+                    vec![Box::new(Tuple(Vec::new())), Box::new(Literal(Path::new_(
                         vec![typaram, "Error"], None, vec![], false
-                    )))),
+                    )))],
                     true
                 )),
                 attributes: Vec::new(),
@@ -165,7 +165,7 @@ fn expand_deriving_encodable_imp(cx: &mut ExtCtxt,
                     encodable_substructure(a, b, c, krate)
                 })),
             }
-        ),
+        ],
         associated_types: Vec::new(),
     };
 
@@ -197,7 +197,7 @@ fn encodable_substructure(cx: &mut ExtCtxt,
                 };
                 let self_ref = cx.expr_addr_of(span, self_.clone());
                 let enc = cx.expr_call(span, fn_path.clone(), vec![self_ref, blkencoder.clone()]);
-                let lambda = cx.lambda_expr_1(span, enc, blkarg);
+                let lambda = cx.lambda1(span, enc, blkarg);
                 let call = cx.expr_method_call(span,
                                                blkencoder.clone(),
                                                emit_struct_field,
@@ -246,7 +246,7 @@ fn encodable_substructure(cx: &mut ExtCtxt,
                     let self_ref = cx.expr_addr_of(span, self_.clone());
                     let enc =
                         cx.expr_call(span, fn_path.clone(), vec![self_ref, blkencoder.clone()]);
-                    let lambda = cx.lambda_expr_1(span, enc, blkarg);
+                    let lambda = cx.lambda1(span, enc, blkarg);
                     let call = cx.expr_method_call(span,
                                                    blkencoder.clone(),
                                                    emit_variant_arg,
@@ -273,7 +273,7 @@ fn encodable_substructure(cx: &mut ExtCtxt,
                                                 cx.expr_usize(trait_span, idx),
                                                 cx.expr_usize(trait_span, fields.len()),
                                                 blk]);
-            let blk = cx.lambda_expr_1(trait_span, call, blkarg);
+            let blk = cx.lambda1(trait_span, call, blkarg);
             let ret = cx.expr_method_call(trait_span,
                                           encoder,
                                           cx.ident_of("emit_enum"),

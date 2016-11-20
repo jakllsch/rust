@@ -22,7 +22,7 @@ pub struct TypeWalker<'tcx> {
 
 impl<'tcx> TypeWalker<'tcx> {
     pub fn new(ty: Ty<'tcx>) -> TypeWalker<'tcx> {
-        TypeWalker { stack: vec!(ty), last_subtree: 1, }
+        TypeWalker { stack: vec![ty], last_subtree: 1, }
     }
 
     /// Skips the subtree of types corresponding to the last type
@@ -97,8 +97,7 @@ fn push_subtypes<'tcx>(stack: &mut Vec<Ty<'tcx>>, parent_ty: Ty<'tcx>) {
             stack.extend(substs.types().rev());
         }
         ty::TyClosure(_, ref substs) => {
-            stack.extend(substs.func_substs.types().rev());
-            stack.extend(substs.upvar_tys.iter().cloned().rev());
+            stack.extend(substs.substs.types().rev());
         }
         ty::TyTuple(ts) => {
             stack.extend(ts.iter().cloned().rev());

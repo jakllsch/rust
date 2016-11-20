@@ -13,9 +13,7 @@
 
 use rustc_data_structures::bitvec::BitVector;
 use rustc_data_structures::indexed_vec::{Idx, IndexVec};
-use rustc::mir::repr as mir;
-use rustc::mir::repr::TerminatorKind;
-use rustc::mir::repr::Location;
+use rustc::mir::{self, Location, TerminatorKind};
 use rustc::mir::visit::{Visitor, LvalueContext};
 use rustc::mir::traversal;
 use common::{self, Block, BlockAndBuilder};
@@ -44,12 +42,6 @@ pub fn lvalue_locals<'bcx, 'tcx>(bcx: Block<'bcx,'tcx>,
                     common::type_is_fat_ptr(bcx.tcx(), ty));
         } else if common::type_is_imm_pair(bcx.ccx(), ty) {
             // We allow pairs and uses of any of their 2 fields.
-        } else if !analyzer.seen_assigned.contains(index) {
-            // No assignment has been seen, which means that
-            // either the local has been marked as lvalue
-            // already, or there is no possible initialization
-            // for the local, making any reads invalid.
-            // This is useful in weeding out dead temps.
         } else {
             // These sorts of types require an alloca. Note that
             // type_is_immediate() may *still* be true, particularly

@@ -34,8 +34,9 @@
 #![cfg_attr(stage0, feature(question_mark))]
 #![feature(rustc_diagnostic_macros)]
 #![feature(specialization)]
-#![feature(dotdot_in_tuple_patterns)]
+#![cfg_attr(stage0, feature(dotdot_in_tuple_patterns))]
 
+extern crate core;
 extern crate serialize;
 extern crate term;
 extern crate libc;
@@ -44,6 +45,7 @@ extern crate libc;
 extern crate rustc_unicode;
 pub extern crate rustc_errors as errors;
 extern crate syntax_pos;
+extern crate rustc_data_structures;
 
 extern crate serialize as rustc_serialize; // used by deriving
 

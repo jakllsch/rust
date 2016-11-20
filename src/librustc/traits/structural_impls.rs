@@ -175,6 +175,13 @@ impl<'a, 'tcx> Lift<'tcx> for traits::ObligationCauseCode<'a> {
             super::ReferenceOutlivesReferent(ty) => {
                 tcx.lift(&ty).map(super::ReferenceOutlivesReferent)
             }
+            super::ObjectTypeBound(ty, r) => {
+                tcx.lift(&ty).and_then(|ty| {
+                    tcx.lift(&r).and_then(|r| {
+                        Some(super::ObjectTypeBound(ty, r))
+                    })
+                })
+            }
             super::ObjectCastObligation(ty) => {
                 tcx.lift(&ty).map(super::ObjectCastObligation)
             }
@@ -195,8 +202,44 @@ impl<'a, 'tcx> Lift<'tcx> for traits::ObligationCauseCode<'a> {
             super::ImplDerivedObligation(ref cause) => {
                 tcx.lift(cause).map(super::ImplDerivedObligation)
             }
-            super::CompareImplMethodObligation => {
-                Some(super::CompareImplMethodObligation)
+            super::CompareImplMethodObligation { item_name,
+                                                 impl_item_def_id,
+                                                 trait_item_def_id,
+                                                 lint_id } => {
+                Some(super::CompareImplMethodObligation {
+                    item_name: item_name,
+                    impl_item_def_id: impl_item_def_id,
+                    trait_item_def_id: trait_item_def_id,
+                    lint_id: lint_id,
+                })
+            }
+            super::ExprAssignable => {
+                Some(super::ExprAssignable)
+            }
+            super::MatchExpressionArm { arm_span, source } => {
+                Some(super::MatchExpressionArm { arm_span: arm_span,
+                                                 source: source })
+            }
+            super::IfExpression => {
+                Some(super::IfExpression)
+            }
+            super::IfExpressionWithNoElse => {
+                Some(super::IfExpressionWithNoElse)
+            }
+            super::EquatePredicate => {
+                Some(super::EquatePredicate)
+            }
+            super::MainFunctionType => {
+                Some(super::MainFunctionType)
+            }
+            super::StartFunctionType => {
+                Some(super::StartFunctionType)
+            }
+            super::IntrinsicType => {
+                Some(super::IntrinsicType)
+            }
+            super::MethodReceiver => {
+                Some(super::MethodReceiver)
             }
         }
     }
@@ -446,6 +489,15 @@ impl<'tcx, T: TypeFoldable<'tcx>> TypeFoldable<'tcx> for Normalized<'tcx, T> {
 impl<'tcx> TypeFoldable<'tcx> for traits::ObligationCauseCode<'tcx> {
     fn super_fold_with<'gcx: 'tcx, F: TypeFolder<'gcx, 'tcx>>(&self, folder: &mut F) -> Self {
         match *self {
+            super::ExprAssignable |
+            super::MatchExpressionArm { arm_span: _, source: _ } |
+            super::IfExpression |
+            super::IfExpressionWithNoElse |
+            super::EquatePredicate |
+            super::MainFunctionType |
+            super::StartFunctionType |
+            super::IntrinsicType |
+            super::MethodReceiver |
             super::MiscObligation |
             super::SliceOrArrayElem |
             super::TupleElem |
@@ -459,11 +511,14 @@ impl<'tcx> TypeFoldable<'tcx> for traits::ObligationCauseCode<'tcx> {
             super::FieldSized |
             super::ConstSized |
             super::SharedStatic |
-            super::CompareImplMethodObligation => self.clone(),
+            super::CompareImplMethodObligation { .. } => self.clone(),
 
             super::ProjectionWf(proj) => super::ProjectionWf(proj.fold_with(folder)),
             super::ReferenceOutlivesReferent(ty) => {
                 super::ReferenceOutlivesReferent(ty.fold_with(folder))
+            }
+            super::ObjectTypeBound(ty, r) => {
+                super::ObjectTypeBound(ty.fold_with(folder), r.fold_with(folder))
             }
             super::ObjectCastObligation(ty) => {
                 super::ObjectCastObligation(ty.fold_with(folder))
@@ -479,6 +534,15 @@ impl<'tcx> TypeFoldable<'tcx> for traits::ObligationCauseCode<'tcx> {
 
     fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> bool {
         match *self {
+            super::ExprAssignable |
+            super::MatchExpressionArm { arm_span: _, source: _ } |
+            super::IfExpression |
+            super::IfExpressionWithNoElse |
+            super::EquatePredicate |
+            super::MainFunctionType |
+            super::StartFunctionType |
+            super::IntrinsicType |
+            super::MethodReceiver |
             super::MiscObligation |
             super::SliceOrArrayElem |
             super::TupleElem |
@@ -492,10 +556,11 @@ impl<'tcx> TypeFoldable<'tcx> for traits::ObligationCauseCode<'tcx> {
             super::FieldSized |
             super::ConstSized |
             super::SharedStatic |
-            super::CompareImplMethodObligation => false,
+            super::CompareImplMethodObligation { .. } => false,
 
             super::ProjectionWf(proj) => proj.visit_with(visitor),
             super::ReferenceOutlivesReferent(ty) => ty.visit_with(visitor),
+            super::ObjectTypeBound(ty, r) => ty.visit_with(visitor) || r.visit_with(visitor),
             super::ObjectCastObligation(ty) => ty.visit_with(visitor),
             super::BuiltinDerivedObligation(ref cause) => cause.visit_with(visitor),
             super::ImplDerivedObligation(ref cause) => cause.visit_with(visitor)

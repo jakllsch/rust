@@ -147,7 +147,16 @@ impl Emitter for SharedEmitter {
 // arise as some of intrinsics are converted into function calls
 // and nobody provides implementations those functions
 fn target_feature(sess: &Session) -> String {
-    format!("{},{}", sess.target.target.options.features, sess.opts.cg.target_feature)
+    let rustc_features = [
+        "crt-static",
+    ];
+    let requested_features = sess.opts.cg.target_feature.split(',');
+    let llvm_features = requested_features.filter(|f| {
+        !rustc_features.iter().any(|s| f.contains(s))
+    });
+    format!("{},{}",
+            sess.target.target.options.features,
+            llvm_features.collect::<Vec<_>>().join(","))
 }
 
 fn get_llvm_opt_level(optimize: config::OptLevel) -> llvm::CodeGenOptLevel {
@@ -665,7 +674,7 @@ pub fn run_passes(sess: &Session,
     // Figure out what we actually need to build.
 
     let mut modules_config = ModuleConfig::new(tm, sess.opts.cg.passes.clone());
-    let mut metadata_config = ModuleConfig::new(tm, vec!());
+    let mut metadata_config = ModuleConfig::new(tm, vec![]);
 
     modules_config.opt_level = Some(get_llvm_opt_level(sess.opts.optimize));
     modules_config.opt_size = Some(get_llvm_opt_size(sess.opts.optimize));
