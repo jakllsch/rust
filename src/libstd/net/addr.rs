@@ -31,7 +31,7 @@ pub enum SocketAddr {
     /// An IPv4 socket address which is a (ip, port) combination.
     #[stable(feature = "rust1", since = "1.0.0")]
     V4(#[stable(feature = "rust1", since = "1.0.0")] SocketAddrV4),
-    /// An IPv6 socket address
+    /// An IPv6 socket address.
     #[stable(feature = "rust1", since = "1.0.0")]
     V6(#[stable(feature = "rust1", since = "1.0.0")] SocketAddrV6),
 }
@@ -48,6 +48,16 @@ pub struct SocketAddrV6 { inner: c::sockaddr_in6 }
 
 impl SocketAddr {
     /// Creates a new socket address from the (ip, port) pair.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    ///
+    /// let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+    /// assert_eq!(socket.ip(), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+    /// assert_eq!(socket.port(), 8080);
+    /// ```
     #[stable(feature = "ip_addr", since = "1.7.0")]
     pub fn new(ip: IpAddr, port: u16) -> SocketAddr {
         match ip {
@@ -57,6 +67,15 @@ impl SocketAddr {
     }
 
     /// Returns the IP address associated with this socket address.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    ///
+    /// let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+    /// assert_eq!(socket.ip(), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+    /// ```
     #[stable(feature = "ip_addr", since = "1.7.0")]
     pub fn ip(&self) -> IpAddr {
         match *self {
@@ -66,6 +85,16 @@ impl SocketAddr {
     }
 
     /// Change the IP address associated with this socket address.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    ///
+    /// let mut socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+    /// socket.set_ip(IpAddr::V4(Ipv4Addr::new(10, 10, 0, 1)));
+    /// assert_eq!(socket.ip(), IpAddr::V4(Ipv4Addr::new(10, 10, 0, 1)));
+    /// ```
     #[stable(feature = "sockaddr_setters", since = "1.9.0")]
     pub fn set_ip(&mut self, new_ip: IpAddr) {
         // `match (*self, new_ip)` would have us mutate a copy of self only to throw it away.
@@ -77,6 +106,15 @@ impl SocketAddr {
     }
 
     /// Returns the port number associated with this socket address.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    ///
+    /// let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+    /// assert_eq!(socket.port(), 8080);
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn port(&self) -> u16 {
         match *self {
@@ -86,6 +124,16 @@ impl SocketAddr {
     }
 
     /// Change the port number associated with this socket address.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    ///
+    /// let mut socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+    /// socket.set_port(1025);
+    /// assert_eq!(socket.port(), 1025);
+    /// ```
     #[stable(feature = "sockaddr_setters", since = "1.9.0")]
     pub fn set_port(&mut self, new_port: u16) {
         match *self {
@@ -96,6 +144,20 @@ impl SocketAddr {
 
     /// Returns true if the IP in this `SocketAddr` is a valid IPv4 address,
     /// false if it's a valid IPv6 address.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(sockaddr_checker)]
+    ///
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    ///
+    /// fn main() {
+    ///     let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+    ///     assert_eq!(socket.is_ipv4(), true);
+    ///     assert_eq!(socket.is_ipv6(), false);
+    /// }
+    /// ```
     #[unstable(feature = "sockaddr_checker", issue = "36949")]
     pub fn is_ipv4(&self) -> bool {
         match *self {
@@ -106,6 +168,21 @@ impl SocketAddr {
 
     /// Returns true if the IP in this `SocketAddr` is a valid IPv6 address,
     /// false if it's a valid IPv4 address.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(sockaddr_checker)]
+    ///
+    /// use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+    ///
+    /// fn main() {
+    ///     let socket = SocketAddr::new(
+    ///                      IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 65535, 0, 1)), 8080);
+    ///     assert_eq!(socket.is_ipv4(), false);
+    ///     assert_eq!(socket.is_ipv6(), true);
+    /// }
+    /// ```
     #[unstable(feature = "sockaddr_checker", issue = "36949")]
     pub fn is_ipv6(&self) -> bool {
         match *self {
@@ -117,6 +194,14 @@ impl SocketAddr {
 
 impl SocketAddrV4 {
     /// Creates a new socket address from the (ip, port) pair.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::{SocketAddrV4, Ipv4Addr};
+    ///
+    /// let socket = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080);
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn new(ip: Ipv4Addr, port: u16) -> SocketAddrV4 {
         SocketAddrV4 {
@@ -130,6 +215,15 @@ impl SocketAddrV4 {
     }
 
     /// Returns the IP address associated with this socket address.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::{SocketAddrV4, Ipv4Addr};
+    ///
+    /// let socket = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080);
+    /// assert_eq!(socket.ip(), &Ipv4Addr::new(127, 0, 0, 1));
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn ip(&self) -> &Ipv4Addr {
         unsafe {
@@ -138,18 +232,47 @@ impl SocketAddrV4 {
     }
 
     /// Change the IP address associated with this socket address.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::{SocketAddrV4, Ipv4Addr};
+    ///
+    /// let mut socket = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080);
+    /// socket.set_ip(Ipv4Addr::new(192, 168, 0, 1));
+    /// assert_eq!(socket.ip(), &Ipv4Addr::new(192, 168, 0, 1));
+    /// ```
     #[stable(feature = "sockaddr_setters", since = "1.9.0")]
     pub fn set_ip(&mut self, new_ip: Ipv4Addr) {
         self.inner.sin_addr = *new_ip.as_inner()
     }
 
     /// Returns the port number associated with this socket address.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::{SocketAddrV4, Ipv4Addr};
+    ///
+    /// let socket = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080);
+    /// assert_eq!(socket.port(), 8080);
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn port(&self) -> u16 {
         ntoh(self.inner.sin_port)
     }
 
     /// Change the port number associated with this socket address.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::{SocketAddrV4, Ipv4Addr};
+    ///
+    /// let mut socket = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080);
+    /// socket.set_port(4242);
+    /// assert_eq!(socket.port(), 4242);
+    /// ```
     #[stable(feature = "sockaddr_setters", since = "1.9.0")]
     pub fn set_port(&mut self, new_port: u16) {
         self.inner.sin_port = hton(new_port);

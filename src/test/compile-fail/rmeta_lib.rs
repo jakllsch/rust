@@ -1,4 +1,4 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,15 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// aux-build:issue_12612_1.rs
+// aux-build:rmeta_meta.rs
+// no-prefer-dynamic
+// error-pattern: crate `rmeta_meta` required to be available in rlib, but it was not available
 
-extern crate issue_12612_1 as foo;
+// Check that building a non-metadata crate fails if a dependent crate is
+// metadata-only.
 
-use foo::bar;
+extern crate rmeta_meta;
+use rmeta_meta::Foo;
 
-mod test {
-    use bar::foo; //~ ERROR unresolved import `bar::foo` [E0432]
-                  //~^ Maybe a missing `extern crate bar;`?
+fn main() {
+    let _ = Foo { field: 42 };
 }
-
-fn main() {}

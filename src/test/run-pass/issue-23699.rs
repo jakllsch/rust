@@ -1,4 +1,4 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,23 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// Test that import shadowing using globs causes errors
+fn gimme_a_raw_pointer<T>(_: *const T) { }
 
-#![no_implicit_prelude]
+fn test<T>(t: T) { }
 
-use foo::*;
-use qux::*; //~ERROR a type named `Baz` has already been imported in this module
+fn main() {
+    // Clearly `pointer` must be of type `*const ()`.
+    let pointer = &() as *const _;
+    gimme_a_raw_pointer(pointer);
 
-mod foo {
-    pub type Baz = isize;
+    let t = test as fn (i32);
+    t(0i32);
 }
 
-mod bar {
-    pub type Baz = isize;
-}
-
-mod qux {
-    pub use bar::Baz;
-}
-
-fn main() {}
