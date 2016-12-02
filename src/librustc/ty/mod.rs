@@ -53,9 +53,8 @@ use hir;
 use hir::itemlikevisit::ItemLikeVisitor;
 
 pub use self::sty::{Binder, DebruijnIndex};
-pub use self::sty::{BuiltinBound, BuiltinBounds};
 pub use self::sty::{BareFnTy, FnSig, PolyFnSig};
-pub use self::sty::{ClosureTy, InferTy, ParamTy, ProjectionTy, TraitObject};
+pub use self::sty::{ClosureTy, InferTy, ParamTy, ProjectionTy, ExistentialPredicate};
 pub use self::sty::{ClosureSubsts, TypeAndMut};
 pub use self::sty::{TraitRef, TypeVariants, PolyTraitRef};
 pub use self::sty::{ExistentialTraitRef, PolyExistentialTraitRef};
@@ -67,11 +66,6 @@ pub use self::sty::BoundRegion::*;
 pub use self::sty::InferTy::*;
 pub use self::sty::Region::*;
 pub use self::sty::TypeVariants::*;
-
-pub use self::sty::BuiltinBound::Send as BoundSend;
-pub use self::sty::BuiltinBound::Sized as BoundSized;
-pub use self::sty::BuiltinBound::Copy as BoundCopy;
-pub use self::sty::BuiltinBound::Sync as BoundSync;
 
 pub use self::contents::TypeContents;
 pub use self::context::{TyCtxt, tls};
@@ -1208,7 +1202,7 @@ impl<'a, 'tcx> ParameterEnvironment<'tcx> {
                         tcx.construct_parameter_environment(
                             impl_item.span,
                             tcx.map.local_def_id(id),
-                            tcx.region_maps.call_site_extent(id, body.id))
+                            tcx.region_maps.call_site_extent(id, body.node_id()))
                     }
                 }
             }
@@ -1227,9 +1221,9 @@ impl<'a, 'tcx> ParameterEnvironment<'tcx> {
                         // Use call-site for extent (unless this is a
                         // trait method with no default; then fallback
                         // to the method id).
-                        let extent = if let Some(ref body) = *body {
+                        let extent = if let Some(body_id) = *body {
                             // default impl: use call_site extent as free_id_outlive bound.
-                            tcx.region_maps.call_site_extent(id, body.id)
+                            tcx.region_maps.call_site_extent(id, body_id.node_id())
                         } else {
                             // no default impl: use item extent as free_id_outlive bound.
                             tcx.region_maps.item_extent(id)
@@ -1243,14 +1237,14 @@ impl<'a, 'tcx> ParameterEnvironment<'tcx> {
             }
             Some(ast_map::NodeItem(item)) => {
                 match item.node {
-                    hir::ItemFn(.., ref body) => {
+                    hir::ItemFn(.., body_id) => {
                         // We assume this is a function.
                         let fn_def_id = tcx.map.local_def_id(id);
 
                         tcx.construct_parameter_environment(
                             item.span,
                             fn_def_id,
-                            tcx.region_maps.call_site_extent(id, body.id))
+                            tcx.region_maps.call_site_extent(id, body_id.node_id()))
                     }
                     hir::ItemEnum(..) |
                     hir::ItemStruct(..) |
@@ -1280,13 +1274,13 @@ impl<'a, 'tcx> ParameterEnvironment<'tcx> {
             }
             Some(ast_map::NodeExpr(expr)) => {
                 // This is a convenience to allow closures to work.
-                if let hir::ExprClosure(.., ref body, _) = expr.node {
+                if let hir::ExprClosure(.., body, _) = expr.node {
                     let def_id = tcx.map.local_def_id(id);
                     let base_def_id = tcx.closure_base_def_id(def_id);
                     tcx.construct_parameter_environment(
                         expr.span,
                         base_def_id,
-                        tcx.region_maps.call_site_extent(id, body.id))
+                        tcx.region_maps.call_site_extent(id, body.node_id()))
                 } else {
                     tcx.empty_parameter_environment()
                 }
@@ -1718,7 +1712,7 @@ impl<'a, 'tcx> AdtDefData<'tcx, 'tcx> {
                 vec![]
             }
 
-            TyStr | TyTrait(..) | TySlice(_) | TyError => {
+            TyStr | TyDynamic(..) | TySlice(_) | TyError => {
                 // these are never sized - return the target type
                 vec![ty]
             }
@@ -1884,18 +1878,14 @@ pub enum ClosureKind {
 
 impl<'a, 'tcx> ClosureKind {
     pub fn trait_did(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>) -> DefId {
-        let result = match *self {
-            ClosureKind::Fn => tcx.lang_items.require(FnTraitLangItem),
+        match *self {
+            ClosureKind::Fn => tcx.require_lang_item(FnTraitLangItem),
             ClosureKind::FnMut => {
-                tcx.lang_items.require(FnMutTraitLangItem)
+                tcx.require_lang_item(FnMutTraitLangItem)
             }
             ClosureKind::FnOnce => {
-                tcx.lang_items.require(FnOnceTraitLangItem)
+                tcx.require_lang_item(FnOnceTraitLangItem)
             }
-        };
-        match result {
-            Ok(trait_did) => trait_did,
-            Err(err) => tcx.sess.fatal(&err[..]),
         }
     }
 
@@ -2367,6 +2357,14 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             Some(self.map.def_path(id))
         } else {
             self.sess.cstore.relative_def_path(id)
+        }
+    }
+
+    pub fn def_span(self, def_id: DefId) -> Span {
+        if let Some(id) = self.map.as_local_node_id(def_id) {
+            self.map.span(id)
+        } else {
+            self.sess.cstore.def_span(&self.sess, def_id)
         }
     }
 

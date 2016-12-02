@@ -32,7 +32,7 @@ use syntax::ast;
 use syntax::attr;
 use syntax::parse::new_parser_from_source_str;
 use syntax::symbol::Symbol;
-use syntax_pos::mk_sp;
+use syntax_pos::{mk_sp, Span};
 use rustc::hir::svh::Svh;
 use rustc_back::target::Target;
 use rustc::hir;
@@ -41,6 +41,11 @@ impl<'tcx> CrateStore<'tcx> for cstore::CStore {
     fn describe_def(&self, def: DefId) -> Option<Def> {
         self.dep_graph.read(DepNode::MetaData(def));
         self.get_crate_data(def.krate).get_def(def.index)
+    }
+
+    fn def_span(&self, sess: &Session, def: DefId) -> Span {
+        self.dep_graph.read(DepNode::MetaData(def));
+        self.get_crate_data(def.krate).get_span(def.index, sess)
     }
 
     fn stability(&self, def: DefId) -> Option<attr::Stability> {
@@ -383,20 +388,23 @@ impl<'tcx> CrateStore<'tcx> for cstore::CStore {
         let local_span = mk_sp(lo, parser.prev_span.hi);
 
         // Mark the attrs as used
-        for attr in &def.attrs {
+        let attrs = data.get_item_attrs(id.index);
+        for attr in &attrs {
             attr::mark_used(attr);
         }
 
+        let name = data.def_key(id.index).disambiguated_data.data
+            .get_opt_name().expect("no name in load_macro");
         sess.imported_macro_spans.borrow_mut()
-            .insert(local_span, (def.name.as_str().to_string(), def.span));
+            .insert(local_span, (name.to_string(), data.get_span(id.index, sess)));
 
         LoadedMacro::MacroRules(ast::MacroDef {
-            ident: ast::Ident::with_empty_ctxt(def.name),
+            ident: ast::Ident::with_empty_ctxt(name),
             id: ast::DUMMY_NODE_ID,
             span: local_span,
             imported_from: None, // FIXME
-            allow_internal_unstable: attr::contains_name(&def.attrs, "allow_internal_unstable"),
-            attrs: def.attrs,
+            allow_internal_unstable: attr::contains_name(&attrs, "allow_internal_unstable"),
+            attrs: attrs,
             body: body,
         })
     }
@@ -443,12 +451,10 @@ impl<'tcx> CrateStore<'tcx> for cstore::CStore {
 
         let find_inlined_item_root = |inlined_item_id| {
             let mut node = inlined_item_id;
-            let mut path = Vec::with_capacity(10);
 
             // If we can't find the inline root after a thousand hops, we can
             // be pretty sure there's something wrong with the HIR map.
             for _ in 0 .. 1000 {
-                path.push(node);
                 let parent_node = tcx.map.get_parent_node(node);
                 if parent_node == node {
                     return node;
@@ -464,27 +470,9 @@ impl<'tcx> CrateStore<'tcx> for cstore::CStore {
                     .borrow_mut()
                     .insert(def_id, None);
             }
-            Some(&InlinedItem::Item(d, ref item)) => {
-                assert_eq!(d, def_id);
-                let inlined_root_node_id = find_inlined_item_root(item.id);
-                cache_inlined_item(def_id, item.id, inlined_root_node_id);
-            }
-            Some(&InlinedItem::TraitItem(_, ref trait_item)) => {
-                let inlined_root_node_id = find_inlined_item_root(trait_item.id);
-                cache_inlined_item(def_id, trait_item.id, inlined_root_node_id);
-
-                // Associated consts already have to be evaluated in `typeck`, so
-                // the logic to do that already exists in `middle`. In order to
-                // reuse that code, it needs to be able to look up the traits for
-                // inlined items.
-                let ty_trait_item = tcx.associated_item(def_id).clone();
-                let trait_item_def_id = tcx.map.local_def_id(trait_item.id);
-                tcx.associated_items.borrow_mut()
-                   .insert(trait_item_def_id, ty_trait_item);
-            }
-            Some(&InlinedItem::ImplItem(_, ref impl_item)) => {
-                let inlined_root_node_id = find_inlined_item_root(impl_item.id);
-                cache_inlined_item(def_id, impl_item.id, inlined_root_node_id);
+            Some(&InlinedItem { ref body, .. }) => {
+                let inlined_root_node_id = find_inlined_item_root(body.id);
+                cache_inlined_item(def_id, inlined_root_node_id, inlined_root_node_id);
             }
         }
 

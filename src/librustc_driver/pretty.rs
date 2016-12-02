@@ -696,13 +696,16 @@ impl fold::Folder for ReplaceBodyWithLoop {
 
 fn print_flowgraph<'a, 'tcx, W: Write>(variants: Vec<borrowck_dot::Variant>,
                                        tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                       code: blocks::Code,
+                                       code: blocks::Code<'tcx>,
                                        mode: PpFlowGraphMode,
                                        mut out: W)
                                        -> io::Result<()> {
     let cfg = match code {
         blocks::Code::Expr(expr) => cfg::CFG::new(tcx, expr),
-        blocks::Code::FnLike(fn_like) => cfg::CFG::new(tcx, fn_like.body()),
+        blocks::Code::FnLike(fn_like) => {
+            let body = tcx.map.expr(fn_like.body());
+            cfg::CFG::new(tcx, body)
+        },
     };
     let labelled_edges = mode != PpFlowGraphMode::UnlabelledEdges;
     let lcfg = LabelledCFG {
@@ -1003,11 +1006,7 @@ fn print_with_analysis<'tcx, 'a: 'tcx>(sess: &'a Session,
                                                got {:?}",
                                               node);
 
-                        // Point to what was found, if there's an accessible span.
-                        match tcx.map.opt_span(nodeid) {
-                            Some(sp) => tcx.sess.span_fatal(sp, &message),
-                            None => tcx.sess.fatal(&message),
-                        }
+                        tcx.sess.span_fatal(tcx.map.span(nodeid), &message)
                     }
                 }
             }

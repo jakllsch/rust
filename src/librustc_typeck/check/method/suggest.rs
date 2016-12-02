@@ -124,7 +124,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                     }
                     CandidateSource::TraitSource(trait_did) => {
                         let item = self.associated_item(trait_did, item_name).unwrap();
-                        let item_span = self.tcx.map.def_id_span(item.def_id, span);
+                        let item_span = self.tcx.def_span(item.def_id);
                         span_note!(err,
                                    item_span,
                                    "candidate #{} is defined in the trait `{}`",
@@ -379,7 +379,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             match ty.sty {
                 ty::TyAdt(def, _) => def.did.is_local(),
 
-                ty::TyTrait(ref tr) => tr.principal.def_id().is_local(),
+                ty::TyDynamic(ref tr, ..) => tr.principal()
+                    .map_or(false, |p| p.def_id().is_local()),
 
                 ty::TyParam(_) => true,
 

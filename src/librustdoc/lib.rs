@@ -20,7 +20,6 @@
 
 #![feature(box_patterns)]
 #![feature(box_syntax)]
-#![cfg_attr(stage0, feature(dotdot_in_tuple_patterns))]
 #![feature(libc)]
 #![feature(rustc_private)]
 #![feature(set_stdio)]
@@ -28,7 +27,6 @@
 #![feature(staged_api)]
 #![feature(test)]
 #![feature(unicode)]
-#![cfg_attr(stage0, feature(question_mark))]
 
 extern crate arena;
 extern crate getopts;
@@ -162,10 +160,10 @@ pub fn opts() -> Vec<RustcOptGroup> {
         unstable(optmulti("Z", "",
                           "internal and debugging options (only on nightly build)", "FLAG")),
         stable(optopt("", "sysroot", "Override the system root", "PATH")),
-        stable(optopt("", "playground-url",
-                      "URL to send code snippets to, may be reset by --markdown-playground-url \
-                       or `#![doc(html_playground_url=...)]`",
-                      "URL")),
+        unstable(optopt("", "playground-url",
+                        "URL to send code snippets to, may be reset by --markdown-playground-url \
+                         or `#![doc(html_playground_url=...)]`",
+                        "URL")),
     ]
 }
 
@@ -234,10 +232,6 @@ pub fn main_args(args: &[String]) -> isize {
         }
     };
 
-    if let Some(playground) = matches.opt_str("playground-url") {
-        html::markdown::PLAYGROUND.with(|s| { *s.borrow_mut() = Some((None, playground)); });
-    }
-
     let test_args = matches.opt_strs("test-args");
     let test_args: Vec<String> = test_args.iter()
                                           .flat_map(|s| s.split_whitespace())
@@ -266,6 +260,7 @@ pub fn main_args(args: &[String]) -> isize {
         None => return 3
     };
     let crate_name = matches.opt_str("crate-name");
+    let playground_url = matches.opt_str("playground-url");
 
     match (should_test, markdown_input) {
         (true, true) => {
@@ -287,7 +282,7 @@ pub fn main_args(args: &[String]) -> isize {
         info!("going to format");
         match output_format.as_ref().map(|s| &**s) {
             Some("html") | None => {
-                html::render::run(krate, &external_html,
+                html::render::run(krate, &external_html, playground_url,
                                   output.unwrap_or(PathBuf::from("doc")),
                                   passes.into_iter().collect(),
                                   css_file_extension,

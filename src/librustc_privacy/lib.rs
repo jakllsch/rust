@@ -17,7 +17,6 @@
       html_root_url = "https://doc.rust-lang.org/nightly/")]
 #![cfg_attr(not(stage0), deny(warnings))]
 
-#![cfg_attr(stage0, feature(dotdot_in_tuple_patterns))]
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_private)]
 #![feature(staged_api)]
@@ -30,7 +29,7 @@ use rustc::dep_graph::DepNode;
 use rustc::hir::{self, PatKind};
 use rustc::hir::def::{self, Def, CtorKind};
 use rustc::hir::def_id::DefId;
-use rustc::hir::intravisit::{self, Visitor};
+use rustc::hir::intravisit::{self, Visitor, NestedVisitorMap};
 use rustc::hir::itemlikevisit::DeepVisitor;
 use rustc::hir::pat_util::EnumerateAndAdjustIterator;
 use rustc::lint;
@@ -71,7 +70,8 @@ impl<'a, 'tcx> EmbargoVisitor<'a, 'tcx> {
     fn item_ty_level(&self, item_def_id: DefId) -> Option<AccessLevel> {
         let ty_def_id = match self.tcx.item_type(item_def_id).sty {
             ty::TyAdt(adt, _) => adt.did,
-            ty::TyTrait(ref obj) => obj.principal.def_id(),
+            ty::TyDynamic(ref obj, ..) if obj.principal().is_some() =>
+                obj.principal().unwrap().def_id(),
             ty::TyProjection(ref proj) => proj.trait_ref.def_id,
             _ => return Some(AccessLevel::Public)
         };
@@ -120,8 +120,8 @@ impl<'a, 'tcx> EmbargoVisitor<'a, 'tcx> {
 impl<'a, 'tcx> Visitor<'tcx> for EmbargoVisitor<'a, 'tcx> {
     /// We want to visit items in the context of their containing
     /// module and so forth, so supply a crate for doing a deep walk.
-    fn nested_visit_map(&mut self) -> Option<&hir::map::Map<'tcx>> {
-        Some(&self.tcx.map)
+    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+        NestedVisitorMap::All(&self.tcx.map)
     }
 
     fn visit_item(&mut self, item: &'tcx hir::Item) {
@@ -359,7 +359,7 @@ impl<'b, 'a, 'tcx> TypeVisitor<'tcx> for ReachEverythingInTheInterfaceVisitor<'b
     fn visit_ty(&mut self, ty: Ty<'tcx>) -> bool {
         let ty_def_id = match ty.sty {
             ty::TyAdt(adt, _) => Some(adt.did),
-            ty::TyTrait(ref obj) => Some(obj.principal.def_id()),
+            ty::TyDynamic(ref obj, ..) => obj.principal().map(|p| p.def_id()),
             ty::TyProjection(ref proj) => Some(proj.trait_ref.def_id),
             ty::TyFnDef(def_id, ..) |
             ty::TyAnon(def_id, _) => Some(def_id),
@@ -432,8 +432,8 @@ impl<'a, 'tcx> PrivacyVisitor<'a, 'tcx> {
 impl<'a, 'tcx> Visitor<'tcx> for PrivacyVisitor<'a, 'tcx> {
     /// We want to visit items in the context of their containing
     /// module and so forth, so supply a crate for doing a deep walk.
-    fn nested_visit_map(&mut self) -> Option<&hir::map::Map<'tcx>> {
-        Some(&self.tcx.map)
+    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+        NestedVisitorMap::All(&self.tcx.map)
     }
 
     fn visit_item(&mut self, item: &'tcx hir::Item) {
@@ -615,6 +615,10 @@ impl<'a, 'tcx> ObsoleteVisiblePrivateTypesVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'b, 'tcx, 'v> Visitor<'v> for ObsoleteCheckTypeForPrivatenessVisitor<'a, 'b, 'tcx> {
+    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'v> {
+        NestedVisitorMap::None
+    }
+
     fn visit_ty(&mut self, ty: &hir::Ty) {
         if let hir::TyPath(hir::QPath::Resolved(_, ref path)) = ty.node {
             if self.inner.path_is_private_type(path) {
@@ -640,8 +644,8 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for ObsoleteCheckTypeForPrivatenessVisitor<'a
 impl<'a, 'tcx> Visitor<'tcx> for ObsoleteVisiblePrivateTypesVisitor<'a, 'tcx> {
     /// We want to visit items in the context of their containing
     /// module and so forth, so supply a crate for doing a deep walk.
-    fn nested_visit_map(&mut self) -> Option<&hir::map::Map<'tcx>> {
-        Some(&self.tcx.map)
+    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+        NestedVisitorMap::All(&self.tcx.map)
     }
 
     fn visit_item(&mut self, item: &'tcx hir::Item) {
@@ -934,7 +938,7 @@ impl<'a, 'tcx: 'a> TypeVisitor<'tcx> for SearchInterfaceForPrivateItemsVisitor<'
     fn visit_ty(&mut self, ty: Ty<'tcx>) -> bool {
         let ty_def_id = match ty.sty {
             ty::TyAdt(adt, _) => Some(adt.did),
-            ty::TyTrait(ref obj) => Some(obj.principal.def_id()),
+            ty::TyDynamic(ref obj, ..) => obj.principal().map(|p| p.def_id()),
             ty::TyProjection(ref proj) => {
                 if self.required_visibility == ty::Visibility::PrivateExternal {
                     // Conservatively approximate the whole type alias as public without
@@ -1059,8 +1063,12 @@ impl<'a, 'tcx> PrivateItemsInPublicInterfacesVisitor<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx, 'v> Visitor<'v> for PrivateItemsInPublicInterfacesVisitor<'a, 'tcx> {
-    fn visit_item(&mut self, item: &hir::Item) {
+impl<'a, 'tcx> Visitor<'tcx> for PrivateItemsInPublicInterfacesVisitor<'a, 'tcx> {
+    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+        NestedVisitorMap::OnlyBodies(&self.tcx.map)
+    }
+
+    fn visit_item(&mut self, item: &'tcx hir::Item) {
         let tcx = self.tcx;
         let min = |vis1: ty::Visibility, vis2| {
             if vis1.is_at_least(vis2, &tcx.map) { vis2 } else { vis1 }
@@ -1163,11 +1171,11 @@ impl<'a, 'tcx, 'v> Visitor<'v> for PrivateItemsInPublicInterfacesVisitor<'a, 'tc
         }
     }
 
-    fn visit_impl_item(&mut self, _impl_item: &'v hir::ImplItem) {
+    fn visit_impl_item(&mut self, _impl_item: &'tcx hir::ImplItem) {
         // handled in `visit_item` above
     }
 
-    fn visit_ty(&mut self, ty: &hir::Ty) {
+    fn visit_ty(&mut self, ty: &'tcx hir::Ty) {
         if let hir::TyImplTrait(..) = ty.node {
             // Check the traits being exposed, as they're separate,
             // e.g. `impl Iterator<Item=T>` has two predicates,
@@ -1181,9 +1189,9 @@ impl<'a, 'tcx, 'v> Visitor<'v> for PrivateItemsInPublicInterfacesVisitor<'a, 'tc
     }
 
     // Don't recurse into expressions in array sizes or const initializers
-    fn visit_expr(&mut self, _: &hir::Expr) {}
+    fn visit_expr(&mut self, _: &'tcx hir::Expr) {}
     // Don't recurse into patterns in function arguments
-    fn visit_pat(&mut self, _: &hir::Pat) {}
+    fn visit_pat(&mut self, _: &'tcx hir::Pat) {}
 }
 
 pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
