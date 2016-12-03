@@ -174,6 +174,7 @@ supported_targets! {
     ("armv7-unknown-netbsdelf-eabihf", armv7_unknown_netbsdelf_eabihf),
     ("i686-unknown-netbsdelf", i686_unknown_netbsdelf),
     ("powerpc-unknown-netbsd", powerpc_unknown_netbsd),
+    ("sparc64-unknown-netbsd", sparc64_unknown_netbsd),
     ("x86_64-unknown-netbsd", x86_64_unknown_netbsd),
     ("x86_64-rumprun-netbsd", x86_64_rumprun_netbsd),
 
