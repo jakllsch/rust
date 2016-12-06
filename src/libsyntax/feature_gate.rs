@@ -132,7 +132,6 @@ declare_features! (
 
     (active, allocator, "1.0.0", Some(27389)),
     (active, fundamental, "1.0.0", Some(29635)),
-    (active, linked_from, "1.3.0", Some(29629)),
     (active, main, "1.0.0", Some(29634)),
     (active, needs_allocator, "1.4.0", Some(27389)),
     (active, on_unimplemented, "1.0.0", Some(29628)),
@@ -152,10 +151,6 @@ declare_features! (
     // Allows use of #[staged_api]
     // rustc internal
     (active, staged_api, "1.0.0", None),
-
-    // Allows using items which are missing stability attributes
-    // rustc internal
-    (active, unmarked_api, "1.0.0", None),
 
     // Allows using #![no_core]
     (active, no_core, "1.3.0", Some(29639)),
@@ -316,6 +311,9 @@ declare_features! (
 
     // Allows `break {expr}` with a value inside `loop`s.
     (active, loop_break_value, "1.14.0", Some(37339)),
+
+    // Allows #[target_feature(...)]
+    (active, target_feature, "1.15.0", None),
 );
 
 declare_features! (
@@ -330,6 +328,9 @@ declare_features! (
     (removed, test_removed_feature, "1.0.0", None),
     (removed, visible_private_types, "1.0.0", None),
     (removed, unsafe_no_drop_flag, "1.0.0", None),
+    // Allows using items which are missing stability attributes
+    // rustc internal
+    (removed, unmarked_api, "1.0.0", None),
 );
 
 declare_features! (
@@ -636,12 +637,6 @@ pub const BUILTIN_ATTRIBUTES: &'static [(&'static str, AttributeType, AttributeG
                                         is an experimental feature",
                                        cfg_fn!(fundamental))),
 
-    ("linked_from", Normal, Gated(Stability::Unstable,
-                                  "linked_from",
-                                  "the `#[linked_from]` attribute \
-                                   is an experimental feature",
-                                  cfg_fn!(linked_from))),
-
     ("proc_macro_derive", Normal, Gated(Stability::Unstable,
                                         "proc_macro",
                                         "the `#[proc_macro_derive]` attribute \
@@ -664,6 +659,10 @@ pub const BUILTIN_ATTRIBUTES: &'static [(&'static str, AttributeType, AttributeG
                                  "the `#[naked]` attribute \
                                   is an experimental feature",
                                  cfg_fn!(naked_functions))),
+    ("target_feature", Whitelisted, Gated(
+        Stability::Unstable, "target_feature",
+        "the `#[target_feature]` attribute is an experimental feature",
+        cfg_fn!(target_feature))),
     ("export_name", Whitelisted, Ungated),
     ("inline", Whitelisted, Ungated),
     ("link", Whitelisted, Ungated),

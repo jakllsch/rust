@@ -19,7 +19,7 @@ use rustc::hir::def::{self, Def};
 use rustc::middle::lang_items;
 use rustc::session::Session;
 use rustc::ty::{self, Ty, TyCtxt};
-use rustc::hir::def_id::{CrateNum, DefId, DefIndex, CRATE_DEF_INDEX};
+use rustc::hir::def_id::{CrateNum, DefId, DefIndex, CRATE_DEF_INDEX, LOCAL_CRATE};
 
 use rustc::dep_graph::DepNode;
 use rustc::hir::map as hir_map;
@@ -115,13 +115,13 @@ impl<'tcx> CrateStore<'tcx> for cstore::CStore {
         self.get_crate_data(def_id.krate).get_item_attrs(def_id.index)
     }
 
-    fn trait_def<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId) -> ty::TraitDef<'tcx>
+    fn trait_def<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId) -> ty::TraitDef
     {
         self.dep_graph.read(DepNode::MetaData(def));
         self.get_crate_data(def.krate).get_trait_def(def.index, tcx)
     }
 
-    fn adt_def<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId) -> ty::AdtDefMaster<'tcx>
+    fn adt_def<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId) -> &'tcx ty::AdtDef
     {
         self.dep_graph.read(DepNode::MetaData(def));
         self.get_crate_data(def.krate).get_adt_def(def.index, tcx)
@@ -217,9 +217,17 @@ impl<'tcx> CrateStore<'tcx> for cstore::CStore {
         self.get_crate_data(did.krate).is_foreign_item(did.index)
     }
 
-    fn is_statically_included_foreign_item(&self, id: ast::NodeId) -> bool
+    fn is_statically_included_foreign_item(&self, def_id: DefId) -> bool
     {
-        self.do_is_statically_included_foreign_item(id)
+        self.do_is_statically_included_foreign_item(def_id)
+    }
+
+    fn is_dllimport_foreign_item(&self, def_id: DefId) -> bool {
+        if def_id.krate == LOCAL_CRATE {
+            self.dllimport_foreign_items.borrow().contains(&def_id.index)
+        } else {
+            self.get_crate_data(def_id.krate).is_dllimport_foreign_item(def_id.index)
+        }
     }
 
     fn dylib_dependency_formats(&self, cnum: CrateNum)
@@ -306,14 +314,22 @@ impl<'tcx> CrateStore<'tcx> for cstore::CStore {
         })
     }
 
+    fn derive_registrar_fn(&self, cnum: CrateNum) -> Option<DefId>
+    {
+        self.get_crate_data(cnum).root.macro_derive_registrar.map(|index| DefId {
+            krate: cnum,
+            index: index
+        })
+    }
+
     fn native_libraries(&self, cnum: CrateNum) -> Vec<NativeLibrary>
     {
         self.get_crate_data(cnum).get_native_libraries()
     }
 
-    fn reachable_ids(&self, cnum: CrateNum) -> Vec<DefId>
+    fn exported_symbols(&self, cnum: CrateNum) -> Vec<DefId>
     {
-        self.get_crate_data(cnum).get_reachable_ids()
+        self.get_crate_data(cnum).get_exported_symbols()
     }
 
     fn is_no_builtins(&self, cnum: CrateNum) -> bool {

@@ -131,6 +131,7 @@ pub struct NativeLibrary {
     pub kind: NativeLibraryKind,
     pub name: Symbol,
     pub cfg: Option<ast::MetaItem>,
+    pub foreign_items: Vec<DefIndex>,
 }
 
 /// The data we save and restore about an inlined item or method.  This is not
@@ -278,8 +279,8 @@ pub trait CrateStore<'tcx> {
     fn item_generics<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId)
                          -> ty::Generics<'tcx>;
     fn item_attrs(&self, def_id: DefId) -> Vec<ast::Attribute>;
-    fn trait_def<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId)-> ty::TraitDef<'tcx>;
-    fn adt_def<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId) -> ty::AdtDefMaster<'tcx>;
+    fn trait_def<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId)-> ty::TraitDef;
+    fn adt_def<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId) -> &'tcx ty::AdtDef;
     fn fn_arg_names(&self, did: DefId) -> Vec<ast::Name>;
     fn inherent_implementations_for_type(&self, def_id: DefId) -> Vec<DefId>;
 
@@ -305,7 +306,8 @@ pub trait CrateStore<'tcx> {
     fn is_defaulted_trait(&self, did: DefId) -> bool;
     fn is_default_impl(&self, impl_did: DefId) -> bool;
     fn is_foreign_item(&self, did: DefId) -> bool;
-    fn is_statically_included_foreign_item(&self, id: ast::NodeId) -> bool;
+    fn is_dllimport_foreign_item(&self, def: DefId) -> bool;
+    fn is_statically_included_foreign_item(&self, def_id: DefId) -> bool;
 
     // crate metadata
     fn dylib_dependency_formats(&self, cnum: CrateNum)
@@ -328,8 +330,9 @@ pub trait CrateStore<'tcx> {
     fn crate_hash(&self, cnum: CrateNum) -> Svh;
     fn crate_disambiguator(&self, cnum: CrateNum) -> Symbol;
     fn plugin_registrar_fn(&self, cnum: CrateNum) -> Option<DefId>;
+    fn derive_registrar_fn(&self, cnum: CrateNum) -> Option<DefId>;
     fn native_libraries(&self, cnum: CrateNum) -> Vec<NativeLibrary>;
-    fn reachable_ids(&self, cnum: CrateNum) -> Vec<DefId>;
+    fn exported_symbols(&self, cnum: CrateNum) -> Vec<DefId>;
     fn is_no_builtins(&self, cnum: CrateNum) -> bool;
 
     // resolve
@@ -425,9 +428,9 @@ impl<'tcx> CrateStore<'tcx> for DummyCrateStore {
     fn item_generics<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId)
                          -> ty::Generics<'tcx> { bug!("item_generics") }
     fn item_attrs(&self, def_id: DefId) -> Vec<ast::Attribute> { bug!("item_attrs") }
-    fn trait_def<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId)-> ty::TraitDef<'tcx>
+    fn trait_def<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId)-> ty::TraitDef
         { bug!("trait_def") }
-    fn adt_def<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId) -> ty::AdtDefMaster<'tcx>
+    fn adt_def<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId) -> &'tcx ty::AdtDef
         { bug!("adt_def") }
     fn fn_arg_names(&self, did: DefId) -> Vec<ast::Name> { bug!("fn_arg_names") }
     fn inherent_implementations_for_type(&self, def_id: DefId) -> Vec<DefId> { vec![] }
@@ -462,7 +465,8 @@ impl<'tcx> CrateStore<'tcx> for DummyCrateStore {
     fn is_defaulted_trait(&self, did: DefId) -> bool { bug!("is_defaulted_trait") }
     fn is_default_impl(&self, impl_did: DefId) -> bool { bug!("is_default_impl") }
     fn is_foreign_item(&self, did: DefId) -> bool { bug!("is_foreign_item") }
-    fn is_statically_included_foreign_item(&self, id: ast::NodeId) -> bool { false }
+    fn is_dllimport_foreign_item(&self, id: DefId) -> bool { false }
+    fn is_statically_included_foreign_item(&self, def_id: DefId) -> bool { false }
 
     // crate metadata
     fn dylib_dependency_formats(&self, cnum: CrateNum)
@@ -491,9 +495,11 @@ impl<'tcx> CrateStore<'tcx> for DummyCrateStore {
                            -> Symbol { bug!("crate_disambiguator") }
     fn plugin_registrar_fn(&self, cnum: CrateNum) -> Option<DefId>
         { bug!("plugin_registrar_fn") }
+    fn derive_registrar_fn(&self, cnum: CrateNum) -> Option<DefId>
+        { bug!("derive_registrar_fn") }
     fn native_libraries(&self, cnum: CrateNum) -> Vec<NativeLibrary>
         { bug!("native_libraries") }
-    fn reachable_ids(&self, cnum: CrateNum) -> Vec<DefId> { bug!("reachable_ids") }
+    fn exported_symbols(&self, cnum: CrateNum) -> Vec<DefId> { bug!("exported_symbols") }
     fn is_no_builtins(&self, cnum: CrateNum) -> bool { bug!("is_no_builtins") }
 
     // resolve
@@ -526,9 +532,7 @@ impl<'tcx> CrateStore<'tcx> for DummyCrateStore {
     // This is basically a 1-based range of ints, which is a little
     // silly - I may fix that.
     fn crates(&self) -> Vec<CrateNum> { vec![] }
-    fn used_libraries(&self) -> Vec<NativeLibrary> {
-        vec![]
-    }
+    fn used_libraries(&self) -> Vec<NativeLibrary> { vec![] }
     fn used_link_args(&self) -> Vec<String> { vec![] }
 
     // utility functions

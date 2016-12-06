@@ -168,7 +168,10 @@ supported_targets! {
     ("x86_64-unknown-dragonfly", x86_64_unknown_dragonfly),
 
     ("x86_64-unknown-bitrig", x86_64_unknown_bitrig),
+
+    ("i686-unknown-openbsd", i686_unknown_openbsd),
     ("x86_64-unknown-openbsd", x86_64_unknown_openbsd),
+
     ("arm-unknown-netbsdelf-eabi", arm_unknown_netbsdelf_eabi),
     ("armv6-unknown-netbsdelf-eabihf", armv6_unknown_netbsdelf_eabihf),
     ("armv7-unknown-netbsdelf-eabihf", armv7_unknown_netbsdelf_eabihf),
@@ -305,6 +308,9 @@ pub struct TargetOptions {
     pub staticlib_suffix: String,
     /// OS family to use for conditional compilation. Valid options: "unix", "windows".
     pub target_family: Option<String>,
+    /// Whether the target toolchain is like OpenBSD's.
+    /// Only useful for compiling against OpenBSD, for configuring abi when returning a struct.
+    pub is_like_openbsd: bool,
     /// Whether the target toolchain is like OSX's. Only useful for compiling against iOS/OS X, in
     /// particular running dsymutil and some other stuff like `-dead_strip`. Defaults to false.
     pub is_like_osx: bool,
@@ -409,6 +415,7 @@ impl Default for TargetOptions {
             staticlib_prefix: "lib".to_string(),
             staticlib_suffix: ".a".to_string(),
             target_family: None,
+            is_like_openbsd: false,
             is_like_osx: false,
             is_like_solaris: false,
             is_like_windows: false,
@@ -575,6 +582,7 @@ impl Target {
         key!(staticlib_prefix);
         key!(staticlib_suffix);
         key!(target_family, optional);
+        key!(is_like_openbsd, bool);
         key!(is_like_osx, bool);
         key!(is_like_solaris, bool);
         key!(is_like_windows, bool);
@@ -736,6 +744,7 @@ impl ToJson for Target {
         target_option_val!(staticlib_prefix);
         target_option_val!(staticlib_suffix);
         target_option_val!(target_family);
+        target_option_val!(is_like_openbsd);
         target_option_val!(is_like_osx);
         target_option_val!(is_like_solaris);
         target_option_val!(is_like_windows);

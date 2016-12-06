@@ -785,18 +785,18 @@ fn check_fn<'a, 'gcx, 'tcx>(inherited: &'a Inherited<'a, 'gcx, 'tcx>,
 
     // Create the function context.  This is either derived from scratch or,
     // in the case of function expressions, based on the outer context.
-    let mut fcx = FnCtxt::new(inherited, fn_sig.output, body.id);
+    let mut fcx = FnCtxt::new(inherited, fn_sig.output(), body.id);
     *fcx.ps.borrow_mut() = UnsafetyState::function(unsafety, unsafety_id);
 
     fcx.require_type_is_sized(fcx.ret_ty, decl.output.span(), traits::ReturnType);
     fcx.ret_ty = fcx.instantiate_anon_types(&fcx.ret_ty);
-    fn_sig.output = fcx.ret_ty;
+    fn_sig = fcx.tcx.mk_fn_sig(fn_sig.inputs().iter().cloned(), &fcx.ret_ty, fn_sig.variadic);
 
     {
         let mut visit = GatherLocalsVisitor { fcx: &fcx, };
 
         // Add formal parameters.
-        for (arg_ty, input) in fn_sig.inputs.iter().zip(&decl.inputs) {
+        for (arg_ty, input) in fn_sig.inputs().iter().zip(&decl.inputs) {
             // The type of the argument must be well-formed.
             //
             // NB -- this is now checked in wfcheck, but that
@@ -1041,7 +1041,7 @@ fn report_forbidden_specialization<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 }
 
 fn check_specialization_validity<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                           trait_def: &ty::TraitDef<'tcx>,
+                                           trait_def: &ty::TraitDef,
                                            impl_id: DefId,
                                            impl_item: &hir::ImplItem)
 {
@@ -1101,7 +1101,7 @@ fn check_impl_items_against_trait<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
                     } else {
                          let mut err = struct_span_err!(tcx.sess, impl_item.span, E0323,
                                   "item `{}` is an associated const, \
-                                  which doesn't match its trait `{:?}`",
+                                  which doesn't match its trait `{}`",
                                   ty_impl_item.name,
                                   impl_trait_ref);
                          err.span_label(impl_item.span, &format!("does not match trait"));
@@ -1139,7 +1139,7 @@ fn check_impl_items_against_trait<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
                     } else {
                         let mut err = struct_span_err!(tcx.sess, impl_item.span, E0324,
                                   "item `{}` is an associated method, \
-                                  which doesn't match its trait `{:?}`",
+                                  which doesn't match its trait `{}`",
                                   ty_impl_item.name,
                                   impl_trait_ref);
                          err.span_label(impl_item.span, &format!("does not match trait"));
@@ -1157,7 +1157,7 @@ fn check_impl_items_against_trait<'a, 'tcx>(ccx: &CrateCtxt<'a, 'tcx>,
                     } else {
                         let mut err = struct_span_err!(tcx.sess, impl_item.span, E0325,
                                   "item `{}` is an associated type, \
-                                  which doesn't match its trait `{:?}`",
+                                  which doesn't match its trait `{}`",
                                   ty_impl_item.name,
                                   impl_trait_ref);
                          err.span_label(impl_item.span, &format!("does not match trait"));
@@ -1401,7 +1401,7 @@ impl<'a, 'gcx, 'tcx> AstConv<'gcx, 'tcx> for FnCtxt<'a, 'gcx, 'tcx> {
     }
 
     fn get_trait_def(&self, _: Span, id: DefId)
-                     -> Result<&'tcx ty::TraitDef<'tcx>, ErrorReported>
+                     -> Result<&'tcx ty::TraitDef, ErrorReported>
     {
         Ok(self.tcx().lookup_trait_def(id))
     }
@@ -1987,7 +1987,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     // Indifferent to privacy flags
     pub fn field_ty(&self,
                     span: Span,
-                    field: ty::FieldDef<'tcx>,
+                    field: &'tcx ty::FieldDef,
                     substs: &Substs<'tcx>)
                     -> Ty<'tcx>
     {
@@ -2467,18 +2467,22 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             };
 
             self.check_argument_types(sp, &err_inputs[..], &[], args_no_rcvr,
-                                      false, tuple_arguments);
+                                      false, tuple_arguments, None);
             self.tcx.types.err
         } else {
             match method_fn_ty.sty {
-                ty::TyFnDef(.., ref fty) => {
+                ty::TyFnDef(def_id, .., ref fty) => {
                     // HACK(eddyb) ignore self in the definition (see above).
-                    let expected_arg_tys = self.expected_types_for_fn_args(sp, expected,
-                                                                           fty.sig.0.output,
-                                                                           &fty.sig.0.inputs[1..]);
-                    self.check_argument_types(sp, &fty.sig.0.inputs[1..], &expected_arg_tys[..],
-                                              args_no_rcvr, fty.sig.0.variadic, tuple_arguments);
-                    fty.sig.0.output
+                    let expected_arg_tys = self.expected_types_for_fn_args(
+                        sp,
+                        expected,
+                        fty.sig.0.output(),
+                        &fty.sig.0.inputs()[1..]
+                    );
+                    self.check_argument_types(sp, &fty.sig.0.inputs()[1..], &expected_arg_tys[..],
+                                              args_no_rcvr, fty.sig.0.variadic, tuple_arguments,
+                                              self.tcx.map.span_if_local(def_id));
+                    fty.sig.0.output()
                 }
                 _ => {
                     span_bug!(callee_expr.span, "method without bare fn type");
@@ -2495,7 +2499,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                             expected_arg_tys: &[Ty<'tcx>],
                             args: &'gcx [hir::Expr],
                             variadic: bool,
-                            tuple_arguments: TupleArgumentsFlag) {
+                            tuple_arguments: TupleArgumentsFlag,
+                            def_span: Option<Span>) {
         let tcx = self.tcx;
 
         // Grab the argument types, supplying fresh type variables
@@ -2530,9 +2535,9 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             sp
         };
 
-        fn parameter_count_error<'tcx>(sess: &Session, sp: Span, fn_inputs: &[Ty<'tcx>],
-                                       expected_count: usize, arg_count: usize, error_code: &str,
-                                       variadic: bool) {
+        fn parameter_count_error<'tcx>(sess: &Session, sp: Span, expected_count: usize,
+                                       arg_count: usize, error_code: &str, variadic: bool,
+                                       def_span: Option<Span>) {
             let mut err = sess.struct_span_err_with_code(sp,
                 &format!("this function takes {}{} parameter{} but {} parameter{} supplied",
                     if variadic {"at least "} else {""},
@@ -2542,18 +2547,12 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                     if arg_count == 1 {" was"} else {"s were"}),
                 error_code);
 
-            let input_types = fn_inputs.iter().map(|i| format!("{:?}", i)).collect::<Vec<String>>();
-            if input_types.len() > 1 {
-                err.note("the following parameter types were expected:");
-                err.note(&input_types.join(", "));
-            } else if input_types.len() > 0 {
-                err.note(&format!("the following parameter type was expected: {}",
-                                  input_types[0]));
-            } else {
-                err.span_label(sp, &format!("expected {}{} parameter{}",
-                                            if variadic {"at least "} else {""},
-                                            expected_count,
-                                            if expected_count == 1 {""} else {"s"}));
+            err.span_label(sp, &format!("expected {}{} parameter{}",
+                                        if variadic {"at least "} else {""},
+                                        expected_count,
+                                        if expected_count == 1 {""} else {"s"}));
+            if let Some(def_s) = def_span {
+                err.span_label(def_s, &format!("defined here"));
             }
             err.emit();
         }
@@ -2562,8 +2561,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             let tuple_type = self.structurally_resolved_type(sp, fn_inputs[0]);
             match tuple_type.sty {
                 ty::TyTuple(arg_types) if arg_types.len() != args.len() => {
-                    parameter_count_error(tcx.sess, sp_args, fn_inputs, arg_types.len(), args.len(),
-                                          "E0057", false);
+                    parameter_count_error(tcx.sess, sp_args, arg_types.len(), args.len(),
+                                          "E0057", false, def_span);
                     expected_arg_tys = &[];
                     self.err_args(args.len())
                 }
@@ -2591,14 +2590,14 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             if supplied_arg_count >= expected_arg_count {
                 fn_inputs.to_vec()
             } else {
-                parameter_count_error(tcx.sess, sp_args, fn_inputs, expected_arg_count,
-                                      supplied_arg_count, "E0060", true);
+                parameter_count_error(tcx.sess, sp_args, expected_arg_count,
+                                      supplied_arg_count, "E0060", true, def_span);
                 expected_arg_tys = &[];
                 self.err_args(supplied_arg_count)
             }
         } else {
-            parameter_count_error(tcx.sess, sp_args, fn_inputs, expected_arg_count,
-                                  supplied_arg_count, "E0061", false);
+            parameter_count_error(tcx.sess, sp_args, expected_arg_count,
+                                  supplied_arg_count, "E0061", false, def_span);
             expected_arg_tys = &[];
             self.err_args(supplied_arg_count)
         };
@@ -3073,7 +3072,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     }
 
     // Return an hint about the closest match in field names
-    fn suggest_field_name(variant: ty::VariantDef<'tcx>,
+    fn suggest_field_name(variant: &'tcx ty::VariantDef,
                           field: &Spanned<ast::Name>,
                           skip : Vec<InternedString>)
                           -> Option<Symbol> {
@@ -3166,7 +3165,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 
     fn report_unknown_field(&self,
                             ty: Ty<'tcx>,
-                            variant: ty::VariantDef<'tcx>,
+                            variant: &'tcx ty::VariantDef,
                             field: &hir::Field,
                             skip_fields: &[hir::Field],
                             kind_name: &str) {
@@ -3210,7 +3209,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                 adt_ty: Ty<'tcx>,
                                 expr_id: ast::NodeId,
                                 span: Span,
-                                variant: ty::VariantDef<'tcx>,
+                                variant: &'tcx ty::VariantDef,
                                 ast_fields: &'gcx [hir::Field],
                                 check_completeness: bool) {
         let tcx = self.tcx;
@@ -3326,7 +3325,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     pub fn check_struct_path(&self,
                              qpath: &hir::QPath,
                              node_id: ast::NodeId)
-                             -> Option<(ty::VariantDef<'tcx>,  Ty<'tcx>)> {
+                             -> Option<(&'tcx ty::VariantDef,  Ty<'tcx>)> {
         let path_span = match *qpath {
             hir::QPath::Resolved(_, ref path) => path.span,
             hir::QPath::TypeRelative(ref qself, _) => qself.span

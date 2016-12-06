@@ -1368,21 +1368,13 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
             ty::TyFnDef(.., &ty::BareFnTy {
                 unsafety: hir::Unsafety::Normal,
                 abi: Abi::Rust,
-                sig: ty::Binder(ty::FnSig {
-                    inputs: _,
-                    output: _,
-                    variadic: false
-                })
+                ref sig,
             }) |
             ty::TyFnPtr(&ty::BareFnTy {
                 unsafety: hir::Unsafety::Normal,
                 abi: Abi::Rust,
-                sig: ty::Binder(ty::FnSig {
-                    inputs: _,
-                    output: _,
-                    variadic: false
-                })
-            }) => {
+                ref sig
+            }) if !sig.variadic() => {
                 candidates.vec.push(FnPointerCandidate);
             }
 
@@ -2544,7 +2536,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
             (&ty::TyAdt(def, substs_a), &ty::TyAdt(_, substs_b)) => {
                 let fields = def
                     .all_fields()
-                    .map(|f| f.unsubst_ty())
+                    .map(|f| tcx.item_type(f.did))
                     .collect::<Vec<_>>();
 
                 // The last field of the structure has to exist and contain type parameters.

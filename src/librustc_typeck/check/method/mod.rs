@@ -192,13 +192,6 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                m_name,
                trait_def_id);
 
-        let trait_def = self.tcx.lookup_trait_def(trait_def_id);
-
-        if let Some(ref input_types) = opt_input_types {
-            assert_eq!(trait_def.generics.types.len() - 1, input_types.len());
-        }
-        assert!(trait_def.generics.regions.is_empty());
-
         // Construct a trait-reference `self_ty : Trait<input_tys>`
         let substs = Substs::for_item(self.tcx,
                                       trait_def_id,
@@ -253,7 +246,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                                                     infer::FnCall,
                                                                     &fty.sig).0;
         let fn_sig = self.instantiate_type_scheme(span, trait_ref.substs, &fn_sig);
-        let transformed_self_ty = fn_sig.inputs[0];
+        let transformed_self_ty = fn_sig.inputs()[0];
         let method_ty = tcx.mk_fn_def(def_id, trait_ref.substs,
                                       tcx.mk_bare_fn(ty::BareFnTy {
             sig: ty::Binder(fn_sig),

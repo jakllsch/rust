@@ -93,7 +93,7 @@ pub trait AstConv<'gcx, 'tcx> {
     /// Returns the `TraitDef` for a given trait. This allows you to
     /// figure out the set of type parameters defined on the trait.
     fn get_trait_def(&self, span: Span, id: DefId)
-                     -> Result<&'tcx ty::TraitDef<'tcx>, ErrorReported>;
+                     -> Result<&'tcx ty::TraitDef, ErrorReported>;
 
     /// Ensure that the super-predicates for the trait with the given
     /// id are available and also for the transitive set of
@@ -884,10 +884,9 @@ impl<'o, 'gcx: 'tcx, 'tcx> AstConv<'gcx, 'tcx>+'o {
         // those that do.
         self.ensure_super_predicates(binding.span, trait_ref.def_id())?;
 
-        let candidates: Vec<ty::PolyTraitRef> =
+        let candidates =
             traits::supertraits(tcx, trait_ref.clone())
-            .filter(|r| self.trait_defines_associated_type_named(r.def_id(), binding.item_name))
-            .collect();
+            .filter(|r| self.trait_defines_associated_type_named(r.def_id(), binding.item_name));
 
         let candidate = self.one_bound_for_assoc_type(candidates,
                                                       &trait_ref.to_string(),
@@ -1191,10 +1190,9 @@ impl<'o, 'gcx: 'tcx, 'tcx> AstConv<'gcx, 'tcx>+'o {
 
         // Check that there is exactly one way to find an associated type with the
         // correct name.
-        let suitable_bounds: Vec<_> =
+        let suitable_bounds =
             traits::transitive_bounds(tcx, &bounds)
-            .filter(|b| self.trait_defines_associated_type_named(b.def_id(), assoc_name))
-            .collect();
+            .filter(|b| self.trait_defines_associated_type_named(b.def_id(), assoc_name));
 
         self.one_bound_for_assoc_type(suitable_bounds,
                                       &ty_param_name.as_str(),
@@ -1205,31 +1203,29 @@ impl<'o, 'gcx: 'tcx, 'tcx> AstConv<'gcx, 'tcx>+'o {
 
     // Checks that bounds contains exactly one element and reports appropriate
     // errors otherwise.
-    fn one_bound_for_assoc_type(&self,
-                                bounds: Vec<ty::PolyTraitRef<'tcx>>,
+    fn one_bound_for_assoc_type<I>(&self,
+                                mut bounds: I,
                                 ty_param_name: &str,
                                 assoc_name: &str,
                                 span: Span)
         -> Result<ty::PolyTraitRef<'tcx>, ErrorReported>
+        where I: Iterator<Item=ty::PolyTraitRef<'tcx>>
     {
-        if bounds.is_empty() {
-            struct_span_err!(self.tcx().sess, span, E0220,
-                      "associated type `{}` not found for `{}`",
-                      assoc_name,
-                      ty_param_name)
-              .span_label(span, &format!("associated type `{}` not found", assoc_name))
-              .emit();
-            return Err(ErrorReported);
-        }
+        let bound = match bounds.next() {
+            Some(bound) => bound,
+            None => {
+                struct_span_err!(self.tcx().sess, span, E0220,
+                          "associated type `{}` not found for `{}`",
+                          assoc_name,
+                          ty_param_name)
+                  .span_label(span, &format!("associated type `{}` not found", assoc_name))
+                  .emit();
+                return Err(ErrorReported);
+            }
+        };
 
-        if bounds.len() > 1 {
-            let spans = bounds.iter().map(|b| {
-                self.tcx().associated_items(b.def_id()).find(|item| {
-                    item.kind == ty::AssociatedKind::Type && item.name == assoc_name
-                })
-                .and_then(|item| self.tcx().map.span_if_local(item.def_id))
-            });
-
+        if let Some(bound2) = bounds.next() {
+            let bounds = iter::once(bound).chain(iter::once(bound2)).chain(bounds);
             let mut err = struct_span_err!(
                 self.tcx().sess, span, E0221,
                 "ambiguous associated type `{}` in bounds of `{}`",
@@ -1237,22 +1233,27 @@ impl<'o, 'gcx: 'tcx, 'tcx> AstConv<'gcx, 'tcx>+'o {
                 ty_param_name);
             err.span_label(span, &format!("ambiguous associated type `{}`", assoc_name));
 
-            for span_and_bound in spans.zip(&bounds) {
-                if let Some(span) = span_and_bound.0 {
+            for bound in bounds {
+                let bound_span = self.tcx().associated_items(bound.def_id()).find(|item| {
+                    item.kind == ty::AssociatedKind::Type && item.name == assoc_name
+                })
+                .and_then(|item| self.tcx().map.span_if_local(item.def_id));
+
+                if let Some(span) = bound_span {
                     err.span_label(span, &format!("ambiguous `{}` from `{}`",
                                                   assoc_name,
-                                                  span_and_bound.1));
+                                                  bound));
                 } else {
                     span_note!(&mut err, span,
                                "associated type `{}` could derive from `{}`",
                                ty_param_name,
-                               span_and_bound.1);
+                               bound);
                 }
             }
             err.emit();
         }
 
-        Ok(bounds[0].clone())
+        return Ok(bound);
     }
 
     // Create a type from a path to an associated type.
@@ -1293,11 +1294,10 @@ impl<'o, 'gcx: 'tcx, 'tcx> AstConv<'gcx, 'tcx>+'o {
                     return (tcx.types.err, Def::Err);
                 }
 
-                let candidates: Vec<ty::PolyTraitRef> =
+                let candidates =
                     traits::supertraits(tcx, ty::Binder(trait_ref))
                     .filter(|r| self.trait_defines_associated_type_named(r.def_id(),
-                                                                         assoc_name))
-                    .collect();
+                                                                         assoc_name));
 
                 match self.one_bound_for_assoc_type(candidates,
                                                     "Self",
@@ -1595,7 +1595,8 @@ impl<'o, 'gcx: 'tcx, 'tcx> AstConv<'gcx, 'tcx>+'o {
                 // checking for here would be considered early bound
                 // anyway.)
                 let inputs = bare_fn_ty.sig.inputs();
-                let late_bound_in_args = tcx.collect_constrained_late_bound_regions(&inputs);
+                let late_bound_in_args = tcx.collect_constrained_late_bound_regions(
+                    &inputs.map_bound(|i| i.to_owned()));
                 let output = bare_fn_ty.sig.output();
                 let late_bound_in_ret = tcx.collect_referenced_late_bound_regions(&output);
                 for br in late_bound_in_ret.difference(&late_bound_in_args) {
@@ -1795,19 +1796,16 @@ impl<'o, 'gcx: 'tcx, 'tcx> AstConv<'gcx, 'tcx>+'o {
             hir::DefaultReturn(..) => self.tcx().mk_nil(),
         };
 
-        let input_tys = self_ty.into_iter().chain(arg_tys).collect();
-
-        debug!("ty_of_method_or_bare_fn: input_tys={:?}", input_tys);
         debug!("ty_of_method_or_bare_fn: output_ty={:?}", output_ty);
 
         self.tcx().mk_bare_fn(ty::BareFnTy {
             unsafety: unsafety,
             abi: abi,
-            sig: ty::Binder(ty::FnSig {
-                inputs: input_tys,
-                output: output_ty,
-                variadic: decl.variadic
-            }),
+            sig: ty::Binder(self.tcx().mk_fn_sig(
+                self_ty.into_iter().chain(arg_tys),
+                output_ty,
+                decl.variadic
+            )),
         })
     }
 
@@ -1849,20 +1847,20 @@ impl<'o, 'gcx: 'tcx, 'tcx> AstConv<'gcx, 'tcx>+'o {
         // that function type
         let rb = rscope::BindingRscope::new();
 
-        let input_tys: Vec<_> = decl.inputs.iter().enumerate().map(|(i, a)| {
+        let input_tys = decl.inputs.iter().enumerate().map(|(i, a)| {
             let expected_arg_ty = expected_sig.as_ref().and_then(|e| {
                 // no guarantee that the correct number of expected args
                 // were supplied
-                if i < e.inputs.len() {
-                    Some(e.inputs[i])
+                if i < e.inputs().len() {
+                    Some(e.inputs()[i])
                 } else {
                     None
                 }
             });
             self.ty_of_arg(&rb, a, expected_arg_ty)
-        }).collect();
+        });
 
-        let expected_ret_ty = expected_sig.map(|e| e.output);
+        let expected_ret_ty = expected_sig.as_ref().map(|e| e.output());
 
         let is_infer = match decl.output {
             hir::Return(ref output) if output.node == hir::TyInfer => true,
@@ -1879,15 +1877,12 @@ impl<'o, 'gcx: 'tcx, 'tcx> AstConv<'gcx, 'tcx>+'o {
             hir::DefaultReturn(..) => bug!(),
         };
 
-        debug!("ty_of_closure: input_tys={:?}", input_tys);
         debug!("ty_of_closure: output_ty={:?}", output_ty);
 
         ty::ClosureTy {
             unsafety: unsafety,
             abi: abi,
-            sig: ty::Binder(ty::FnSig {inputs: input_tys,
-                                       output: output_ty,
-                                       variadic: decl.variadic}),
+            sig: ty::Binder(self.tcx().mk_fn_sig(input_tys, output_ty, decl.variadic)),
         }
     }
 

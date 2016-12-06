@@ -8,15 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// compile-flags: --test
+// no-prefer-dynamic
+#![crate_type = "staticlib"]
 
-#![crate_type = "proc-macro"]
-#![feature(proc_macro, proc_macro_lib)]
-
-extern crate proc_macro;
-
-#[proc_macro_derive(A)]
-//~^ ERROR: `--test` cannot be used with proc-macro crates
-pub fn foo1(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    "".parse().unwrap()
-}
+// Since codegen tests don't actually perform linking, this library doesn't need to export
+// any symbols.  It's here just to satisfy the compiler looking for a .lib file when processing
+// #[link(...)] attributes in wrapper.rs.
