@@ -48,7 +48,7 @@ use rustc::session::config::CrateType::CrateTypeExecutable;
 use rustc::ty::{self, TyCtxt};
 
 use std::env;
-use std::fs::{self, File};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use syntax::ast::{self, NodeId, PatKind, Attribute, CRATE_NODE_ID};
@@ -250,8 +250,8 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                 match typ.node {
                     // Common case impl for a struct or something basic.
                     ast::TyKind::Path(None, ref path) => {
+                        filter!(self.span_utils, None, path.span, None);
                         sub_span = self.span_utils.sub_span_for_type_name(path.span);
-                        filter!(self.span_utils, sub_span, path.span, None);
                         type_data = self.lookup_ref_id(typ.id).map(|id| {
                             TypeRefData {
                                 span: sub_span.unwrap(),
@@ -741,7 +741,7 @@ impl PathCollector {
     }
 }
 
-impl Visitor for PathCollector {
+impl<'a> Visitor<'a> for PathCollector {
     fn visit_pat(&mut self, p: &ast::Pat) {
         match p.node {
             PatKind::Struct(ref path, ..) => {
@@ -832,7 +832,7 @@ pub fn process_crate<'l, 'tcx>(tcx: TyCtxt<'l, 'tcx, 'tcx>,
         },
     };
 
-    if let Err(e) = fs::create_dir_all(&root_path) {
+    if let Err(e) = rustc::util::fs::create_dir_racy(&root_path) {
         tcx.sess.err(&format!("Could not create directory {}: {}",
                               root_path.display(),
                               e));

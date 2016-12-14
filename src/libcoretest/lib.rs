@@ -36,11 +36,12 @@
 #![feature(iter_min_by)]
 #![feature(ordering_chaining)]
 #![feature(result_unwrap_or_default)]
+#![feature(ptr_unaligned)]
 
 extern crate core;
 extern crate test;
 extern crate libc;
-extern crate rustc_unicode;
+extern crate std_unicode;
 extern crate rand;
 
 mod any;

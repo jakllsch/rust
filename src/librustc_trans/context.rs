@@ -10,7 +10,8 @@
 
 use llvm;
 use llvm::{ContextRef, ModuleRef, ValueRef, BuilderRef};
-use rustc::dep_graph::{DepNode, DepTrackingMap, DepTrackingMapConfig, WorkProduct};
+use rustc::dep_graph::{DepGraph, DepNode, DepTrackingMap, DepTrackingMapConfig,
+                       WorkProduct};
 use middle::cstore::LinkMeta;
 use rustc::hir::def::ExportMap;
 use rustc::hir::def_id::DefId;
@@ -551,6 +552,10 @@ impl<'b, 'tcx> SharedCrateContext<'b, 'tcx> {
         &self.tcx.sess
     }
 
+    pub fn dep_graph<'a>(&'a self) -> &'a DepGraph {
+        &self.tcx.dep_graph
+    }
+
     pub fn stats<'a>(&'a self) -> &'a Stats {
         &self.stats
     }
@@ -966,7 +971,7 @@ impl<'b, 'tcx> CrateContext<'b, 'tcx> {
         let mut name = String::with_capacity(prefix.len() + 6);
         name.push_str(prefix);
         name.push_str(".");
-        base_n::push_str(idx as u64, base_n::MAX_BASE, &mut name);
+        base_n::push_str(idx as u64, base_n::ALPHANUMERIC_ONLY, &mut name);
         name
     }
 }

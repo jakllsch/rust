@@ -63,8 +63,8 @@ use core::mem;
 use core::ops::{self, Add, AddAssign, Index, IndexMut};
 use core::ptr;
 use core::str::pattern::Pattern;
-use rustc_unicode::char::{decode_utf16, REPLACEMENT_CHARACTER};
-use rustc_unicode::str as unicode_str;
+use std_unicode::char::{decode_utf16, REPLACEMENT_CHARACTER};
+use std_unicode::str as unicode_str;
 
 use borrow::{Cow, ToOwned};
 use range::RangeArgument;
@@ -1129,8 +1129,6 @@ impl String {
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn insert(&mut self, idx: usize, ch: char) {
-        let len = self.len();
-        assert!(idx <= len);
         assert!(self.is_char_boundary(idx));
         let mut bits = [0; 4];
         let bits = ch.encode_utf8(&mut bits).as_bytes();
@@ -1184,7 +1182,6 @@ impl String {
                reason = "recent addition",
                issue = "35553")]
     pub fn insert_str(&mut self, idx: usize, string: &str) {
-        assert!(idx <= self.len());
         assert!(self.is_char_boundary(idx));
 
         unsafe {
@@ -1288,7 +1285,6 @@ impl String {
     #[unstable(feature = "string_split_off", issue = "38080")]
     pub fn split_off(&mut self, mid: usize) -> String {
         assert!(self.is_char_boundary(mid));
-        assert!(mid <= self.len());
         let other = self.vec.split_off(mid);
         unsafe { String::from_utf8_unchecked(other) }
     }

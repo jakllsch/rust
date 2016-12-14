@@ -9,7 +9,6 @@ RUN dpkg --add-architecture i386 && \
   curl \
   ca-certificates \
   python2.7 \
-  python-minimal \
   git \
   cmake \
   ccache \
@@ -26,8 +25,13 @@ COPY install-ndk.sh install-sdk.sh accept-licenses.sh /android/
 RUN sh /android/install-ndk.sh
 RUN sh /android/install-sdk.sh
 
+RUN curl -OL https://github.com/Yelp/dumb-init/releases/download/v1.2.0/dumb-init_1.2.0_amd64.deb && \
+    dpkg -i dumb-init_*.deb && \
+    rm dumb-init_*.deb
+
 COPY start-emulator.sh /android/
-ENTRYPOINT ["/android/start-emulator.sh"]
+
+ENTRYPOINT ["/usr/bin/dumb-init", "--", "/android/start-emulator.sh"]
 
 ENV TARGETS=arm-linux-androideabi
 ENV TARGETS=$TARGETS,i686-linux-android
@@ -39,8 +43,7 @@ ENV RUST_CONFIGURE_ARGS \
       --arm-linux-androideabi-ndk=/android/ndk-arm-9 \
       --armv7-linux-androideabi-ndk=/android/ndk-arm-9 \
       --i686-linux-android-ndk=/android/ndk-x86-9 \
-      --aarch64-linux-android-ndk=/android/ndk-aarch64 \
-      --enable-rustbuild
-ENV RUST_CHECK_TARGET check-stage2-android
+      --aarch64-linux-android-ndk=/android/ndk-aarch64
+ENV XPY_CHECK test --target arm-linux-androideabi
 RUN mkdir /tmp/obj
 RUN chmod 777 /tmp/obj

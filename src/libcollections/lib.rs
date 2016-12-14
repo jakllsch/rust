@@ -47,19 +47,19 @@
 #![feature(placement_in)]
 #![feature(placement_new_protocol)]
 #![feature(shared)]
+#![feature(slice_get_slice)]
 #![feature(slice_patterns)]
 #![feature(specialization)]
 #![feature(staged_api)]
-#![feature(step_by)]
 #![feature(trusted_len)]
 #![feature(unicode)]
 #![feature(unique)]
-#![feature(slice_get_slice)]
+#![feature(untagged_unions)]
 #![cfg_attr(test, feature(rand, test))]
 
 #![no_std]
 
-extern crate rustc_unicode;
+extern crate std_unicode;
 extern crate alloc;
 
 #[cfg(test)]

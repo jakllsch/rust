@@ -345,7 +345,7 @@ pub fn maketest(s: &str, cratename: Option<&str>, dont_insert_main: bool,
 }
 
 fn partition_source(s: &str) -> (String, String) {
-    use rustc_unicode::str::UnicodeStr;
+    use std_unicode::str::UnicodeStr;
 
     let mut after_header = false;
     let mut before = String::new();
@@ -536,5 +536,9 @@ impl<'a, 'hir> intravisit::Visitor<'hir> for HirCollector<'a, 'hir> {
         self.visit_testable(f.name.to_string(), &f.attrs, |this| {
             intravisit::walk_struct_field(this, f);
         });
+    }
+
+    fn visit_macro_def(&mut self, macro_def: &'hir hir::MacroDef) {
+        self.visit_testable(macro_def.name.to_string(), &macro_def.attrs, |_| ());
     }
 }
