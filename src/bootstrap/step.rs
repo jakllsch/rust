@@ -490,7 +490,12 @@ pub fn build_rules(build: &Build) -> Rules {
          .default(true)
          .run(move |s| dist::std(build, &s.compiler(), s.target));
     rules.dist("dist-mingw", "path/to/nowhere")
-         .run(move |s| dist::mingw(build, s.target));
+         .default(true)
+         .run(move |s| {
+             if s.target.contains("pc-windows-gnu") {
+                 dist::mingw(build, s.target)
+             }
+         });
     rules.dist("dist-src", "src")
          .default(true)
          .host(true)
@@ -871,6 +876,10 @@ invalid rule dependency graph detected, was a rule added and maybe typo'd?
 
         // And finally, iterate over everything and execute it.
         for step in order.iter() {
+            if self.build.flags.keep_stage.map_or(false, |s| step.stage <= s) {
+                self.build.verbose(&format!("keeping step {:?}", step));
+                continue;
+            }
             self.build.verbose(&format!("executing step {:?}", step));
             (self.rules[step.name].run)(step);
         }
