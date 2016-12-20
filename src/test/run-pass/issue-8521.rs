@@ -8,25 +8,27 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(rustc_attrs)]
-#![allow(dead_code)]
+trait Foo1 {}
 
-macro_rules! foo {
-    ($x:tt) => (type Alias = $x<i32>;)
-}
+trait A {}
 
-foo!(Box);
+macro_rules! foo1(($t:path) => {
+    impl<T: $t> Foo1 for T {}
+});
 
-macro_rules! bar {
-    ($x:tt) => {
-        macro_rules! baz {
-            ($x:tt, $y:tt) => { ($x, $y) }
-        }
-    }
-}
+foo1!(A);
 
-#[rustc_error]
-fn main() { //~ ERROR compilation successful
-    bar!($y);
-    let _: (i8, i16) = baz!(0i8, 0i16);
-}
+trait Foo2 {}
+
+trait B<T> {}
+
+#[allow(unused)]
+struct C {}
+
+macro_rules! foo2(($t:path) => {
+    impl<T: $t> Foo2 for T {}
+});
+
+foo2!(B<C>);
+
+fn main() {}
