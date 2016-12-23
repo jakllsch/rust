@@ -273,6 +273,9 @@ pub struct TargetOptions {
     /// user-defined libraries.
     pub post_link_args: Vec<String>,
 
+    /// Extra arguments to pass to the external assembler (when used)
+    pub asm_args: Vec<String>,
+
     /// Default CPU to pass to LLVM. Corresponds to `llc -mcpu=$cpu`. Defaults
     /// to "generic".
     pub cpu: String,
@@ -400,6 +403,7 @@ impl Default for TargetOptions {
             ar: option_env!("CFG_DEFAULT_AR").unwrap_or("ar").to_string(),
             pre_link_args: Vec::new(),
             post_link_args: Vec::new(),
+            asm_args: Vec::new(),
             cpu: "generic".to_string(),
             features: "".to_string(),
             dynamic_linking: false,
@@ -567,6 +571,7 @@ impl Target {
         key!(late_link_args, list);
         key!(post_link_objects, list);
         key!(post_link_args, list);
+        key!(asm_args, list);
         key!(cpu);
         key!(features);
         key!(dynamic_linking, bool);
@@ -729,6 +734,7 @@ impl ToJson for Target {
         target_option_val!(late_link_args);
         target_option_val!(post_link_objects);
         target_option_val!(post_link_args);
+        target_option_val!(asm_args);
         target_option_val!(cpu);
         target_option_val!(features);
         target_option_val!(dynamic_linking);

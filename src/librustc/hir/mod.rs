@@ -475,8 +475,6 @@ pub struct MacroDef {
     pub attrs: HirVec<Attribute>,
     pub id: NodeId,
     pub span: Span,
-    pub imported_from: Option<Name>,
-    pub allow_internal_unstable: bool,
     pub body: HirVec<TokenTree>,
 }
 
@@ -1533,8 +1531,6 @@ pub struct ItemId {
     pub id: NodeId,
 }
 
-//  FIXME (#3300): Should allow items to be anonymous. Right now
-//  we just use dummy names for anon items.
 /// An item
 ///
 /// The name might be a dummy name in case of anonymous items
