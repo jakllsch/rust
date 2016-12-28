@@ -382,6 +382,9 @@ pub struct TargetOptions {
     // file
     pub no_integrated_as: bool,
 
+    /// Don't use this field; instead use the `.min_atomic_width()` method.
+    pub min_atomic_width: Option<u64>,
+
     /// Don't use this field; instead use the `.max_atomic_width()` method.
     pub max_atomic_width: Option<u64>,
 
@@ -445,6 +448,7 @@ impl Default for TargetOptions {
             has_elf_tls: false,
             obj_is_bitcode: false,
             no_integrated_as: false,
+            min_atomic_width: None,
             max_atomic_width: None,
             panic_strategy: PanicStrategy::Unwind,
             abi_blacklist: vec![],
@@ -466,6 +470,12 @@ impl Target {
             },
             abi => abi
         }
+    }
+
+    /// Minimum integer size in bits that this target can perform atomic
+    /// operations on.
+    pub fn min_atomic_width(&self) -> u64 {
+        self.options.min_atomic_width.unwrap_or(8)
     }
 
     /// Maximum integer size in bits that this target can perform atomic
@@ -610,6 +620,7 @@ impl Target {
         key!(obj_is_bitcode, bool);
         key!(no_integrated_as, bool);
         key!(max_atomic_width, Option<u64>);
+        key!(min_atomic_width, Option<u64>);
         try!(key!(panic_strategy, PanicStrategy));
         key!(crt_static_default, bool);
 
@@ -772,6 +783,7 @@ impl ToJson for Target {
         target_option_val!(has_elf_tls);
         target_option_val!(obj_is_bitcode);
         target_option_val!(no_integrated_as);
+        target_option_val!(min_atomic_width);
         target_option_val!(max_atomic_width);
         target_option_val!(panic_strategy);
         target_option_val!(crt_static_default);

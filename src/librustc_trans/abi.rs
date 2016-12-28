@@ -25,6 +25,7 @@ use cabi_mips;
 use cabi_mips64;
 use cabi_asmjs;
 use cabi_msp430;
+use cabi_sparc;
 use machine::{llalign_of_min, llsize_of, llsize_of_alloc};
 use type_::Type;
 use type_of;
@@ -59,7 +60,7 @@ mod attr_impl {
     // The subset of llvm::Attribute needed for arguments, packed into a bitfield.
     bitflags! {
         #[derive(Default, Debug)]
-        flags ArgAttribute : u8 {
+        flags ArgAttribute : u16 {
             const ByVal     = 1 << 0,
             const NoAlias   = 1 << 1,
             const NoCapture = 1 << 2,
@@ -68,6 +69,7 @@ mod attr_impl {
             const SExt      = 1 << 5,
             const StructRet = 1 << 6,
             const ZExt      = 1 << 7,
+            const InReg     = 1 << 8,
         }
     }
 }
@@ -81,7 +83,7 @@ macro_rules! for_each_kind {
 impl ArgAttribute {
     fn for_each_kind<F>(&self, mut f: F) where F: FnMut(llvm::Attribute) {
         for_each_kind!(self, f,
-                       ByVal, NoAlias, NoCapture, NonNull, ReadOnly, SExt, StructRet, ZExt)
+                       ByVal, NoAlias, NoCapture, NonNull, ReadOnly, SExt, StructRet, ZExt, InReg)
     }
 }
 
@@ -574,7 +576,14 @@ impl FnType {
         }
 
         match &ccx.sess().target.target.arch[..] {
-            "x86" => cabi_x86::compute_abi_info(ccx, self),
+            "x86" => {
+                let flavor = if abi == Abi::Fastcall {
+                    cabi_x86::Flavor::Fastcall
+                } else {
+                    cabi_x86::Flavor::General
+                };
+                cabi_x86::compute_abi_info(ccx, self, flavor);
+            },
             "x86_64" => if abi == Abi::SysV64 {
                 cabi_x86_64::compute_abi_info(ccx, self);
             } else if abi == Abi::Win64 || ccx.sess().target.target.options.is_like_windows {
@@ -600,6 +609,7 @@ impl FnType {
             "asmjs" => cabi_asmjs::compute_abi_info(ccx, self),
             "wasm32" => cabi_asmjs::compute_abi_info(ccx, self),
             "msp430" => cabi_msp430::compute_abi_info(ccx, self),
+            "sparc" => cabi_sparc::compute_abi_info(ccx, self),
             a => ccx.sess().fatal(&format!("unrecognized arch \"{}\" in target specification", a))
         }
 

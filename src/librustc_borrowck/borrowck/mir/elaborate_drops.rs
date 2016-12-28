@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use super::gather_moves::{MoveData, MovePathIndex, LookupResult};
+use super::gather_moves::{HasMoveData, MoveData, MovePathIndex, LookupResult};
 use super::dataflow::{MaybeInitializedLvals, MaybeUninitializedLvals};
 use super::dataflow::{DataflowResults};
 use super::{drop_flag_effects_for_location, on_all_children_bits};
@@ -51,11 +51,13 @@ impl<'tcx> MirPass<'tcx> for ElaborateDrops {
                 param_env: param_env
             };
             let flow_inits =
-                super::do_dataflow(tcx, mir, id, &[], &env,
-                                   MaybeInitializedLvals::new(tcx, mir));
+                super::do_dataflow(tcx, mir, id, &[],
+                                   MaybeInitializedLvals::new(tcx, mir, &env),
+                                   |bd, p| &bd.move_data().move_paths[p]);
             let flow_uninits =
-                super::do_dataflow(tcx, mir, id, &[], &env,
-                                   MaybeUninitializedLvals::new(tcx, mir));
+                super::do_dataflow(tcx, mir, id, &[],
+                                   MaybeUninitializedLvals::new(tcx, mir, &env),
+                                   |bd, p| &bd.move_data().move_paths[p]);
 
             ElaborateDropsCtxt {
                 tcx: tcx,
@@ -481,54 +483,55 @@ impl<'b, 'tcx> ElaborateDropsCtxt<'b, 'tcx> {
                            is_cleanup: bool)
                            -> Vec<BasicBlock>
     {
-        let mut succ = succ;
         let mut unwind_succ = if is_cleanup {
             None
         } else {
             c.unwind
         };
-        let mut update_drop_flag = true;
+
+        let mut succ = self.new_block(
+            c, c.is_cleanup, TerminatorKind::Goto { target: succ }
+        );
+
+        // Always clear the "master" drop flag at the bottom of the
+        // ladder. This is needed because the "master" drop flag
+        // protects the ADT's discriminant, which is invalidated
+        // after the ADT is dropped.
+        self.set_drop_flag(
+            Location { block: succ, statement_index: 0 },
+            c.path,
+            DropFlagState::Absent
+        );
 
         fields.iter().rev().enumerate().map(|(i, &(ref lv, path))| {
-            let drop_block = match path {
-                Some(path) => {
-                    debug!("drop_ladder: for std field {} ({:?})", i, lv);
+            succ = if let Some(path) = path {
+                debug!("drop_ladder: for std field {} ({:?})", i, lv);
 
-                    self.elaborated_drop_block(&DropCtxt {
-                        source_info: c.source_info,
-                        is_cleanup: is_cleanup,
-                        init_data: c.init_data,
-                        lvalue: lv,
-                        path: path,
-                        succ: succ,
-                        unwind: unwind_succ,
-                    })
-                }
-                None => {
-                    debug!("drop_ladder: for rest field {} ({:?})", i, lv);
+                self.elaborated_drop_block(&DropCtxt {
+                    source_info: c.source_info,
+                    is_cleanup: is_cleanup,
+                    init_data: c.init_data,
+                    lvalue: lv,
+                    path: path,
+                    succ: succ,
+                    unwind: unwind_succ,
+                })
+            } else {
+                debug!("drop_ladder: for rest field {} ({:?})", i, lv);
 
-                    let blk = self.complete_drop(&DropCtxt {
-                        source_info: c.source_info,
-                        is_cleanup: is_cleanup,
-                        init_data: c.init_data,
-                        lvalue: lv,
-                        path: c.path,
-                        succ: succ,
-                        unwind: unwind_succ,
-                    }, update_drop_flag);
-
-                    // the drop flag has been updated - updating
-                    // it again would clobber it.
-                    update_drop_flag = false;
-
-                    blk
-                }
+                self.complete_drop(&DropCtxt {
+                    source_info: c.source_info,
+                    is_cleanup: is_cleanup,
+                    init_data: c.init_data,
+                    lvalue: lv,
+                    path: c.path,
+                    succ: succ,
+                    unwind: unwind_succ,
+                }, false)
             };
 
-            succ = drop_block;
             unwind_succ = unwind_ladder.as_ref().map(|p| p[i]);
-
-            drop_block
+            succ
         }).collect()
     }
 
