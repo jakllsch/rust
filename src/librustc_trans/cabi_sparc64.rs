@@ -8,12 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// FIXME: The PowerPC64 ABI needs to zero or sign extend function
-// call parameters, but compute_abi_info() is passed LLVM types
-// which have no sign information.
-//
-// Alignment of 128 bit types is not currently handled, this will
-// need to be fixed when PowerPC vector support is added.
+// FIXME: This needs an audit for correctness and completeness.
 
 use llvm::{Integer, Pointer, Float, Double, Struct, Vector, Array};
 use abi::{self, FnType, ArgType};

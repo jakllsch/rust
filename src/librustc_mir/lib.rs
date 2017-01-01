@@ -22,7 +22,6 @@ Rust MIR: a lowered representation of Rust. Also: an experiment!
 
 #![feature(associated_consts)]
 #![feature(box_patterns)]
-#![cfg_attr(stage0, feature(item_like_imports))]
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_private)]
 #![feature(staged_api)]
@@ -41,6 +40,8 @@ extern crate syntax;
 extern crate syntax_pos;
 extern crate rustc_const_math;
 extern crate rustc_const_eval;
+
+extern crate rustc_i128;
 
 pub mod diagnostics;
 

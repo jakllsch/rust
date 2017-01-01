@@ -7,13 +7,23 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+fn test1() -> i128 { //~ ERROR 128-bit type is unstable
+    0
+}
 
-use std::mem;
+fn test1_2() -> u128 { //~ ERROR 128-bit type is unstable
+    0
+}
 
-fn main() {
-    unsafe {
-        let size = mem::size_of::<u32>();
-        mem::transmute_copy::<u32, [u8; size]>(&8_8); //~ ERROR E0513
-                                                      //~| NOTE no type for variable
-    }
+fn test3() {
+    let x: i128 = 0; //~ ERROR 128-bit type is unstable
+}
+
+fn test3_2() {
+    let x: u128 = 0; //~ ERROR 128-bit type is unstable
+}
+
+#[repr(u128)]
+enum A { //~ ERROR 128-bit type is unstable
+    A(u64)
 }

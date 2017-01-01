@@ -30,9 +30,9 @@
 #![feature(conservative_impl_trait)]
 #![feature(const_fn)]
 #![feature(core_intrinsics)]
-#![cfg_attr(stage0, feature(item_like_imports))]
 #![feature(libc)]
 #![feature(nonzero)]
+#![feature(pub_restricted)]
 #![feature(quote)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_private)]
@@ -62,6 +62,9 @@ extern crate rustc_errors as errors;
 
 extern crate serialize as rustc_serialize; // used by deriving
 
+// SNAP:
+extern crate rustc_i128;
+
 #[cfg(test)]
 extern crate test;
 
@@ -80,9 +83,8 @@ pub mod lint;
 
 pub mod middle {
     pub mod astconv_util;
-    pub mod expr_use_visitor; // STAGE0: increase glitch immunity
+    pub mod expr_use_visitor;
     pub mod const_val;
-    pub mod const_qualif;
     pub mod cstore;
     pub mod dataflow;
     pub mod dead;
