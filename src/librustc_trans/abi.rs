@@ -19,7 +19,6 @@ use cabi_arm;
 use cabi_aarch64;
 use cabi_powerpc;
 use cabi_powerpc64;
-use cabi_sparc64;
 use cabi_s390x;
 use cabi_mips;
 use cabi_mips64;
@@ -612,7 +611,6 @@ impl FnType {
             "powerpc" => cabi_powerpc::compute_abi_info(ccx, self),
             "powerpc64" => cabi_powerpc64::compute_abi_info(ccx, self),
             "s390x" => cabi_s390x::compute_abi_info(ccx, self),
-            "sparc64" => cabi_sparc64::compute_abi_info(ccx, self),
             "asmjs" => cabi_asmjs::compute_abi_info(ccx, self),
             "wasm32" => cabi_asmjs::compute_abi_info(ccx, self),
             "msp430" => cabi_msp430::compute_abi_info(ccx, self),
