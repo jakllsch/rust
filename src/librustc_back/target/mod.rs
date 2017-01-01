@@ -58,6 +58,7 @@ mod apple_ios_base;
 mod arm_base;
 mod bitrig_base;
 mod dragonfly_base;
+mod emscripten_base;
 mod freebsd_base;
 mod haiku_base;
 mod linux_base;
@@ -156,6 +157,8 @@ supported_targets! {
     ("mipsel-unknown-linux-musl", mipsel_unknown_linux_musl),
     ("mips-unknown-linux-uclibc", mips_unknown_linux_uclibc),
     ("mipsel-unknown-linux-uclibc", mipsel_unknown_linux_uclibc),
+
+    ("sparc64-unknown-linux-gnu", sparc64_unknown_linux_gnu),
 
     ("i686-linux-android", i686_linux_android),
     ("arm-linux-androideabi", arm_linux_androideabi),

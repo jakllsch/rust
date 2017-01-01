@@ -62,9 +62,9 @@ impl fmt::Display for TestKind {
 ///
 /// This tool in `src/tools` will verify the validity of all our links in the
 /// documentation to ensure we don't have a bunch of dead ones.
-pub fn linkcheck(build: &Build, stage: u32, host: &str) {
-    println!("Linkcheck stage{} ({})", stage, host);
-    let compiler = Compiler::new(stage, host);
+pub fn linkcheck(build: &Build, host: &str) {
+    println!("Linkcheck ({})", host);
+    let compiler = Compiler::new(0, host);
 
     let _time = util::timeit();
     build.run(build.tool_cmd(&compiler, "linkchecker")
@@ -93,10 +93,11 @@ pub fn cargotest(build: &Build, stage: u32, host: &str) {
     t!(fs::create_dir_all(&out_dir));
 
     let _time = util::timeit();
-    build.run(build.tool_cmd(compiler, "cargotest")
-                   .env("PATH", newpath)
-                   .arg(&build.cargo)
-                   .arg(&out_dir));
+    let mut cmd = Command::new(build.tool(&Compiler::new(0, host), "cargotest"));
+    build.prepare_tool_cmd(compiler, &mut cmd);
+    build.run(cmd.env("PATH", newpath)
+                 .arg(&build.cargo)
+                 .arg(&out_dir));
 }
 
 /// Runs the `tidy` tool as compiled in `stage` by the `host` compiler.
@@ -104,9 +105,9 @@ pub fn cargotest(build: &Build, stage: u32, host: &str) {
 /// This tool in `src/tools` checks up on various bits and pieces of style and
 /// otherwise just implements a few lint-like checks that are specific to the
 /// compiler itself.
-pub fn tidy(build: &Build, stage: u32, host: &str) {
-    println!("tidy check stage{} ({})", stage, host);
-    let compiler = Compiler::new(stage, host);
+pub fn tidy(build: &Build, host: &str) {
+    println!("tidy check ({})", host);
+    let compiler = Compiler::new(0, host);
     build.run(build.tool_cmd(&compiler, "tidy")
                    .arg(build.src.join("src")));
 }
@@ -127,7 +128,9 @@ pub fn compiletest(build: &Build,
                    suite: &str) {
     println!("Check compiletest suite={} mode={} ({} -> {})",
              suite, mode, compiler.host, target);
-    let mut cmd = build.tool_cmd(compiler, "compiletest");
+    let mut cmd = Command::new(build.tool(&Compiler::new(0, compiler.host),
+                                          "compiletest"));
+    build.prepare_tool_cmd(compiler, &mut cmd);
 
     // compiletest currently has... a lot of arguments, so let's just pass all
     // of them!
@@ -287,7 +290,8 @@ pub fn error_index(build: &Build, compiler: &Compiler) {
     let output = dir.join("error-index.md");
 
     let _time = util::timeit();
-    build.run(build.tool_cmd(compiler, "error_index_generator")
+    build.run(build.tool_cmd(&Compiler::new(0, compiler.host),
+                             "error_index_generator")
                    .arg("markdown")
                    .arg(&output)
                    .env("CFG_BUILD", &build.config.build));
@@ -507,6 +511,10 @@ fn find_tests(dir: &Path,
 pub fn android_copy_libs(build: &Build,
                          compiler: &Compiler,
                          target: &str) {
+    if !target.contains("android") {
+        return
+    }
+
     println!("Android copy libs to emulator ({})", target);
     build.run(Command::new("adb").arg("remount"));
     build.run(Command::new("adb").args(&["shell", "rm", "-r", ADB_TEST_DIR]));
@@ -554,6 +562,7 @@ pub fn distcheck(build: &Build) {
        .current_dir(&dir);
     build.run(&mut cmd);
     build.run(Command::new("./configure")
+                     .args(&build.config.configure_args)
                      .current_dir(&dir));
     build.run(Command::new(build_helper::make(&build.config.build))
                      .arg("check")

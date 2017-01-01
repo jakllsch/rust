@@ -293,15 +293,9 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
         let mut suite = |name, path, mode, dir| {
             rules.test(name, path)
                  .dep(|s| s.name("libtest"))
-                 .dep(|s| s.name("tool-compiletest").target(s.host))
+                 .dep(|s| s.name("tool-compiletest").target(s.host).stage(0))
                  .dep(|s| s.name("test-helpers"))
-                 .dep(move |s| {
-                     if s.target.contains("android") {
-                         s.name("android-copy-libs")
-                     } else {
-                         Step::noop()
-                     }
-                 })
+                 .dep(|s| s.name("android-copy-libs"))
                  .default(mode != "pretty") // pretty tests don't run everywhere
                  .run(move |s| {
                      check::compiletest(build, &s.compiler(), s.target, mode, dir)
@@ -327,24 +321,29 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
 
     if build.config.build.contains("msvc") {
         // nothing to do for debuginfo tests
-    } else if build.config.build.contains("apple") {
-        rules.test("check-debuginfo", "src/test/debuginfo")
-             .default(true)
+    } else {
+        rules.test("check-debuginfo-lldb", "src/test/debuginfo-lldb")
              .dep(|s| s.name("libtest"))
-             .dep(|s| s.name("tool-compiletest").target(s.host))
+             .dep(|s| s.name("tool-compiletest").target(s.host).stage(0))
              .dep(|s| s.name("test-helpers"))
              .dep(|s| s.name("debugger-scripts"))
              .run(move |s| check::compiletest(build, &s.compiler(), s.target,
                                          "debuginfo-lldb", "debuginfo"));
-    } else {
-        rules.test("check-debuginfo", "src/test/debuginfo")
-             .default(true)
+        rules.test("check-debuginfo-gdb", "src/test/debuginfo-gdb")
              .dep(|s| s.name("libtest"))
-             .dep(|s| s.name("tool-compiletest").target(s.host))
+             .dep(|s| s.name("tool-compiletest").target(s.host).stage(0))
              .dep(|s| s.name("test-helpers"))
              .dep(|s| s.name("debugger-scripts"))
+             .dep(|s| s.name("android-copy-libs"))
              .run(move |s| check::compiletest(build, &s.compiler(), s.target,
                                          "debuginfo-gdb", "debuginfo"));
+        let mut rule = rules.test("check-debuginfo", "src/test/debuginfo");
+        rule.default(true);
+        if build.config.build.contains("apple") {
+            rule.dep(|s| s.name("check-debuginfo-lldb"));
+        } else {
+            rule.dep(|s| s.name("check-debuginfo-gdb"));
+        }
     }
 
     rules.test("debugger-scripts", "src/etc/lldb_batchmode.py")
@@ -356,7 +355,7 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
             rules.test(name, path)
                  .dep(|s| s.name("librustc"))
                  .dep(|s| s.name("test-helpers"))
-                 .dep(|s| s.name("tool-compiletest").target(s.host))
+                 .dep(|s| s.name("tool-compiletest").target(s.host).stage(0))
                  .default(mode != "pretty")
                  .host(true)
                  .run(move |s| {
@@ -386,12 +385,14 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
     for (krate, path, _default) in krates("std_shim") {
         rules.test(&krate.test_step, path)
              .dep(|s| s.name("libtest"))
+             .dep(|s| s.name("android-copy-libs"))
              .run(move |s| check::krate(build, &s.compiler(), s.target,
                                         Mode::Libstd, TestKind::Test,
                                         Some(&krate.name)));
     }
     rules.test("check-std-all", "path/to/nowhere")
          .dep(|s| s.name("libtest"))
+         .dep(|s| s.name("android-copy-libs"))
          .default(true)
          .run(move |s| check::krate(build, &s.compiler(), s.target,
                                     Mode::Libstd, TestKind::Test, None));
@@ -400,12 +401,14 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
     for (krate, path, _default) in krates("std_shim") {
         rules.bench(&krate.bench_step, path)
              .dep(|s| s.name("libtest"))
+             .dep(|s| s.name("android-copy-libs"))
              .run(move |s| check::krate(build, &s.compiler(), s.target,
                                         Mode::Libstd, TestKind::Bench,
                                         Some(&krate.name)));
     }
     rules.bench("bench-std-all", "path/to/nowhere")
          .dep(|s| s.name("libtest"))
+         .dep(|s| s.name("android-copy-libs"))
          .default(true)
          .run(move |s| check::krate(build, &s.compiler(), s.target,
                                     Mode::Libstd, TestKind::Bench, None));
@@ -413,18 +416,21 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
     for (krate, path, _default) in krates("test_shim") {
         rules.test(&krate.test_step, path)
              .dep(|s| s.name("libtest"))
+             .dep(|s| s.name("android-copy-libs"))
              .run(move |s| check::krate(build, &s.compiler(), s.target,
                                         Mode::Libtest, TestKind::Test,
                                         Some(&krate.name)));
     }
     rules.test("check-test-all", "path/to/nowhere")
          .dep(|s| s.name("libtest"))
+         .dep(|s| s.name("android-copy-libs"))
          .default(true)
          .run(move |s| check::krate(build, &s.compiler(), s.target,
                                     Mode::Libtest, TestKind::Test, None));
     for (krate, path, _default) in krates("rustc-main") {
         rules.test(&krate.test_step, path)
              .dep(|s| s.name("librustc"))
+             .dep(|s| s.name("android-copy-libs"))
              .host(true)
              .run(move |s| check::krate(build, &s.compiler(), s.target,
                                         Mode::Librustc, TestKind::Test,
@@ -432,19 +438,20 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
     }
     rules.test("check-rustc-all", "path/to/nowhere")
          .dep(|s| s.name("librustc"))
+         .dep(|s| s.name("android-copy-libs"))
          .default(true)
          .host(true)
          .run(move |s| check::krate(build, &s.compiler(), s.target,
                                     Mode::Librustc, TestKind::Test, None));
 
     rules.test("check-linkchecker", "src/tools/linkchecker")
-         .dep(|s| s.name("tool-linkchecker"))
+         .dep(|s| s.name("tool-linkchecker").stage(0))
          .dep(|s| s.name("default:doc"))
          .default(true)
          .host(true)
-         .run(move |s| check::linkcheck(build, s.stage, s.target));
+         .run(move |s| check::linkcheck(build, s.target));
     rules.test("check-cargotest", "src/tools/cargotest")
-         .dep(|s| s.name("tool-cargotest"))
+         .dep(|s| s.name("tool-cargotest").stage(0))
          .dep(|s| s.name("librustc"))
          .host(true)
          .run(move |s| check::cargotest(build, s.stage, s.target));
@@ -452,10 +459,10 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
          .dep(|s| s.name("tool-tidy").stage(0))
          .default(true)
          .host(true)
-         .run(move |s| check::tidy(build, 0, s.target));
+         .run(move |s| check::tidy(build, s.target));
     rules.test("check-error-index", "src/tools/error_index_generator")
          .dep(|s| s.name("libstd"))
-         .dep(|s| s.name("tool-error-index").host(s.host))
+         .dep(|s| s.name("tool-error-index").host(s.host).stage(0))
          .default(true)
          .host(true)
          .run(move |s| check::error_index(build, &s.compiler()));
@@ -501,23 +508,23 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
     // ========================================================================
     // Documentation targets
     rules.doc("doc-book", "src/doc/book")
-         .dep(move |s| s.name("tool-rustbook").target(&build.config.build))
+         .dep(move |s| s.name("tool-rustbook").target(&build.config.build).stage(0))
          .default(build.config.docs)
-         .run(move |s| doc::rustbook(build, s.stage, s.target, "book"));
+         .run(move |s| doc::rustbook(build, s.target, "book"));
     rules.doc("doc-nomicon", "src/doc/nomicon")
-         .dep(move |s| s.name("tool-rustbook").target(&build.config.build))
+         .dep(move |s| s.name("tool-rustbook").target(&build.config.build).stage(0))
          .default(build.config.docs)
-         .run(move |s| doc::rustbook(build, s.stage, s.target, "nomicon"));
+         .run(move |s| doc::rustbook(build, s.target, "nomicon"));
     rules.doc("doc-standalone", "src/doc")
          .dep(move |s| s.name("rustc").host(&build.config.build).target(&build.config.build))
          .default(build.config.docs)
          .run(move |s| doc::standalone(build, s.stage, s.target));
     rules.doc("doc-error-index", "src/tools/error_index_generator")
-         .dep(move |s| s.name("tool-error-index").target(&build.config.build))
-         .dep(move |s| s.name("librustc-link"))
+         .dep(move |s| s.name("tool-error-index").target(&build.config.build).stage(0))
+         .dep(move |s| s.name("librustc-link").stage(0))
          .default(build.config.docs)
          .host(true)
-         .run(move |s| doc::error_index(build, s.stage, s.target));
+         .run(move |s| doc::error_index(build, s.target));
     for (krate, path, default) in krates("std_shim") {
         rules.doc(&krate.doc_step, path)
              .dep(|s| s.name("libstd-link"))
