@@ -8,8 +8,20 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![crate_type = "proc-macro"]
+struct Foo<A: Repr>(<A as Repr>::Data);
 
-#[proc_macro_derive(Foo)] //~ ERROR: is an experimental feature
-pub fn foo() {
+impl<A> Copy for Foo<A> where <A as Repr>::Data: Copy { }
+impl<A> Clone for Foo<A> where <A as Repr>::Data: Clone {
+    fn clone(&self) -> Self { Foo(self.0.clone()) }
+}
+
+trait Repr {
+    type Data;
+}
+
+impl<A> Repr for A {
+    type Data = u32;
+}
+
+fn main() {
 }

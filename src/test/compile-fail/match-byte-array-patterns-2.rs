@@ -8,6 +8,19 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// error-pattern: the `proc-macro` crate type is experimental
+#![feature(advanced_slice_patterns, slice_patterns)]
 
-#![crate_type = "proc-macro"]
+fn main() {
+    let buf = &[0, 1, 2, 3];
+
+    match buf { //~ ERROR non-exhaustive
+        b"AAAA" => {}
+    }
+
+    let buf: &[u8] = buf;
+
+    match buf { //~ ERROR non-exhaustive
+        b"AAAA" => {}
+    }
+}
+
