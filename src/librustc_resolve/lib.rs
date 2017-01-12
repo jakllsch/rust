@@ -15,7 +15,7 @@
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
       html_root_url = "https://doc.rust-lang.org/nightly/")]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
 #![feature(associated_consts)]
 #![feature(rustc_diagnostic_macros)]
@@ -894,6 +894,7 @@ enum NameBindingKind<'a> {
         binding: &'a NameBinding<'a>,
         directive: &'a ImportDirective<'a>,
         used: Cell<bool>,
+        legacy_self_import: bool,
     },
     Ambiguity {
         b1: &'a NameBinding<'a>,
@@ -1346,8 +1347,13 @@ impl<'a> Resolver<'a> {
         }
 
         match binding.kind {
-            NameBindingKind::Import { directive, binding, ref used } if !used.get() => {
+            NameBindingKind::Import { directive, binding, ref used, legacy_self_import }
+                    if !used.get() => {
                 used.set(true);
+                if legacy_self_import {
+                    self.warn_legacy_self_import(directive);
+                    return false;
+                }
                 self.used_imports.insert((directive.id, ns));
                 self.add_to_glob_map(directive.id, ident);
                 self.record_use(ident, ns, binding, span)
@@ -2410,13 +2416,15 @@ impl<'a> Resolver<'a> {
 
             match binding {
                 Ok(binding) => {
+                    let def = binding.def();
+                    let maybe_assoc = opt_ns != Some(MacroNS) && PathSource::Type.is_expected(def);
                     if let Some(next_module) = binding.module() {
                         module = Some(next_module);
-                    } else if binding.def() == Def::Err {
+                    } else if def == Def::Err {
                         return PathResult::NonModule(err_path_resolution());
-                    } else if opt_ns.is_some() && !(opt_ns == Some(MacroNS) && !is_last) {
+                    } else if opt_ns.is_some() && (is_last || maybe_assoc) {
                         return PathResult::NonModule(PathResolution {
-                            base_def: binding.def(),
+                            base_def: def,
                             depth: path.len() - i - 1,
                         });
                     } else {
@@ -3109,6 +3117,12 @@ impl<'a> Resolver<'a> {
         }
         err.emit();
         self.name_already_seen.insert(name, span);
+    }
+
+    fn warn_legacy_self_import(&self, directive: &'a ImportDirective<'a>) {
+        let (id, span) = (directive.id, directive.span);
+        let msg = "`self` no longer imports values".to_string();
+        self.session.add_lint(lint::builtin::LEGACY_IMPORTS, id, span, msg);
     }
 }
 

@@ -27,7 +27,7 @@
        test(no_crate_inject, attr(allow(unused_variables), deny(warnings))))]
 
 #![cfg_attr(test, allow(deprecated))] // rand
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
 #![feature(alloc)]
 #![feature(allow_internal_unstable)]
@@ -35,10 +35,11 @@
 #![feature(box_syntax)]
 #![cfg_attr(not(test), feature(char_escape_debug))]
 #![feature(core_intrinsics)]
-#![feature(dropck_parametricity)]
+#![feature(dropck_eyepatch)]
 #![feature(exact_size_is_empty)]
 #![feature(fmt_internals)]
 #![feature(fused)]
+#![feature(generic_param_attrs)]
 #![feature(heap_api)]
 #![feature(inclusive_range)]
 #![feature(lang_items)]
