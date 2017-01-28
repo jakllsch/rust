@@ -21,14 +21,14 @@ use rustc_serialize::Encodable;
 #[derive(RustcEncodable, RustcDecodable)]
 pub struct Ast<'tcx> {
     pub body: Lazy<hir::Body>,
-    pub tables: Lazy<ty::Tables<'tcx>>,
+    pub tables: Lazy<ty::TypeckTables<'tcx>>,
     pub nested_bodies: LazySeq<hir::Body>,
     pub rvalue_promotable_to_static: bool,
 }
 
 impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
     pub fn encode_body(&mut self, body_id: hir::BodyId) -> Lazy<Ast<'tcx>> {
-        let body = self.tcx.map.body(body_id);
+        let body = self.tcx.hir.body(body_id);
         let lazy_body = self.lazy(body);
 
         let tables = self.tcx.body_tables(body_id);
@@ -67,7 +67,7 @@ impl<'a, 'b, 'tcx> Visitor<'tcx> for NestedBodyEncodingVisitor<'a, 'b, 'tcx> {
     }
 
     fn visit_nested_body(&mut self, body: hir::BodyId) {
-        let body = self.ecx.tcx.map.body(body);
+        let body = self.ecx.tcx.hir.body(body);
         body.encode(self.ecx).unwrap();
         self.count += 1;
 

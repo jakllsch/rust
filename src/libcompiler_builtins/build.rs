@@ -107,7 +107,6 @@ fn main() {
                      "apple_versioning.c",
                      "ashldi3.c",
                      "ashrdi3.c",
-                     "clear_cache.c",
                      "clzdi2.c",
                      "clzsi2.c",
                      "cmpdi2.c",
@@ -234,10 +233,6 @@ fn main() {
                          "atomic_flag_test_and_set_explicit.c",
                          "atomic_signal_fence.c",
                          "atomic_thread_fence.c"]);
-    }
-
-    if !target.contains("redox") && !target.contains("windows") {
-        sources.extend(&["emutls.c"]);
     }
 
     if target.contains("msvc") {

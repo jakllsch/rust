@@ -27,7 +27,7 @@ use syntax::ext::base::{NormalTT, Resolver as SyntaxResolver, SyntaxExtension};
 use syntax::ext::expand::{Expansion, mark_tts};
 use syntax::ext::hygiene::Mark;
 use syntax::ext::tt::macro_rules;
-use syntax::feature_gate::{emit_feature_err, GateIssue};
+use syntax::feature_gate::{emit_feature_err, GateIssue, is_builtin_attr};
 use syntax::fold::{self, Folder};
 use syntax::ptr::P;
 use syntax::symbol::keywords;
@@ -183,6 +183,10 @@ impl<'a> base::Resolver for Resolver<'a> {
                 },
                 None => {}
             }
+
+            if self.proc_macro_enabled && !is_builtin_attr(&attrs[i]) {
+                return Some(attrs.remove(i));
+            }
         }
         None
     }
@@ -337,12 +341,15 @@ impl<'a> Resolver<'a> {
             };
         }
 
-        let binding = match binding {
-            Some(binding) => MacroBinding::Legacy(binding),
-            None => match self.builtin_macros.get(&name).cloned() {
-                Some(binding) => MacroBinding::Modern(binding),
-                None => return None,
-            },
+        let binding = if let Some(binding) = binding {
+            MacroBinding::Legacy(binding)
+        } else if let Some(binding) = self.builtin_macros.get(&name).cloned() {
+            if !self.use_extern_macros {
+                self.record_use(Ident::with_empty_ctxt(name), MacroNS, binding, DUMMY_SP);
+            }
+            MacroBinding::Modern(binding)
+        } else {
+            return None;
         };
 
         if !self.use_extern_macros {
@@ -373,6 +380,11 @@ impl<'a> Resolver<'a> {
             let resolution = self.resolve_lexical_macro_path_segment(ident, MacroNS, Some(span));
             let (legacy_resolution, resolution) = match (legacy_resolution, resolution) {
                 (Some(legacy_resolution), Ok(resolution)) => (legacy_resolution, resolution),
+                (Some(MacroBinding::Modern(binding)), Err(_)) => {
+                    self.record_use(ident, MacroNS, binding, span);
+                    self.err_if_macro_use_proc_macro(ident.name, span, binding);
+                    continue
+                },
                 _ => continue,
             };
             let (legacy_span, participle) = match legacy_resolution {
@@ -380,8 +392,8 @@ impl<'a> Resolver<'a> {
                 MacroBinding::Modern(binding) => (binding.span, "imported"),
                 MacroBinding::Legacy(binding) => (binding.span, "defined"),
             };
-            let msg1 = format!("`{}` could resolve to the macro {} here", ident, participle);
-            let msg2 = format!("`{}` could also resolve to the macro imported here", ident);
+            let msg1 = format!("`{}` could refer to the macro {} here", ident, participle);
+            let msg2 = format!("`{}` could also refer to the macro imported here", ident);
             self.session.struct_span_err(span, &format!("`{}` is ambiguous", ident))
                 .span_note(legacy_span, &msg1)
                 .span_note(resolution.span, &msg2)
@@ -468,5 +480,38 @@ impl<'a> Resolver<'a> {
             });
             self.exported_macros.push(def);
         }
+    }
+
+    /// Error if `ext` is a Macros 1.1 procedural macro being imported by `#[macro_use]`
+    fn err_if_macro_use_proc_macro(&mut self, name: Name, use_span: Span,
+                                   binding: &NameBinding<'a>) {
+        use self::SyntaxExtension::*;
+
+        let krate = binding.def().def_id().krate;
+
+        // Plugin-based syntax extensions are exempt from this check
+        if krate == BUILTIN_MACROS_CRATE { return; }
+
+        let ext = binding.get_macro(self);
+
+        match *ext {
+            // If `ext` is a procedural macro, check if we've already warned about it
+            AttrProcMacro(_) | ProcMacro(_) => if !self.warned_proc_macros.insert(name) { return; },
+            _ => return,
+        }
+
+        let warn_msg = match *ext {
+            AttrProcMacro(_) => "attribute procedural macros cannot be \
+                                 imported with `#[macro_use]`",
+            ProcMacro(_) => "procedural macros cannot be imported with `#[macro_use]`",
+            _ => return,
+        };
+
+        let crate_name = self.session.cstore.crate_name(krate);
+
+        self.session.struct_span_err(use_span, warn_msg)
+            .help(&format!("instead, import the procedural macro like any other item: \
+                             `use {}::{};`", crate_name, name))
+            .emit();
     }
 }

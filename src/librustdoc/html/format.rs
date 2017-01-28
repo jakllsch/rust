@@ -165,7 +165,7 @@ impl<'a> fmt::Display for WhereClause<'a> {
         if f.alternate() {
             clause.push_str(" where ");
         } else {
-            clause.push_str(" <span class='where'>where ");
+            clause.push_str(" <span class='where fmt-newline'>where ");
         }
         for (i, pred) in gens.where_predicates.iter().enumerate() {
             if i > 0 {
@@ -208,10 +208,9 @@ impl<'a> fmt::Display for WhereClause<'a> {
             clause.push_str("</span>");
             let plain = format!("{:#}", self);
             if plain.len() + pad > 80 {
-                //break it onto its own line regardless, but make sure method impls and trait
-                //blocks keep their fixed padding (2 and 9, respectively)
+                // break it onto its own line regardless, but make sure method impls and trait
+                // blocks keep their fixed padding (2 and 9, respectively)
                 let padding = if pad > 10 {
-                    clause = clause.replace("class='where'", "class='where fmt-newline'");
                     repeat("&nbsp;").take(8).collect::<String>()
                 } else {
                     repeat("&nbsp;").take(pad + 6).collect::<String>()
@@ -678,19 +677,6 @@ fn fmt_type(t: &clean::Type, f: &mut fmt::Formatter, use_absolute: bool) -> fmt:
                     }
                 }
             }
-        }
-        clean::PolyTraitRef(ref bounds) => {
-            for (i, bound) in bounds.iter().enumerate() {
-                if i != 0 {
-                    write!(f, " + ")?;
-                }
-                if f.alternate() {
-                    write!(f, "{:#}", *bound)?;
-                } else {
-                    write!(f, "{}", *bound)?;
-                }
-            }
-            Ok(())
         }
         clean::ImplTrait(ref bounds) => {
             write!(f, "impl ")?;

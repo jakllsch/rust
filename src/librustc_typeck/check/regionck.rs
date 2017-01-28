@@ -148,7 +148,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 
         if self.err_count_since_creation() == 0 {
             // regionck assumes typeck succeeded
-            rcx.visit_fn_body(fn_id, body, self.tcx.map.span(fn_id));
+            rcx.visit_fn_body(fn_id, body, self.tcx.hir.span(fn_id));
         }
 
         rcx.free_region_map.relate_free_regions_from_predicates(
@@ -482,7 +482,7 @@ impl<'a, 'gcx, 'tcx> Visitor<'gcx> for RegionCtxt<'a, 'gcx, 'tcx> {
 
     fn visit_fn(&mut self, _fk: intravisit::FnKind<'gcx>, _: &'gcx hir::FnDecl,
                 b: hir::BodyId, span: Span, id: ast::NodeId) {
-        let body = self.tcx.map.body(b);
+        let body = self.tcx.hir.body(b);
         self.visit_fn_body(id, body, span)
     }
 
@@ -996,7 +996,7 @@ impl<'a, 'gcx, 'tcx> RegionCtxt<'a, 'gcx, 'tcx> {
                                                      cmt: mc::cmt<'tcx>,
                                                      span: Span) {
         match cmt.cat {
-            Categorization::Rvalue(region) => {
+            Categorization::Rvalue(region, _) => {
                 match *region {
                     ty::ReScope(rvalue_scope) => {
                         let typ = self.resolve_type(cmt.ty);
@@ -1113,7 +1113,8 @@ impl<'a, 'gcx, 'tcx> RegionCtxt<'a, 'gcx, 'tcx> {
         for arg in args {
             let arg_ty = self.node_ty(arg.id);
             let re_scope = self.tcx.mk_region(ty::ReScope(body_scope));
-            let arg_cmt = mc.cat_rvalue(arg.id, arg.pat.span, re_scope, arg_ty);
+            let arg_cmt = mc.cat_rvalue(
+                arg.id, arg.pat.span, re_scope, re_scope, arg_ty);
             debug!("arg_ty={:?} arg_cmt={:?} arg={:?}",
                    arg_ty,
                    arg_cmt,

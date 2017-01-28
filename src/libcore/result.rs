@@ -798,6 +798,31 @@ impl<T: fmt::Debug, E> Result<T, E> {
             Err(e) => e,
         }
     }
+
+    /// Unwraps a result, yielding the content of an `Err`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the value is an `Ok`, with a panic message including the
+    /// passed message, and the content of the `Ok`.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```{.should_panic}
+    /// # #![feature(result_expect_err)]
+    /// let x: Result<u32, &str> = Ok(10);
+    /// x.expect_err("Testing expect_err"); // panics with `Testing expect_err: 10`
+    /// ```
+    #[inline]
+    #[unstable(feature = "result_expect_err", issue = "39041")]
+    pub fn expect_err(self, msg: &str) -> E {
+        match self {
+            Ok(t) => unwrap_failed(msg, t),
+            Err(e) => e,
+        }
+    }
 }
 
 impl<T: Default, E> Result<T, E> {
@@ -815,8 +840,6 @@ impl<T: Default, E> Result<T, E> {
     /// `Err` on error.
     ///
     /// ```
-    /// #![feature(result_unwrap_or_default)]
-    ///
     /// let good_year_from_input = "1909";
     /// let bad_year_from_input = "190blarg";
     /// let good_year = good_year_from_input.parse().unwrap_or_default();
@@ -829,7 +852,7 @@ impl<T: Default, E> Result<T, E> {
     /// [`FromStr`]: ../../std/str/trait.FromStr.html
     /// ```
     #[inline]
-    #[unstable(feature = "result_unwrap_or_default", issue = "37516")]
+    #[stable(feature = "result_unwrap_or_default", since = "1.16.0")]
     pub fn unwrap_or_default(self) -> T {
         match self {
             Ok(x) => x,

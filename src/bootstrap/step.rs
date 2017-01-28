@@ -513,6 +513,9 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
     rules.build("tool-compiletest", "src/tools/compiletest")
          .dep(|s| s.name("libtest"))
          .run(move |s| compile::tool(build, s.stage, s.target, "compiletest"));
+    rules.build("tool-build-manifest", "src/tools/build-manifest")
+         .dep(|s| s.name("libstd"))
+         .run(move |s| compile::tool(build, s.stage, s.target, "build-manifest"));
 
     // ========================================================================
     // Documentation targets
@@ -545,7 +548,7 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
          .run(move |s| doc::standalone(build, s.target));
     rules.doc("doc-error-index", "src/tools/error_index_generator")
          .dep(move |s| s.name("tool-error-index").target(&build.config.build).stage(0))
-         .dep(move |s| s.name("librustc-link").stage(0))
+         .dep(move |s| s.name("librustc-link"))
          .default(build.config.docs)
          .host(true)
          .run(move |s| doc::error_index(build, s.target));
@@ -615,9 +618,30 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
          .default(true)
          .only_host_build(true)
          .run(move |s| dist::analysis(build, &s.compiler(), s.target));
-    rules.dist("install", "src")
+    rules.dist("install", "path/to/nowhere")
          .dep(|s| s.name("default:dist"))
          .run(move |s| install::install(build, s.stage, s.target));
+    rules.dist("dist-cargo", "cargo")
+         .host(true)
+         .only_host_build(true)
+         .run(move |s| dist::cargo(build, s.stage, s.target));
+    rules.dist("dist-extended", "extended")
+         .default(build.config.extended)
+         .host(true)
+         .only_host_build(true)
+         .dep(|d| d.name("dist-std"))
+         .dep(|d| d.name("dist-rustc"))
+         .dep(|d| d.name("dist-mingw"))
+         .dep(|d| d.name("dist-docs"))
+         .dep(|d| d.name("dist-cargo"))
+         .run(move |s| dist::extended(build, s.stage, s.target));
+
+    rules.dist("dist-sign", "hash-and-sign")
+         .host(true)
+         .only_build(true)
+         .only_host_build(true)
+         .dep(move |s| s.name("tool-build-manifest").target(&build.config.build).stage(0))
+         .run(move |_| dist::hash_and_sign(build));
 
     rules.verify();
     return rules;
@@ -932,11 +956,11 @@ invalid rule dependency graph detected, was a rule added and maybe typo'd?
             Subcommand::Doc { ref paths } => (Kind::Doc, &paths[..]),
             Subcommand::Test { ref paths, test_args: _ } => (Kind::Test, &paths[..]),
             Subcommand::Bench { ref paths, test_args: _ } => (Kind::Bench, &paths[..]),
-            Subcommand::Dist { install } => {
+            Subcommand::Dist { ref paths, install } => {
                 if install {
                     return vec![self.sbuild.name("install")]
                 } else {
-                    (Kind::Dist, &[][..])
+                    (Kind::Dist, &paths[..])
                 }
             }
             Subcommand::Clean => panic!(),
@@ -1306,6 +1330,18 @@ mod tests {
         println!("all rules: {:#?}", all);
         assert!(!all.contains(&step.name("rustc")));
         assert!(!all.contains(&step.name("build-crate-std_shim").stage(1)));
+
+        // all stage0 compiles should be for the build target, A
+        for step in all.iter().filter(|s| s.stage == 0) {
+            if !step.name.contains("build-crate") {
+                continue
+            }
+            println!("step: {:?}", step);
+            assert!(step.host != "B");
+            assert!(step.target != "B");
+            assert!(step.host != "C");
+            assert!(step.target != "C");
+        }
     }
 
     #[test]

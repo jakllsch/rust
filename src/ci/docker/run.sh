@@ -25,8 +25,10 @@ docker \
   -t rust-ci \
   "`dirname "$script"`/$image"
 
+objdir=$root_dir/obj
+
 mkdir -p $HOME/.cargo
-mkdir -p $root_dir/obj
+mkdir -p $objdir
 
 args=
 if [ "$SCCACHE_BUCKET" != "" ]; then
@@ -41,14 +43,14 @@ fi
 exec docker \
   run \
   --volume "$root_dir:/checkout:ro" \
-  --volume "$root_dir/obj:/checkout/obj" \
+  --volume "$objdir:/checkout/obj" \
   --workdir /checkout/obj \
   --env SRC=/checkout \
   $args \
   --env CARGO_HOME=/cargo \
+  --env DEPLOY=$DEPLOY \
   --env LOCAL_USER_ID=`id -u` \
   --volume "$HOME/.cargo:/cargo" \
-  --interactive \
-  --tty \
+  --rm \
   rust-ci \
   /checkout/src/ci/run.sh

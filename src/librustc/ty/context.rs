@@ -16,7 +16,7 @@ use middle;
 use hir::TraitMap;
 use hir::def::Def;
 use hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
-use hir::map as ast_map;
+use hir::map as hir_map;
 use hir::map::DisambiguatedDefPathData;
 use middle::free_region::FreeRegionMap;
 use middle::region::RegionMaps;
@@ -65,7 +65,7 @@ pub struct GlobalArenas<'tcx> {
     trait_def: TypedArena<ty::TraitDef>,
     adt_def: TypedArena<ty::AdtDef>,
     mir: TypedArena<RefCell<Mir<'tcx>>>,
-    tables: TypedArena<ty::Tables<'tcx>>,
+    tables: TypedArena<ty::TypeckTables<'tcx>>,
 }
 
 impl<'tcx> GlobalArenas<'tcx> {
@@ -192,7 +192,7 @@ pub struct CommonTypes<'tcx> {
 }
 
 #[derive(RustcEncodable, RustcDecodable)]
-pub struct Tables<'tcx> {
+pub struct TypeckTables<'tcx> {
     /// Resolved definitions for `<T>::X` associated paths.
     pub type_relative_path_defs: NodeMap<Def>,
 
@@ -231,12 +231,16 @@ pub struct Tables<'tcx> {
     /// of the struct - this is needed because it is non-trivial to
     /// normalize while preserving regions. This table is used only in
     /// MIR construction and hence is not serialized to metadata.
-    pub fru_field_types: NodeMap<Vec<Ty<'tcx>>>
+    pub fru_field_types: NodeMap<Vec<Ty<'tcx>>>,
+
+    /// Maps a cast expression to its kind. This is keyed on the
+    /// *from* expression of the cast, not the cast itself.
+    pub cast_kinds: NodeMap<ty::cast::CastKind>,
 }
 
-impl<'tcx> Tables<'tcx> {
-    pub fn empty() -> Tables<'tcx> {
-        Tables {
+impl<'tcx> TypeckTables<'tcx> {
+    pub fn empty() -> TypeckTables<'tcx> {
+        TypeckTables {
             type_relative_path_defs: NodeMap(),
             node_types: FxHashMap(),
             item_substs: NodeMap(),
@@ -246,7 +250,8 @@ impl<'tcx> Tables<'tcx> {
             closure_tys: NodeMap(),
             closure_kinds: NodeMap(),
             liberated_fn_sigs: NodeMap(),
-            fru_field_types: NodeMap()
+            fru_field_types: NodeMap(),
+            cast_kinds: NodeMap(),
         }
     }
 
@@ -265,7 +270,7 @@ impl<'tcx> Tables<'tcx> {
             Some(ty) => ty,
             None => {
                 bug!("node_id_to_type: no type for node `{}`",
-                     tls::with(|tcx| tcx.map.node_to_string(id)))
+                     tls::with(|tcx| tcx.hir.node_to_string(id)))
             }
         }
     }
@@ -402,7 +407,7 @@ pub struct GlobalCtxt<'tcx> {
     free_region_maps: RefCell<NodeMap<FreeRegionMap>>,
     // FIXME: jroesch make this a refcell
 
-    pub tables: RefCell<DepTrackingMap<maps::Tables<'tcx>>>,
+    pub tables: RefCell<DepTrackingMap<maps::TypeckTables<'tcx>>>,
 
     /// Maps from a trait item to the trait item "descriptor"
     pub associated_items: RefCell<DepTrackingMap<maps::AssociatedItems<'tcx>>>,
@@ -428,7 +433,7 @@ pub struct GlobalCtxt<'tcx> {
     /// additional acyclicity requirements).
     pub super_predicates: RefCell<DepTrackingMap<maps::Predicates<'tcx>>>,
 
-    pub map: ast_map::Map<'tcx>,
+    pub hir: hir_map::Map<'tcx>,
 
     /// Maps from the def-id of a function/method or const/static
     /// to its MIR. Mutation is done at an item granularity to
@@ -533,10 +538,6 @@ pub struct GlobalCtxt<'tcx> {
     /// expression defining the closure.
     pub closure_kinds: RefCell<DepTrackingMap<maps::ClosureKinds<'tcx>>>,
 
-    /// Maps a cast expression to its kind. This is keyed on the
-    /// *from* expression of the cast, not the cast itself.
-    pub cast_kinds: RefCell<NodeMap<ty::cast::CastKind>>,
-
     /// Maps Fn items to a collection of fragment infos.
     ///
     /// The main goal is to identify data (each of which may be moved
@@ -628,7 +629,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         debug!("retrace_path(path={:?}, krate={:?})", path_data, self.crate_name(krate));
 
         if krate == LOCAL_CRATE {
-            self.map
+            self.hir
                 .definitions()
                 .def_path_table()
                 .retrace_path(path_data)
@@ -654,7 +655,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         self.global_arenas.mir.alloc(RefCell::new(mir))
     }
 
-    pub fn alloc_tables(self, tables: ty::Tables<'gcx>) -> &'gcx ty::Tables<'gcx> {
+    pub fn alloc_tables(self, tables: ty::TypeckTables<'gcx>) -> &'gcx ty::TypeckTables<'gcx> {
         self.global_arenas.tables.alloc(tables)
     }
 
@@ -730,7 +731,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                                   arena: &'tcx DroplessArena,
                                   resolutions: ty::Resolutions,
                                   named_region_map: resolve_lifetime::NamedRegionMap,
-                                  map: ast_map::Map<'tcx>,
+                                  hir: hir_map::Map<'tcx>,
                                   region_maps: RegionMaps,
                                   lang_items: middle::lang_items::LanguageItems,
                                   stability: stability::Index<'tcx>,
@@ -741,7 +742,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         let data_layout = TargetDataLayout::parse(s);
         let interners = CtxtInterners::new(arena);
         let common_types = CommonTypes::new(&interners);
-        let dep_graph = map.dep_graph.clone();
+        let dep_graph = hir.dep_graph.clone();
         let fulfilled_predicates = traits::GlobalFulfilledPredicates::new(dep_graph.clone());
         tls::enter_global(GlobalCtxt {
             specializes_cache: RefCell::new(traits::SpecializesCache::new()),
@@ -765,7 +766,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             predicates: RefCell::new(DepTrackingMap::new(dep_graph.clone())),
             super_predicates: RefCell::new(DepTrackingMap::new(dep_graph.clone())),
             fulfilled_predicates: RefCell::new(fulfilled_predicates),
-            map: map,
+            hir: hir,
             mir_map: RefCell::new(DepTrackingMap::new(dep_graph.clone())),
             freevars: RefCell::new(resolutions.freevars),
             maybe_unused_trait_imports: resolutions.maybe_unused_trait_imports,
@@ -792,7 +793,6 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             custom_coerce_unsized_kinds: RefCell::new(DefIdMap()),
             closure_tys: RefCell::new(DepTrackingMap::new(dep_graph.clone())),
             closure_kinds: RefCell::new(DepTrackingMap::new(dep_graph.clone())),
-            cast_kinds: RefCell::new(NodeMap()),
             fragment_infos: RefCell::new(DefIdMap()),
             crate_name: Symbol::intern(crate_name),
             data_layout: data_layout,

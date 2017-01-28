@@ -25,6 +25,7 @@ use lint;
 use middle::cstore;
 
 use syntax::ast::{self, IntTy, UintTy};
+use syntax::parse::token;
 use syntax::parse;
 use syntax::symbol::Symbol;
 use syntax::feature_gate::UnstableFeatures;
@@ -898,6 +899,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
           "attempt to recover from parse errors (experimental)"),
     incremental: Option<String> = (None, parse_opt_string, [UNTRACKED],
           "enable incremental compilation (experimental)"),
+    incremental_cc: bool = (false, parse_bool, [UNTRACKED],
+          "enable cross-crate incremental compilation (even more experimental)"),
     incremental_info: bool = (false, parse_bool, [UNTRACKED],
         "print high-level information about incremental reuse (or the lack thereof)"),
     incremental_dump_hash: bool = (false, parse_bool, [UNTRACKED],
@@ -1259,7 +1262,7 @@ pub fn parse_cfgspecs(cfgspecs: Vec<String> ) -> ast::CrateConfig {
 
         let meta_item = panictry!(parser.parse_meta_item());
 
-        if !parser.reader.is_eof() {
+        if parser.token != token::Eof {
             early_error(ErrorOutputType::default(), &format!("invalid --cfg argument: {}", s))
         } else if meta_item.is_meta_item_list() {
             let msg =

@@ -77,6 +77,13 @@ pub mod svh;
 pub struct Lifetime {
     pub id: NodeId,
     pub span: Span,
+
+    /// Either "'a", referring to a named lifetime definition,
+    /// or "" (aka keywords::Invalid), for elision placeholders.
+    ///
+    /// HIR lowering inserts these placeholders in type paths that
+    /// refer to type definitions needing lifetime parameters,
+    /// `&T` and `&mut T`, and trait objects without `... + 'a`.
     pub name: Name,
 }
 
@@ -86,6 +93,12 @@ impl fmt::Debug for Lifetime {
                "lifetime({}: {})",
                self.id,
                print::to_string(print::NO_ANN, |s| s.print_lifetime(self)))
+    }
+}
+
+impl Lifetime {
+    pub fn is_elided(&self) -> bool {
+        self.name == keywords::Invalid.name()
     }
 }
 
@@ -165,30 +178,6 @@ impl PathParameters {
         })
     }
 
-    pub fn is_empty(&self) -> bool {
-        match *self {
-            AngleBracketedParameters(ref data) => data.is_empty(),
-
-            // Even if the user supplied no types, something like
-            // `X()` is equivalent to `X<(),()>`.
-            ParenthesizedParameters(..) => false,
-        }
-    }
-
-    pub fn has_lifetimes(&self) -> bool {
-        match *self {
-            AngleBracketedParameters(ref data) => !data.lifetimes.is_empty(),
-            ParenthesizedParameters(_) => false,
-        }
-    }
-
-    pub fn has_types(&self) -> bool {
-        match *self {
-            AngleBracketedParameters(ref data) => !data.types.is_empty(),
-            ParenthesizedParameters(..) => true,
-        }
-    }
-
     /// Returns the types that the user wrote. Note that these do not necessarily map to the type
     /// parameters in the parenthesized case.
     pub fn types(&self) -> HirVec<&P<Ty>> {
@@ -243,12 +232,6 @@ pub struct AngleBracketedParameterData {
     /// Bindings (equality constraints) on associated types, if present.
     /// E.g., `Foo<A=Bar>`.
     pub bindings: HirVec<TypeBinding>,
-}
-
-impl AngleBracketedParameterData {
-    fn is_empty(&self) -> bool {
-        self.lifetimes.is_empty() && self.types.is_empty() && self.bindings.is_empty()
-    }
 }
 
 /// A path like `Foo(A,B) -> C`
@@ -403,8 +386,8 @@ pub struct WhereRegionPredicate {
 pub struct WhereEqPredicate {
     pub id: NodeId,
     pub span: Span,
-    pub path: Path,
-    pub ty: P<Ty>,
+    pub lhs_ty: P<Ty>,
+    pub rhs_ty: P<Ty>,
 }
 
 pub type CrateConfig = HirVec<P<MetaItem>>;
@@ -573,6 +556,12 @@ pub enum BindingMode {
 }
 
 #[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
+pub enum RangeEnd {
+    Included,
+    Excluded,
+}
+
+#[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
 pub enum PatKind {
     /// Represents a wildcard pattern (`_`)
     Wild,
@@ -603,8 +592,8 @@ pub enum PatKind {
     Ref(P<Pat>, Mutability),
     /// A literal
     Lit(P<Expr>),
-    /// A range pattern, e.g. `1...2`
-    Range(P<Expr>, P<Expr>),
+    /// A range pattern, e.g. `1...2` or `1..2`
+    Range(P<Expr>, P<Expr>, RangeEnd),
     /// `[a, b, ..i, y, z]` is represented as:
     ///     `PatKind::Slice(box [a, b], Some(i), box [y, z])`
     Slice(HirVec<P<Pat>>, Option<P<Pat>>, HirVec<P<Pat>>),
@@ -1008,7 +997,7 @@ pub enum QPath {
     ///
     /// UFCS source paths can desugar into this, with `Vec::new` turning into
     /// `<Vec>::new`, and `T::X::Y::method` into `<<<T>::X>::Y>::method`,
-    /// the `X` and `Y` nodes being each a `TyPath(QPath::TypeRelative(..))`.
+    /// the `X` and `Y` nodes each being a `TyPath(QPath::TypeRelative(..))`.
     TypeRelative(P<Ty>, P<PathSegment>)
 }
 
@@ -1202,7 +1191,7 @@ pub enum Ty_ {
     /// A raw pointer (`*const T` or `*mut T`)
     TyPtr(MutTy),
     /// A reference (`&'a T` or `&'a mut T`)
-    TyRptr(Option<Lifetime>, MutTy),
+    TyRptr(Lifetime, MutTy),
     /// A bare function (e.g. `fn(usize) -> bool`)
     TyBareFn(P<BareFnTy>),
     /// The never type (`!`)
@@ -1214,12 +1203,11 @@ pub enum Ty_ {
     ///
     /// Type parameters may be stored in each `PathSegment`.
     TyPath(QPath),
-
-    /// Something like `A+B`. Note that `B` must always be a path.
-    TyObjectSum(P<Ty>, TyParamBounds),
-    /// A type like `for<'a> Foo<&'a Bar>`
-    TyPolyTraitRef(TyParamBounds),
-    /// An `impl TraitA+TraitB` type.
+    /// A trait object type `Bound1 + Bound2 + Bound3`
+    /// where `Bound` is a trait or a lifetime.
+    TyTraitObject(HirVec<PolyTraitRef>, Lifetime),
+    /// An `impl Bound1 + Bound2 + Bound3` type
+    /// where `Bound` is a trait or a lifetime.
     TyImplTrait(TyParamBounds),
     /// Unused for now
     TyTypeof(BodyId),

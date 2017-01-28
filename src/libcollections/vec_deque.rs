@@ -33,6 +33,7 @@ use core::cmp;
 use alloc::raw_vec::RawVec;
 
 use super::range::RangeArgument;
+use Bound::{Excluded, Included, Unbounded};
 use super::vec::Vec;
 
 const INITIAL_CAPACITY: usize = 7; // 2^3 - 1
@@ -642,8 +643,6 @@ impl<T> VecDeque<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(deque_extras)]
-    ///
     /// use std::collections::VecDeque;
     ///
     /// let mut buf = VecDeque::new();
@@ -654,9 +653,7 @@ impl<T> VecDeque<T> {
     /// assert_eq!(buf.len(), 1);
     /// assert_eq!(Some(&5), buf.get(0));
     /// ```
-    #[unstable(feature = "deque_extras",
-               reason = "matches collection reform specification; waiting on panic semantics",
-               issue = "27788")]
+    #[stable(feature = "deque_extras", since = "1.16.0")]
     pub fn truncate(&mut self, len: usize) {
         for _ in len..self.len() {
             self.pop_back();
@@ -852,8 +849,16 @@ impl<T> VecDeque<T> {
         // and the head/tail values will be restored correctly.
         //
         let len = self.len();
-        let start = *range.start().unwrap_or(&0);
-        let end = *range.end().unwrap_or(&len);
+        let start = match range.start() {
+            Included(&n) => n,
+            Excluded(&n) => n + 1,
+            Unbounded    => 0,
+        };
+        let end = match range.end() {
+            Included(&n) => n + 1,
+            Excluded(&n) => n,
+            Unbounded    => len,
+        };
         assert!(start <= end, "drain lower bound was too large");
         assert!(end <= len, "drain upper bound was too large");
 
@@ -1770,8 +1775,6 @@ impl<T: Clone> VecDeque<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(deque_extras)]
-    ///
     /// use std::collections::VecDeque;
     ///
     /// let mut buf = VecDeque::new();
@@ -1784,9 +1787,7 @@ impl<T: Clone> VecDeque<T> {
     ///     assert_eq!(a, b);
     /// }
     /// ```
-    #[unstable(feature = "deque_extras",
-               reason = "matches collection reform specification; waiting on panic semantics",
-               issue = "27788")]
+    #[stable(feature = "deque_extras", since = "1.16.0")]
     pub fn resize(&mut self, new_len: usize, value: T) {
         let len = self.len();
 

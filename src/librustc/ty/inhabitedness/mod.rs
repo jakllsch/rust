@@ -190,7 +190,9 @@ impl<'a, 'gcx, 'tcx> TyS<'tcx> {
                     ty.uninhabited_from(visited, tcx)
                 }
             }
-            TyRef(_, ref tm) => tm.ty.uninhabited_from(visited, tcx),
+            TyRef(_, ref tm) => {
+                tm.ty.uninhabited_from(visited, tcx)
+            }
 
             _ => DefIdForest::empty(),
         }

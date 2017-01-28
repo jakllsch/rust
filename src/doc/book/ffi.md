@@ -309,7 +309,7 @@ However it is often desired that the callback is targeted to a special
 Rust object. This could be the object that represents the wrapper for the
 respective C object.
 
-This can be achieved by passing an raw pointer to the object down to the
+This can be achieved by passing a raw pointer to the object down to the
 C library. The C library can then include the pointer to the Rust object in
 the notification. This will allow the callback to unsafely access the
 referenced Rust object.
@@ -710,7 +710,7 @@ Please note that [`catch_unwind()`] will only catch unwinding panics, not
 those who abort the process. See the documentation of [`catch_unwind()`]
 for more information.
 
-[`catch_unwind()`]: https://doc.rust-lang.org/std/panic/fn.catch_unwind.html
+[`catch_unwind()`]: ../std/panic/fn.catch_unwind.html
 
 # Representing opaque structs
 

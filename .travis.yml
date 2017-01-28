@@ -8,15 +8,23 @@ git:
   depth: 1
   submodules: false
 
-osx_image: xcode8.2
-
 matrix:
+  fast_finish: true
   include:
     # Linux builders, all docker images
-    - env: IMAGE=arm-android
-    - env: IMAGE=cross
-    - env: IMAGE=dist-arm-unknown-linux-gnueabi
-    - env: IMAGE=dist-x86_64-unknown-freebsd
+    - env: IMAGE=android DEPLOY=1
+    - env: IMAGE=cross DEPLOY=1
+    - env: IMAGE=linux-tested-targets DEPLOY=1
+    - env: IMAGE=dist-arm-linux DEPLOY=1
+    - env: IMAGE=dist-armv7-aarch64-linux DEPLOY=1
+    - env: IMAGE=dist-freebsd DEPLOY=1
+    - env: IMAGE=dist-mips-linux DEPLOY=1
+    - env: IMAGE=dist-mips64-linux DEPLOY=1
+    - env: IMAGE=dist-powerpc-linux DEPLOY=1
+    - env: IMAGE=dist-powerpc64-linux DEPLOY=1
+    - env: IMAGE=dist-s390x-linux-netbsd DEPLOY=1
+    - env: IMAGE=dist-x86-linux DEPLOY=1
+    - env: IMAGE=emscripten
     - env: IMAGE=i686-gnu
     - env: IMAGE=i686-gnu-nopt
     - env: IMAGE=x86_64-gnu
@@ -26,7 +34,6 @@ matrix:
     - env: IMAGE=x86_64-gnu-nopt
     - env: IMAGE=x86_64-gnu-make
     - env: IMAGE=x86_64-gnu-llvm-3.7 ALLOW_PR=1 RUST_BACKTRACE=1
-    - env: IMAGE=x86_64-musl
     - env: IMAGE=x86_64-gnu-distcheck
 
     # OSX builders
@@ -35,26 +42,33 @@ matrix:
         RUST_CONFIGURE_ARGS=--build=x86_64-apple-darwin
         SRC=.
       os: osx
+      osx_image: xcode8.2
       install: &osx_install_sccache >
         curl -L https://api.pub.build.mozilla.org/tooltool/sha512/d0025b286468cc5ada83b23d3fafbc936b9f190eaa7d4a981715b18e8e3bf720a7bcee7bfe758cfdeb8268857f6098fd52dcdd8818232692a30ce91039936596 |
           tar xJf - -C /usr/local/bin --strip-components=1
+
     - env: >
-        RUST_CHECK_TARGET=check
-        RUST_CONFIGURE_ARGS=--build=i686-apple-darwin
+        SCRIPT="./x.py test && ./x.py dist"
+        RUST_CONFIGURE_ARGS="--build=i686-apple-darwin --enable-extended"
         SRC=.
+        DEPLOY=1
       os: osx
+      osx_image: xcode8.2
       install: *osx_install_sccache
     - env: >
         RUST_CHECK_TARGET=check
         RUST_CONFIGURE_ARGS=--build=x86_64-apple-darwin --disable-rustbuild
         SRC=.
       os: osx
+      osx_image: xcode8.2
       install: *osx_install_sccache
     - env: >
-        RUST_CHECK_TARGET=
-        RUST_CONFIGURE_ARGS=--target=aarch64-apple-ios,armv7-apple-ios,armv7s-apple-ios,i386-apple-ios,x86_64-apple-ios
+        RUST_CHECK_TARGET=dist
+        RUST_CONFIGURE_ARGS="--target=aarch64-apple-ios,armv7-apple-ios,armv7s-apple-ios,i386-apple-ios,x86_64-apple-ios --enable-extended"
         SRC=.
+        DEPLOY=1
       os: osx
+      osx_image: xcode8.2
       install: *osx_install_sccache
 
 env:
@@ -69,10 +83,10 @@ script:
       if [ "$ALLOW_PR" = "" ] && [ "$TRAVIS_BRANCH" != "auto" ]; then
           echo skipping, not a full build;
       elif [ "$TRAVIS_OS_NAME" = "osx" ]; then
-          travis_retry git submodule update --init &&
+          travis_retry sh -c 'git submodule deinit -f . && git submodule update --init' &&
           src/ci/run.sh;
       else
-          travis_retry git submodule update --init &&
+          travis_retry sh -c 'git submodule deinit -f . && git submodule update --init' &&
           src/ci/docker/run.sh $IMAGE;
       fi
 
@@ -91,3 +105,27 @@ notifications:
 cache:
   directories:
     - $HOME/docker
+
+before_deploy:
+  - mkdir -p deploy/$TRAVIS_COMMIT
+  - >
+      if [ "$TRAVIS_OS_NAME" == "osx" ]; then
+          cp -r build/dist deploy/$TRAVIS_COMMIT;
+      else
+          cp -r obj/build/dist deploy/$TRAVIS_COMMIT;
+      fi
+
+deploy:
+  - provider: s3
+    bucket: rust-lang-ci
+    skip_cleanup: true
+    local_dir: deploy
+    upload_dir: rustc-builds
+    acl: public_read
+    region: us-east-1
+    access_key_id: AKIAIPQVNYF2T3DTYIWQ
+    secret_access_key:
+      secure: "FBqDqOTeIPMu6v/WYPf4CFSlh9rLRZGKVtpLa5KkyuOhXRTrnEzBduEtS8/FMIxdQImvurhSvxWvqRybMOi4qoVfjMqqpHAI7uBbidbrvAcJoHNsx6BgUNVCIoH6a0UsAjTUtm6/YPIpzbHoLZXPL0GrHPMk6Mu04qVSmcYNWn4="
+    on:
+      branch: auto
+      condition: $DEPLOY = 1

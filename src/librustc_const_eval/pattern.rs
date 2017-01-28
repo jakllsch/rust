@@ -15,7 +15,7 @@ use rustc::middle::const_val::ConstVal;
 use rustc::mir::{Field, BorrowKind, Mutability};
 use rustc::ty::{self, TyCtxt, AdtDef, Ty, TypeVariants, Region};
 use rustc::ty::subst::{Substs, Kind};
-use rustc::hir::{self, PatKind};
+use rustc::hir::{self, PatKind, RangeEnd};
 use rustc::hir::def::{Def, CtorKind};
 use rustc::hir::pat_util::EnumerateAndAdjustIterator;
 
@@ -90,6 +90,7 @@ pub enum PatternKind<'tcx> {
     Range {
         lo: ConstVal,
         hi: ConstVal,
+        end: RangeEnd,
     },
 
     /// matches against a slice, checking the length and extracting elements
@@ -228,9 +229,12 @@ impl<'tcx> fmt::Display for Pattern<'tcx> {
             PatternKind::Constant { ref value } => {
                 print_const_val(value, f)
             }
-            PatternKind::Range { ref lo, ref hi } => {
+            PatternKind::Range { ref lo, ref hi, ref end } => {
                 print_const_val(lo, f)?;
-                write!(f, "...")?;
+                match *end {
+                    RangeEnd::Included => write!(f, "...")?,
+                    RangeEnd::Excluded => write!(f, "..")?,
+                }
                 print_const_val(hi, f)
             }
             PatternKind::Slice { ref prefix, ref slice, ref suffix } |
@@ -260,13 +264,13 @@ impl<'tcx> fmt::Display for Pattern<'tcx> {
 
 pub struct PatternContext<'a, 'gcx: 'tcx, 'tcx: 'a> {
     pub tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    pub tables: &'a ty::Tables<'gcx>,
+    pub tables: &'a ty::TypeckTables<'gcx>,
     pub errors: Vec<PatternError>,
 }
 
 impl<'a, 'gcx, 'tcx> Pattern<'tcx> {
     pub fn from_hir(tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                    tables: &'a ty::Tables<'gcx>,
+                    tables: &'a ty::TypeckTables<'gcx>,
                     pat: &hir::Pat) -> Self {
         let mut pcx = PatternContext::new(tcx, tables);
         let result = pcx.lower_pattern(pat);
@@ -279,7 +283,7 @@ impl<'a, 'gcx, 'tcx> Pattern<'tcx> {
 }
 
 impl<'a, 'gcx, 'tcx> PatternContext<'a, 'gcx, 'tcx> {
-    pub fn new(tcx: TyCtxt<'a, 'gcx, 'tcx>, tables: &'a ty::Tables<'gcx>) -> Self {
+    pub fn new(tcx: TyCtxt<'a, 'gcx, 'tcx>, tables: &'a ty::TypeckTables<'gcx>) -> Self {
         PatternContext { tcx: tcx, tables: tables, errors: vec![] }
     }
 
@@ -291,11 +295,11 @@ impl<'a, 'gcx, 'tcx> PatternContext<'a, 'gcx, 'tcx> {
 
             PatKind::Lit(ref value) => self.lower_lit(value),
 
-            PatKind::Range(ref lo, ref hi) => {
+            PatKind::Range(ref lo, ref hi, ref end) => {
                 match (self.lower_lit(lo), self.lower_lit(hi)) {
                     (PatternKind::Constant { value: lo },
                      PatternKind::Constant { value: hi }) => {
-                        PatternKind::Range { lo: lo, hi: hi }
+                        PatternKind::Range { lo: lo, hi: hi, end: end.clone() }
                     }
                     _ => PatternKind::Wild
                 }
@@ -356,7 +360,7 @@ impl<'a, 'gcx, 'tcx> PatternContext<'a, 'gcx, 'tcx> {
             }
 
             PatKind::Binding(bm, def_id, ref ident, ref sub) => {
-                let id = self.tcx.map.as_local_node_id(def_id).unwrap();
+                let id = self.tcx.hir.as_local_node_id(def_id).unwrap();
                 let var_ty = self.tables.node_id_to_type(pat.id);
                 let region = match var_ty.sty {
                     ty::TyRef(r, _) => Some(r),
@@ -871,10 +875,12 @@ impl<'tcx> PatternFoldable<'tcx> for PatternKind<'tcx> {
             },
             PatternKind::Range {
                 ref lo,
-                ref hi
+                ref hi,
+                ref end,
             } => PatternKind::Range {
                 lo: lo.fold_with(folder),
-                hi: hi.fold_with(folder)
+                hi: hi.fold_with(folder),
+                end: end.clone(),
             },
             PatternKind::Slice {
                 ref prefix,

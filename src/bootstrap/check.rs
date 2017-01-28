@@ -373,10 +373,16 @@ pub fn krate(build: &Build,
             let mut visited = HashSet::new();
             let mut next = vec![root];
             while let Some(name) = next.pop() {
-                // Right now jemalloc is our only target-specific crate in the sense
-                // that it's not present on all platforms. Custom skip it here for now,
-                // but if we add more this probably wants to get more generalized.
-                if !name.contains("jemalloc") {
+                // Right now jemalloc is our only target-specific crate in the
+                // sense that it's not present on all platforms. Custom skip it
+                // here for now, but if we add more this probably wants to get
+                // more generalized.
+                //
+                // Also skip `build_helper` as it's not compiled normally for
+                // target during the bootstrap and it's just meant to be a
+                // helper crate, not tested. If it leaks through then it ends up
+                // messing with various mtime calculations and such.
+                if !name.contains("jemalloc") && name != "build_helper" {
                     cargo.arg("-p").arg(name);
                 }
                 for dep in build.crates[name].deps.iter() {
@@ -457,6 +463,8 @@ fn krate_android(build: &Build,
 
         let output = output(Command::new("adb").arg("shell").arg(&program));
         println!("{}", output);
+
+        t!(fs::create_dir_all(build.out.join("tmp")));
         build.run(Command::new("adb")
                           .arg("pull")
                           .arg(&log)
@@ -516,6 +524,7 @@ pub fn android_copy_libs(build: &Build,
     }
 
     println!("Android copy libs to emulator ({})", target);
+    build.run(Command::new("adb").arg("wait-for-device"));
     build.run(Command::new("adb").arg("remount"));
     build.run(Command::new("adb").args(&["shell", "rm", "-r", ADB_TEST_DIR]));
     build.run(Command::new("adb").args(&["shell", "mkdir", ADB_TEST_DIR]));

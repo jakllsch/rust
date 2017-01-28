@@ -134,7 +134,7 @@ pub enum TypeVariants<'tcx> {
     TyRawPtr(TypeAndMut<'tcx>),
 
     /// A reference; a pointer with an associated lifetime. Written as
-    /// `&a mut T` or `&'a T`.
+    /// `&'a mut T` or `&'a T`.
     TyRef(&'tcx Region, TypeAndMut<'tcx>),
 
     /// The anonymous type of a function declaration/definition. Each
@@ -1117,6 +1117,17 @@ impl<'a, 'gcx, 'tcx> TyS<'tcx> {
     pub fn is_region_ptr(&self) -> bool {
         match self.sty {
             TyRef(..) => true,
+            _ => false
+        }
+    }
+
+    pub fn is_mutable_pointer(&self) -> bool {
+        match self.sty {
+            TyRawPtr(tnm) | TyRef(_, tnm) => if let hir::Mutability::MutMutable = tnm.mutbl {
+                true
+            } else {
+                false
+            },
             _ => false
         }
     }

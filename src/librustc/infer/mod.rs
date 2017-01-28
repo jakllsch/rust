@@ -23,7 +23,6 @@ use hir;
 use middle::free_region::FreeRegionMap;
 use middle::mem_categorization as mc;
 use middle::mem_categorization::McResult;
-use middle::region::CodeExtent;
 use middle::lang_items;
 use mir::tcx::LvalueTy;
 use ty::subst::{Kind, Subst, Substs};
@@ -76,23 +75,23 @@ pub type Bound<T> = Option<T>;
 pub type UnitResult<'tcx> = RelateResult<'tcx, ()>; // "unify result"
 pub type FixupResult<T> = Result<T, FixupError>; // "fixup result"
 
-/// A version of &ty::Tables which can be `Missing` (not needed),
+/// A version of &ty::TypeckTables which can be `Missing` (not needed),
 /// `InProgress` (during typeck) or `Interned` (result of typeck).
 /// Only the `InProgress` version supports `borrow_mut`.
 #[derive(Copy, Clone)]
 pub enum InferTables<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
-    Interned(&'a ty::Tables<'gcx>),
-    InProgress(&'a RefCell<ty::Tables<'tcx>>),
+    Interned(&'a ty::TypeckTables<'gcx>),
+    InProgress(&'a RefCell<ty::TypeckTables<'tcx>>),
     Missing
 }
 
 pub enum InferTablesRef<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
-    Interned(&'a ty::Tables<'gcx>),
-    InProgress(Ref<'a, ty::Tables<'tcx>>)
+    Interned(&'a ty::TypeckTables<'gcx>),
+    InProgress(Ref<'a, ty::TypeckTables<'tcx>>)
 }
 
 impl<'a, 'gcx, 'tcx> Deref for InferTablesRef<'a, 'gcx, 'tcx> {
-    type Target = ty::Tables<'tcx>;
+    type Target = ty::TypeckTables<'tcx>;
     fn deref(&self) -> &Self::Target {
         match *self {
             InferTablesRef::Interned(tables) => tables,
@@ -112,7 +111,7 @@ impl<'a, 'gcx, 'tcx> InferTables<'a, 'gcx, 'tcx> {
         }
     }
 
-    pub fn expect_interned(self) -> &'a ty::Tables<'gcx> {
+    pub fn expect_interned(self) -> &'a ty::TypeckTables<'gcx> {
         match self {
             InferTables::Interned(tables) => tables,
             InferTables::InProgress(_) => {
@@ -124,7 +123,7 @@ impl<'a, 'gcx, 'tcx> InferTables<'a, 'gcx, 'tcx> {
         }
     }
 
-    pub fn borrow_mut(self) -> RefMut<'a, ty::Tables<'tcx>> {
+    pub fn borrow_mut(self) -> RefMut<'a, ty::TypeckTables<'tcx>> {
         match self {
             InferTables::Interned(_) => {
                 bug!("InferTables: infcx.tables.borrow_mut() outside of type-checking");
@@ -407,15 +406,15 @@ impl fmt::Display for FixupError {
 
 pub trait InferEnv<'a, 'tcx> {
     fn to_parts(self, tcx: TyCtxt<'a, 'tcx, 'tcx>)
-                -> (Option<&'a ty::Tables<'tcx>>,
-                    Option<ty::Tables<'tcx>>,
+                -> (Option<&'a ty::TypeckTables<'tcx>>,
+                    Option<ty::TypeckTables<'tcx>>,
                     Option<ty::ParameterEnvironment<'tcx>>);
 }
 
 impl<'a, 'tcx> InferEnv<'a, 'tcx> for () {
     fn to_parts(self, _: TyCtxt<'a, 'tcx, 'tcx>)
-                -> (Option<&'a ty::Tables<'tcx>>,
-                    Option<ty::Tables<'tcx>>,
+                -> (Option<&'a ty::TypeckTables<'tcx>>,
+                    Option<ty::TypeckTables<'tcx>>,
                     Option<ty::ParameterEnvironment<'tcx>>) {
         (None, None, None)
     }
@@ -423,26 +422,26 @@ impl<'a, 'tcx> InferEnv<'a, 'tcx> for () {
 
 impl<'a, 'tcx> InferEnv<'a, 'tcx> for ty::ParameterEnvironment<'tcx> {
     fn to_parts(self, _: TyCtxt<'a, 'tcx, 'tcx>)
-                -> (Option<&'a ty::Tables<'tcx>>,
-                    Option<ty::Tables<'tcx>>,
+                -> (Option<&'a ty::TypeckTables<'tcx>>,
+                    Option<ty::TypeckTables<'tcx>>,
                     Option<ty::ParameterEnvironment<'tcx>>) {
         (None, None, Some(self))
     }
 }
 
-impl<'a, 'tcx> InferEnv<'a, 'tcx> for (&'a ty::Tables<'tcx>, ty::ParameterEnvironment<'tcx>) {
+impl<'a, 'tcx> InferEnv<'a, 'tcx> for (&'a ty::TypeckTables<'tcx>, ty::ParameterEnvironment<'tcx>) {
     fn to_parts(self, _: TyCtxt<'a, 'tcx, 'tcx>)
-                -> (Option<&'a ty::Tables<'tcx>>,
-                    Option<ty::Tables<'tcx>>,
+                -> (Option<&'a ty::TypeckTables<'tcx>>,
+                    Option<ty::TypeckTables<'tcx>>,
                     Option<ty::ParameterEnvironment<'tcx>>) {
         (Some(self.0), None, Some(self.1))
     }
 }
 
-impl<'a, 'tcx> InferEnv<'a, 'tcx> for (ty::Tables<'tcx>, ty::ParameterEnvironment<'tcx>) {
+impl<'a, 'tcx> InferEnv<'a, 'tcx> for (ty::TypeckTables<'tcx>, ty::ParameterEnvironment<'tcx>) {
     fn to_parts(self, _: TyCtxt<'a, 'tcx, 'tcx>)
-                -> (Option<&'a ty::Tables<'tcx>>,
-                    Option<ty::Tables<'tcx>>,
+                -> (Option<&'a ty::TypeckTables<'tcx>>,
+                    Option<ty::TypeckTables<'tcx>>,
                     Option<ty::ParameterEnvironment<'tcx>>) {
         (None, Some(self.0), Some(self.1))
     }
@@ -450,11 +449,11 @@ impl<'a, 'tcx> InferEnv<'a, 'tcx> for (ty::Tables<'tcx>, ty::ParameterEnvironmen
 
 impl<'a, 'tcx> InferEnv<'a, 'tcx> for hir::BodyId {
     fn to_parts(self, tcx: TyCtxt<'a, 'tcx, 'tcx>)
-                -> (Option<&'a ty::Tables<'tcx>>,
-                    Option<ty::Tables<'tcx>>,
+                -> (Option<&'a ty::TypeckTables<'tcx>>,
+                    Option<ty::TypeckTables<'tcx>>,
                     Option<ty::ParameterEnvironment<'tcx>>) {
-        let item_id = tcx.map.body_owner(self);
-        (Some(tcx.item_tables(tcx.map.local_def_id(item_id))),
+        let item_id = tcx.hir.body_owner(self);
+        (Some(tcx.item_tables(tcx.hir.local_def_id(item_id))),
          None,
          Some(ty::ParameterEnvironment::for_item(tcx, item_id)))
     }
@@ -466,8 +465,8 @@ impl<'a, 'tcx> InferEnv<'a, 'tcx> for hir::BodyId {
 pub struct InferCtxtBuilder<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
     global_tcx: TyCtxt<'a, 'gcx, 'gcx>,
     arena: DroplessArena,
-    fresh_tables: Option<RefCell<ty::Tables<'tcx>>>,
-    tables: Option<&'a ty::Tables<'gcx>>,
+    fresh_tables: Option<RefCell<ty::TypeckTables<'tcx>>>,
+    tables: Option<&'a ty::TypeckTables<'gcx>>,
     param_env: Option<ty::ParameterEnvironment<'gcx>>,
     projection_mode: Reveal,
 }
@@ -1269,7 +1268,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                 self.tcx.types.err,
             None => {
                 bug!("no type for node {}: {} in fcx",
-                     id, self.tcx.map.node_to_string(id));
+                     id, self.tcx.hir.node_to_string(id));
             }
         }
     }
@@ -1622,10 +1621,6 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         self.tables.borrow().method_map.contains_key(&ty::MethodCall::expr(id))
     }
 
-    pub fn temporary_scope(&self, rvalue_id: ast::NodeId) -> Option<CodeExtent> {
-        self.tcx.region_maps.temporary_scope(rvalue_id)
-    }
-
     pub fn upvar_capture(&self, upvar_id: ty::UpvarId) -> Option<ty::UpvarCapture<'tcx>> {
         self.tables.borrow().upvar_capture_map.get(&upvar_id).cloned()
     }
@@ -1639,7 +1634,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                         -> Option<ty::ClosureKind>
     {
         if let InferTables::InProgress(tables) = self.tables {
-            if let Some(id) = self.tcx.map.as_local_node_id(def_id) {
+            if let Some(id) = self.tcx.hir.as_local_node_id(def_id) {
                 return tables.borrow().closure_kinds.get(&id).cloned();
             }
         }
@@ -1657,7 +1652,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                         -> ty::ClosureTy<'tcx>
     {
         if let InferTables::InProgress(tables) = self.tables {
-            if let Some(id) = self.tcx.map.as_local_node_id(def_id) {
+            if let Some(id) = self.tcx.hir.as_local_node_id(def_id) {
                 if let Some(ty) = tables.borrow().closure_tys.get(&id) {
                     return ty.subst(self.tcx, substs.substs);
                 }

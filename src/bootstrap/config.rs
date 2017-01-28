@@ -47,6 +47,7 @@ pub struct Config {
     pub vendor: bool,
     pub target_config: HashMap<String, Target>,
     pub full_bootstrap: bool,
+    pub extended: bool,
 
     // llvm codegen options
     pub llvm_assertions: bool,
@@ -77,6 +78,11 @@ pub struct Config {
     pub cargo: Option<PathBuf>,
     pub local_rebuild: bool,
 
+    // dist misc
+    pub dist_sign_folder: Option<PathBuf>,
+    pub dist_upload_addr: Option<String>,
+    pub dist_gpg_password_file: Option<PathBuf>,
+
     // libstd features
     pub debug_jemalloc: bool,
     pub use_jemalloc: bool,
@@ -87,10 +93,11 @@ pub struct Config {
     pub quiet_tests: bool,
     // Fallback musl-root for all targets
     pub musl_root: Option<PathBuf>,
-    pub prefix: Option<String>,
-    pub docdir: Option<String>,
-    pub libdir: Option<String>,
-    pub mandir: Option<String>,
+    pub prefix: Option<PathBuf>,
+    pub docdir: Option<PathBuf>,
+    pub libdir: Option<PathBuf>,
+    pub libdir_relative: Option<PathBuf>,
+    pub mandir: Option<PathBuf>,
     pub codegen_tests: bool,
     pub nodejs: Option<PathBuf>,
     pub gdb: Option<PathBuf>,
@@ -121,6 +128,7 @@ struct TomlConfig {
     llvm: Option<Llvm>,
     rust: Option<Rust>,
     target: Option<HashMap<String, TomlTarget>>,
+    dist: Option<Dist>,
 }
 
 /// TOML representation of various global build decisions.
@@ -139,12 +147,16 @@ struct Build {
     nodejs: Option<String>,
     python: Option<String>,
     full_bootstrap: Option<bool>,
+    extended: Option<bool>,
 }
 
 /// TOML representation of various global install decisions.
 #[derive(RustcDecodable, Default, Clone)]
 struct Install {
     prefix: Option<String>,
+    mandir: Option<String>,
+    docdir: Option<String>,
+    libdir: Option<String>,
 }
 
 /// TOML representation of how the LLVM build is configured.
@@ -158,6 +170,13 @@ struct Llvm {
     version_check: Option<bool>,
     static_libstdcpp: Option<bool>,
     targets: Option<String>,
+}
+
+#[derive(RustcDecodable, Default, Clone)]
+struct Dist {
+    sign_folder: Option<String>,
+    gpg_password_file: Option<String>,
+    upload_addr: Option<String>,
 }
 
 #[derive(RustcDecodable)]
@@ -272,9 +291,13 @@ impl Config {
         set(&mut config.submodules, build.submodules);
         set(&mut config.vendor, build.vendor);
         set(&mut config.full_bootstrap, build.full_bootstrap);
+        set(&mut config.extended, build.extended);
 
         if let Some(ref install) = toml.install {
-            config.prefix = install.prefix.clone();
+            config.prefix = install.prefix.clone().map(PathBuf::from);
+            config.mandir = install.mandir.clone().map(PathBuf::from);
+            config.docdir = install.docdir.clone().map(PathBuf::from);
+            config.libdir = install.libdir.clone().map(PathBuf::from);
         }
 
         if let Some(ref llvm) = toml.llvm {
@@ -342,6 +365,12 @@ impl Config {
             }
         }
 
+        if let Some(ref t) = toml.dist {
+            config.dist_sign_folder = t.sign_folder.clone().map(PathBuf::from);
+            config.dist_gpg_password_file = t.gpg_password_file.clone().map(PathBuf::from);
+            config.dist_upload_addr = t.upload_addr.clone();
+        }
+
         return config
     }
 
@@ -405,6 +434,7 @@ impl Config {
                 ("CODEGEN_TESTS", self.codegen_tests),
                 ("VENDOR", self.vendor),
                 ("FULL_BOOTSTRAP", self.full_bootstrap),
+                ("EXTENDED", self.extended),
             }
 
             match key {
@@ -463,16 +493,19 @@ impl Config {
                     self.channel = value.to_string();
                 }
                 "CFG_PREFIX" => {
-                    self.prefix = Some(value.to_string());
+                    self.prefix = Some(PathBuf::from(value));
                 }
                 "CFG_DOCDIR" => {
-                    self.docdir = Some(value.to_string());
+                    self.docdir = Some(PathBuf::from(value));
                 }
                 "CFG_LIBDIR" => {
-                    self.libdir = Some(value.to_string());
+                    self.libdir = Some(PathBuf::from(value));
+                }
+                "CFG_LIBDIR_RELATIVE" => {
+                    self.libdir_relative = Some(PathBuf::from(value));
                 }
                 "CFG_MANDIR" => {
-                    self.mandir = Some(value.to_string());
+                    self.mandir = Some(PathBuf::from(value));
                 }
                 "CFG_LLVM_ROOT" if value.len() > 0 => {
                     let target = self.target_config.entry(self.build.clone())

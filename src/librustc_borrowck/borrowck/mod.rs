@@ -64,7 +64,7 @@ pub type LoanDataFlow<'a, 'tcx> = DataFlowContext<'a, 'tcx, LoanDataFlowOperator
 
 impl<'a, 'tcx> Visitor<'tcx> for BorrowckCtxt<'a, 'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
-        NestedVisitorMap::OnlyBodies(&self.tcx.map)
+        NestedVisitorMap::OnlyBodies(&self.tcx.hir)
     }
 
     fn visit_fn(&mut self, fk: FnKind<'tcx>, fd: &'tcx hir::FnDecl,
@@ -167,7 +167,7 @@ fn borrowck_fn<'a, 'tcx>(this: &mut BorrowckCtxt<'a, 'tcx>,
                          attributes: &[ast::Attribute]) {
     debug!("borrowck_fn(id={})", id);
 
-    let body = this.tcx.map.body(body_id);
+    let body = this.tcx.hir.body(body_id);
 
     if attributes.iter().any(|item| item.check_name("rustc_mir_borrowck")) {
         this.with_temp_region_map(id, |this| {
@@ -201,9 +201,9 @@ fn build_borrowck_dataflow_data<'a, 'tcx>(this: &mut BorrowckCtxt<'a, 'tcx>,
 {
     // Check the body of fn items.
     let tcx = this.tcx;
-    let body = tcx.map.body(body_id);
+    let body = tcx.hir.body(body_id);
     let id_range = {
-        let mut visitor = intravisit::IdRangeComputingVisitor::new(&tcx.map);
+        let mut visitor = intravisit::IdRangeComputingVisitor::new(&tcx.hir);
         visitor.visit_body(body);
         visitor.result()
     };
@@ -398,7 +398,7 @@ pub enum LoanPathElem<'tcx> {
 
 pub fn closure_to_block(closure_id: ast::NodeId,
                         tcx: TyCtxt) -> ast::NodeId {
-    match tcx.map.get(closure_id) {
+    match tcx.hir.get(closure_id) {
         hir_map::NodeExpr(expr) => match expr.node {
             hir::ExprClosure(.., body_id, _) => {
                 body_id.node_id
@@ -540,7 +540,7 @@ pub fn opt_loan_path<'tcx>(cmt: &mc::cmt<'tcx>) -> Option<Rc<LoanPath<'tcx>>> {
 // Errors
 
 // Errors that can occur
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum bckerr_code<'tcx> {
     err_mutbl,
     /// superscope, subscope, loan cause
@@ -550,7 +550,7 @@ pub enum bckerr_code<'tcx> {
 
 // Combination of an error code and the categorization of the expression
 // that caused it
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct BckError<'tcx> {
     span: Span,
     cause: AliasableViolationKind,
@@ -601,12 +601,8 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
             _ => { }
         }
 
-        // General fallback.
-        let span = err.span.clone();
-        let mut db = self.struct_span_err(
-            err.span,
-            &self.bckerr_to_string(&err));
-        self.note_and_explain_bckerr(&mut db, err, span);
+        let mut db = self.bckerr_to_diag(&err);
+        self.note_and_explain_bckerr(&mut db, err);
         db.emit();
     }
 
@@ -685,10 +681,10 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
 
             move_data::MoveExpr |
             move_data::MovePat =>
-                (self.tcx.map.span(the_move.id), ""),
+                (self.tcx.hir.span(the_move.id), ""),
 
             move_data::Captured =>
-                (match self.tcx.map.expect_expr(the_move.id).node {
+                (match self.tcx.hir.expect_expr(the_move.id).node {
                     hir::ExprClosure(.., fn_decl_span) => fn_decl_span,
                     ref r => bug!("Captured({}) maps to non-closure: {:?}",
                                   the_move.id, r),
@@ -771,8 +767,11 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
         self.tcx.sess.span_err_with_code(s, msg, code);
     }
 
-    pub fn bckerr_to_string(&self, err: &BckError<'tcx>) -> String {
-        match err.code {
+    pub fn bckerr_to_diag(&self, err: &BckError<'tcx>) -> DiagnosticBuilder<'a> {
+        let span = err.span.clone();
+        let mut immutable_field = None;
+
+        let msg = &match err.code {
             err_mutbl => {
                 let descr = match err.cmt.note {
                     mc::NoteClosureEnv(_) | mc::NoteUpvarRef(_) => {
@@ -783,6 +782,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                             format!("{} {}",
                                     err.cmt.mutbl.to_user_str(),
                                     self.cmt_to_string(&err.cmt))
+
                         }
                         Some(lp) => {
                             format!("{} {} `{}`",
@@ -807,6 +807,19 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                     BorrowViolation(euv::AutoUnsafe) |
                     BorrowViolation(euv::ForLoop) |
                     BorrowViolation(euv::MatchDiscriminant) => {
+                        // Check for this field's definition to see if it is an immutable reference
+                        // and suggest making it mutable if that is the case.
+                        immutable_field = err.cmt.get_field_name()
+                            .and_then(|name| err.cmt.get_field(name))
+                            .and_then(|did| self.tcx.hir.as_local_node_id(did))
+                            .and_then(|nid| {
+                                if let hir_map::Node::NodeField(ref field) = self.tcx.hir.get(nid) {
+                                    return self.suggest_mut_for_immutable(&field.ty)
+                                        .map(|msg| (self.tcx.hir.span(nid), msg));
+                                }
+                                None
+                            });
+
                         format!("cannot borrow {} as mutable", descr)
                     }
                     BorrowViolation(euv::ClosureInvocation) => {
@@ -830,13 +843,20 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                          its contents can be safely reborrowed",
                         descr)
             }
+        };
+
+        let mut db = self.struct_span_err(span, msg);
+        if let Some((span, msg)) = immutable_field {
+            db.span_label(span, &msg);
         }
+        db
     }
 
     pub fn report_aliasability_violation(&self,
                                          span: Span,
                                          kind: AliasableViolationKind,
-                                         cause: mc::AliasableReason) {
+                                         cause: mc::AliasableReason,
+                                         cmt: mc::cmt<'tcx>) {
         let mut is_closure = false;
         let prefix = match kind {
             MutabilityViolation => {
@@ -882,10 +902,10 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                     // happen for nested closures, so we know the enclosing
                     // closure incorrectly accepts an `Fn` while it needs to
                     // be `FnMut`.
-                    span_help!(&mut err, self.tcx.map.span(id),
+                    span_help!(&mut err, self.tcx.hir.span(id),
                            "consider changing this to accept closures that implement `FnMut`");
                 } else {
-                    span_help!(&mut err, self.tcx.map.span(id),
+                    span_help!(&mut err, self.tcx.hir.span(id),
                            "consider changing this closure to take self by mutable reference");
                 }
                 err
@@ -903,6 +923,9 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                     self.tcx.sess, span, E0389,
                     "{} in a `&` reference", prefix);
                 e.span_label(span, &"assignment into an immutable reference");
+                if let Some(nid) = cmt.get_arg_if_immutable(&self.tcx.hir) {
+                    self.immutable_argument_should_be_mut(nid, &mut e);
+                }
                 e
             }
         };
@@ -911,6 +934,55 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
             err.help("closures behind references must be called via `&mut`");
         }
         err.emit();
+    }
+
+    /// Given a type, if it is an immutable reference, return a suggestion to make it mutable
+    fn suggest_mut_for_immutable(&self, pty: &hir::Ty) -> Option<String> {
+        // Check wether the argument is an immutable reference
+        if let hir::TyRptr(lifetime, hir::MutTy {
+            mutbl: hir::Mutability::MutImmutable,
+            ref ty
+        }) = pty.node {
+            // Account for existing lifetimes when generating the message
+            if !lifetime.is_elided() {
+                if let Ok(snippet) = self.tcx.sess.codemap().span_to_snippet(ty.span) {
+                    if let Ok(lifetime_snippet) = self.tcx.sess.codemap()
+                        .span_to_snippet(lifetime.span) {
+                            return Some(format!("use `&{} mut {}` here to make mutable",
+                                                lifetime_snippet,
+                                                snippet));
+                    }
+                }
+            } else if let Ok(snippet) = self.tcx.sess.codemap().span_to_snippet(pty.span) {
+                if snippet.starts_with("&") {
+                    return Some(format!("use `{}` here to make mutable",
+                                        snippet.replace("&", "&mut ")));
+                }
+            } else {
+                bug!("couldn't find a snippet for span: {:?}", pty.span);
+            }
+        }
+        None
+    }
+
+    fn immutable_argument_should_be_mut(&self, nid: ast::NodeId, db: &mut DiagnosticBuilder) {
+        let parent = self.tcx.hir.get_parent_node(nid);
+        let parent_node = self.tcx.hir.get(parent);
+
+        // The parent node is like a fn
+        if let Some(fn_like) = FnLikeNode::from_node(parent_node) {
+            // `nid`'s parent's `Body`
+            let fn_body = self.tcx.hir.body(fn_like.body());
+            // Get the position of `nid` in the arguments list
+            let arg_pos = fn_body.arguments.iter().position(|arg| arg.pat.id == nid);
+            if let Some(i) = arg_pos {
+                // The argument's `Ty`
+                let arg_ty = &fn_like.decl().inputs[i];
+                if let Some(msg) = self.suggest_mut_for_immutable(&arg_ty) {
+                    db.span_label(arg_ty.span, &msg);
+                }
+            }
+        }
     }
 
     fn report_out_of_scope_escaping_closure_capture(&self,
@@ -948,7 +1020,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
     fn region_end_span(&self, region: &'tcx ty::Region) -> Option<Span> {
         match *region {
             ty::ReScope(scope) => {
-                match scope.span(&self.tcx.region_maps, &self.tcx.map) {
+                match scope.span(&self.tcx.region_maps, &self.tcx.hir) {
                     Some(s) => {
                         Some(s.end_point())
                     }
@@ -961,13 +1033,13 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
         }
     }
 
-    pub fn note_and_explain_bckerr(&self, db: &mut DiagnosticBuilder, err: BckError<'tcx>,
-        error_span: Span) {
+    pub fn note_and_explain_bckerr(&self, db: &mut DiagnosticBuilder, err: BckError<'tcx>) {
+        let error_span = err.span.clone();
         match err.code {
             err_mutbl => self.note_and_explain_mutbl_error(db, &err, &error_span),
             err_out_of_scope(super_scope, sub_scope, cause) => {
                 let (value_kind, value_msg) = match err.cmt.cat {
-                    mc::Categorization::Rvalue(_) =>
+                    mc::Categorization::Rvalue(..) =>
                         ("temporary value", "temporary value created here"),
                     _ =>
                         ("borrowed value", "borrow occurs here")
@@ -1061,6 +1133,17 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                 if let Some(_) = statement_scope_span(self.tcx, super_scope) {
                     db.note("consider using a `let` binding to increase its lifetime");
                 }
+
+
+
+                match err.cmt.cat {
+                    mc::Categorization::Rvalue(r, or) if r != or => {
+                        db.note("\
+before rustc 1.16, this temporary lived longer - see issue #39283 \
+(https://github.com/rust-lang/rust/issues/39283)");
+                    }
+                    _ => {}
+                }
             }
 
             err_borrowed_pointer_too_short(loan_scope, ptr_scope) => {
@@ -1097,51 +1180,23 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                     _ => bug!()
                 };
                 if kind == ty::ClosureKind::Fn {
-                    db.span_help(self.tcx.map.span(upvar_id.closure_expr_id),
+                    db.span_help(self.tcx.hir.span(upvar_id.closure_expr_id),
                                  "consider changing this closure to take \
                                  self by mutable reference");
                 }
             }
             _ => {
-                if let Categorization::Deref(ref inner_cmt, ..) = err.cmt.cat {
-                    if let Categorization::Local(local_id) = inner_cmt.cat {
-                        let parent = self.tcx.map.get_parent_node(local_id);
-
-                        if let Some(fn_like) = FnLikeNode::from_node(self.tcx.map.get(parent)) {
-                            if let Some(i) = self.tcx.map.body(fn_like.body()).arguments.iter()
-                                                     .position(|arg| arg.pat.id == local_id) {
-                                let arg_ty = &fn_like.decl().inputs[i];
-                                if let hir::TyRptr(
-                                    opt_lifetime,
-                                    hir::MutTy{mutbl: hir::Mutability::MutImmutable, ref ty}) =
-                                    arg_ty.node {
-                                    if let Some(lifetime) = opt_lifetime {
-                                        if let Ok(snippet) = self.tcx.sess.codemap()
-                                            .span_to_snippet(ty.span) {
-                                            if let Ok(lifetime_snippet) = self.tcx.sess.codemap()
-                                                .span_to_snippet(lifetime.span) {
-                                                    db.span_label(arg_ty.span,
-                                                                  &format!("use `&{} mut {}` \
-                                                                            here to make mutable",
-                                                                            lifetime_snippet,
-                                                                            snippet));
-                                            }
-                                        }
-                                    }
-                                    else if let Ok(snippet) = self.tcx.sess.codemap()
-                                        .span_to_snippet(arg_ty.span) {
-                                        if snippet.starts_with("&") {
-                                            db.span_label(arg_ty.span,
-                                                          &format!("use `{}` here to make mutable",
-                                                                   snippet.replace("&", "&mut ")));
-                                        }
-                                    }
-                                }
-                            }
+                if let Categorization::Deref(..) = err.cmt.cat {
+                    db.span_label(*error_span, &"cannot borrow as mutable");
+                    if let Some(local_id) = err.cmt.get_arg_if_immutable(&self.tcx.hir) {
+                        self.immutable_argument_should_be_mut(local_id, db);
+                    } else if let Categorization::Deref(ref inner_cmt, ..) = err.cmt.cat {
+                        if let Categorization::Local(local_id) = inner_cmt.cat {
+                            self.immutable_argument_should_be_mut(local_id, db);
                         }
                     }
                 } else if let Categorization::Local(local_id) = err.cmt.cat {
-                    let span = self.tcx.map.span(local_id);
+                    let span = self.tcx.hir.span(local_id);
                     if let Ok(snippet) = self.tcx.sess.codemap().span_to_snippet(span) {
                         if snippet.starts_with("ref mut ") || snippet.starts_with("&mut ") {
                             db.span_label(*error_span, &format!("cannot reborrow mutably"));
@@ -1253,7 +1308,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
 fn statement_scope_span(tcx: TyCtxt, region: &ty::Region) -> Option<Span> {
     match *region {
         ty::ReScope(scope) => {
-            match tcx.map.find(scope.node_id(&tcx.region_maps)) {
+            match tcx.hir.find(scope.node_id(&tcx.region_maps)) {
                 Some(hir_map::NodeStmt(stmt)) => Some(stmt.span),
                 _ => None
             }
@@ -1302,11 +1357,11 @@ impl<'tcx> fmt::Debug for LoanPath<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.kind {
             LpVar(id) => {
-                write!(f, "$({})", ty::tls::with(|tcx| tcx.map.node_to_string(id)))
+                write!(f, "$({})", ty::tls::with(|tcx| tcx.hir.node_to_string(id)))
             }
 
             LpUpvar(ty::UpvarId{ var_id, closure_expr_id }) => {
-                let s = ty::tls::with(|tcx| tcx.map.node_to_string(var_id));
+                let s = ty::tls::with(|tcx| tcx.hir.node_to_string(var_id));
                 write!(f, "$({} captured by id={})", s, closure_expr_id)
             }
 
@@ -1334,11 +1389,11 @@ impl<'tcx> fmt::Display for LoanPath<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.kind {
             LpVar(id) => {
-                write!(f, "$({})", ty::tls::with(|tcx| tcx.map.node_to_user_string(id)))
+                write!(f, "$({})", ty::tls::with(|tcx| tcx.hir.node_to_user_string(id)))
             }
 
             LpUpvar(ty::UpvarId{ var_id, closure_expr_id: _ }) => {
-                let s = ty::tls::with(|tcx| tcx.map.node_to_user_string(var_id));
+                let s = ty::tls::with(|tcx| tcx.hir.node_to_user_string(var_id));
                 write!(f, "$({} captured by closure)", s)
             }
 

@@ -302,10 +302,13 @@ impl<'a> CrateLoader<'a> {
             crate_root.def_path_table.decode(&metadata)
         });
 
+        let exported_symbols = crate_root.exported_symbols.decode(&metadata).collect();
+
         let mut cmeta = cstore::CrateMetadata {
             name: name,
             extern_crate: Cell::new(None),
             def_path_table: def_path_table,
+            exported_symbols: exported_symbols,
             proc_macros: crate_root.macro_derive_registrar.map(|_| {
                 self.load_derive_macros(&crate_root, dylib.clone().map(|p| p.0), span)
             }),
@@ -575,6 +578,7 @@ impl<'a> CrateLoader<'a> {
         use proc_macro::__internal::Registry;
         use rustc_back::dynamic_lib::DynamicLibrary;
         use syntax_ext::deriving::custom::CustomDerive;
+        use syntax_ext::proc_macro_impl::AttrProcMacro;
 
         let path = match dylib {
             Some(dylib) => dylib,
@@ -609,6 +613,15 @@ impl<'a> CrateLoader<'a> {
                     Box::new(CustomDerive::new(expand, attrs))
                 );
                 self.0.push((Symbol::intern(trait_name), Rc::new(derive)));
+            }
+
+            fn register_attr_proc_macro(&mut self,
+                                        name: &str,
+                                        expand: fn(TokenStream, TokenStream) -> TokenStream) {
+                let expand = SyntaxExtension::AttrProcMacro(
+                    Box::new(AttrProcMacro { inner: expand })
+                );
+                self.0.push((Symbol::intern(name), Rc::new(expand)));
             }
         }
 

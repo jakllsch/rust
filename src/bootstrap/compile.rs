@@ -16,7 +16,6 @@
 //! compiler. This module is also responsible for assembling the sysroot as it
 //! goes along from the output of the previous stage.
 
-use std::cmp;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -43,7 +42,16 @@ pub fn std(build: &Build, target: &str, compiler: &Compiler) {
     let out_dir = build.cargo_out(compiler, Mode::Libstd, target);
     build.clear_if_dirty(&out_dir, &build.compiler_path(compiler));
     let mut cargo = build.cargo(compiler, Mode::Libstd, target, "build");
-    cargo.arg("--features").arg(build.std_features())
+    let mut features = build.std_features();
+    // When doing a local rebuild we tell cargo that we're stage1 rather than
+    // stage0. This works fine if the local rust and being-built rust have the
+    // same view of what the default allocator is, but fails otherwise. Since
+    // we don't have a way to express an allocator preference yet, work
+    // around the issue in the case of a local rebuild with jemalloc disabled.
+    if compiler.stage == 0 && build.local_rebuild && !build.config.use_jemalloc {
+        features.push_str(" force_alloc_system");
+    }
+    cargo.arg("--features").arg(features)
          .arg("--manifest-path")
          .arg(build.src.join("src/rustc/std_shim/Cargo.toml"));
 
@@ -59,7 +67,7 @@ pub fn std(build: &Build, target: &str, compiler: &Compiler) {
     }
 
     build.run(&mut cargo);
-    update_mtime(&libstd_stamp(build, &compiler, target));
+    update_mtime(build, &libstd_stamp(build, &compiler, target));
 }
 
 /// Link all libstd rlibs/dylibs into the sysroot location.
@@ -145,7 +153,7 @@ pub fn test(build: &Build, target: &str, compiler: &Compiler) {
     cargo.arg("--manifest-path")
          .arg(build.src.join("src/rustc/test_shim/Cargo.toml"));
     build.run(&mut cargo);
-    update_mtime(&libtest_stamp(build, compiler, target));
+    update_mtime(build, &libtest_stamp(build, compiler, target));
 }
 
 /// Same as `std_link`, only for libtest
@@ -186,8 +194,14 @@ pub fn rustc(build: &Build, target: &str, compiler: &Compiler) {
     cargo.env("CFG_RELEASE", &build.release)
          .env("CFG_RELEASE_CHANNEL", &build.config.channel)
          .env("CFG_VERSION", &build.version)
-         .env("CFG_PREFIX", build.config.prefix.clone().unwrap_or(String::new()))
-         .env("CFG_LIBDIR_RELATIVE", "lib");
+         .env("CFG_PREFIX", build.config.prefix.clone().unwrap_or(PathBuf::new()));
+
+    if compiler.stage == 0 {
+        cargo.env("CFG_LIBDIR_RELATIVE", "lib");
+    } else {
+        let libdir_relative = build.config.libdir_relative.clone().unwrap_or(PathBuf::from("lib"));
+        cargo.env("CFG_LIBDIR_RELATIVE", libdir_relative);
+    }
 
     // If we're not building a compiler with debugging information then remove
     // these two env vars which would be set otherwise.
@@ -214,7 +228,11 @@ pub fn rustc(build: &Build, target: &str, compiler: &Compiler) {
     if let Some(s) = target_config.and_then(|c| c.llvm_config.as_ref()) {
         cargo.env("CFG_LLVM_ROOT", s);
     }
-    if build.config.llvm_static_stdcpp {
+    // Building with a static libstdc++ is only supported on linux right now,
+    // not for MSVC or OSX
+    if build.config.llvm_static_stdcpp &&
+       !target.contains("windows") &&
+       !target.contains("apple") {
         cargo.env("LLVM_STATIC_STDCPP",
                   compiler_file(build.cxx(target), "libstdc++.a"));
     }
@@ -390,26 +408,39 @@ pub fn tool(build: &Build, stage: u32, host: &str, tool: &str) {
 }
 
 /// Updates the mtime of a stamp file if necessary, only changing it if it's
-/// older than some other file in the same directory.
+/// older than some other library file in the same directory.
 ///
 /// We don't know what file Cargo is going to output (because there's a hash in
 /// the file name) but we know where it's going to put it. We use this helper to
 /// detect changes to that output file by looking at the modification time for
 /// all files in a directory and updating the stamp if any are newer.
-fn update_mtime(path: &Path) {
-    let mut max = None;
-    if let Ok(entries) = path.parent().unwrap().join("deps").read_dir() {
-        for entry in entries.map(|e| t!(e)) {
-            if t!(entry.file_type()).is_file() {
-                let meta = t!(entry.metadata());
-                let time = FileTime::from_last_modification_time(&meta);
-                max = cmp::max(max, Some(time));
-            }
-        }
-    }
+///
+/// Note that we only consider Rust libraries as that's what we're interested in
+/// propagating changes from. Files like executables are tracked elsewhere.
+fn update_mtime(build: &Build, path: &Path) {
+    let entries = match path.parent().unwrap().join("deps").read_dir() {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    let files = entries.map(|e| t!(e)).filter(|e| t!(e.file_type()).is_file());
+    let files = files.filter(|e| {
+        let filename = e.file_name();
+        let filename = filename.to_str().unwrap();
+        filename.ends_with(".rlib") ||
+            filename.ends_with(".lib") ||
+            is_dylib(&filename)
+    });
+    let max = files.max_by_key(|entry| {
+        let meta = t!(entry.metadata());
+        FileTime::from_last_modification_time(&meta)
+    });
+    let max = match max {
+        Some(max) => max,
+        None => return,
+    };
 
-    if !max.is_none() && max <= Some(mtime(path)) {
-        return
+    if mtime(&max.path()) > mtime(path) {
+        build.verbose(&format!("updating {:?} as {:?} changed", path, max.path()));
+        t!(File::create(path));
     }
-    t!(File::create(path));
 }

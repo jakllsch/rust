@@ -46,6 +46,7 @@ use std::mem;
 use std::ffi::{OsString, OsStr};
 use std::fs;
 use std::io::{self, Write};
+use std::iter;
 use std::path::{Path, PathBuf};
 use syntax::{ast, diagnostics, visit};
 use syntax::attr;
@@ -180,7 +181,7 @@ pub fn compile_input(sess: &Session,
                                                                    outdir,
                                                                    output,
                                                                    opt_crate,
-                                                                   tcx.map.krate(),
+                                                                   tcx.hir.krate(),
                                                                    &analysis,
                                                                    tcx,
                                                                    &crate_name);
@@ -339,7 +340,7 @@ pub struct CompileState<'a, 'tcx: 'a> {
     pub arenas: Option<&'tcx GlobalArenas<'tcx>>,
     pub expanded_crate: Option<&'a ast::Crate>,
     pub hir_crate: Option<&'a hir::Crate>,
-    pub ast_map: Option<&'a hir_map::Map<'tcx>>,
+    pub hir_map: Option<&'a hir_map::Map<'tcx>>,
     pub resolutions: Option<&'a Resolutions>,
     pub analysis: Option<&'a ty::CrateAnalysis<'tcx>>,
     pub tcx: Option<TyCtxt<'a, 'tcx, 'tcx>>,
@@ -365,7 +366,7 @@ impl<'a, 'tcx> CompileState<'a, 'tcx> {
             output_filenames: None,
             expanded_crate: None,
             hir_crate: None,
-            ast_map: None,
+            hir_map: None,
             resolutions: None,
             analysis: None,
             tcx: None,
@@ -426,7 +427,7 @@ impl<'a, 'tcx> CompileState<'a, 'tcx> {
             arena: Some(arena),
             arenas: Some(arenas),
             cstore: Some(cstore),
-            ast_map: Some(hir_map),
+            hir_map: Some(hir_map),
             analysis: Some(analysis),
             resolutions: Some(resolutions),
             expanded_crate: Some(krate),
@@ -667,7 +668,10 @@ pub fn phase_2_configure_and_expand<F>(sess: &Session,
                     new_path.push(path);
                 }
             }
-            env::set_var("PATH", &env::join_paths(new_path).unwrap());
+            env::set_var("PATH",
+                &env::join_paths(new_path.iter()
+                                         .filter(|p| env::join_paths(iter::once(p)).is_ok()))
+                     .unwrap());
         }
         let features = sess.features.borrow();
         let cfg = syntax::ext::expand::ExpansionConfig {
@@ -677,6 +681,7 @@ pub fn phase_2_configure_and_expand<F>(sess: &Session,
             should_test: sess.opts.test,
             ..syntax::ext::expand::ExpansionConfig::default(crate_name.to_string())
         };
+
         let mut ecx = ExtCtxt::new(&sess.parse_sess, cfg, &mut resolver);
         let err_count = ecx.parse_sess.span_diagnostic.err_count();
 
@@ -736,17 +741,6 @@ pub fn phase_2_configure_and_expand<F>(sess: &Session,
          "checking for inline asm in case the target doesn't support it",
          || no_asm::check_crate(sess, &krate));
 
-    // Needs to go *after* expansion to be able to check the results of macro expansion.
-    time(time_passes, "complete gated feature checking", || {
-        sess.track_errors(|| {
-            syntax::feature_gate::check_crate(&krate,
-                                              &sess.parse_sess,
-                                              &sess.features.borrow(),
-                                              &attributes,
-                                              sess.opts.unstable_features);
-        })
-    })?;
-
     time(sess.time_passes(),
          "early lint checks",
          || lint::check_ast_crate(sess, &krate));
@@ -762,6 +756,17 @@ pub fn phase_2_configure_and_expand<F>(sess: &Session,
 
         resolver.resolve_crate(&krate);
         Ok(())
+    })?;
+
+    // Needs to go *after* expansion to be able to check the results of macro expansion.
+    time(time_passes, "complete gated feature checking", || {
+        sess.track_errors(|| {
+            syntax::feature_gate::check_crate(&krate,
+                                              &sess.parse_sess,
+                                              &sess.features.borrow(),
+                                              &attributes,
+                                              sess.opts.unstable_features);
+        })
     })?;
 
     // Lower ast -> hir.

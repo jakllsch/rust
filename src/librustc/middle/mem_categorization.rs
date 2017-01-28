@@ -71,7 +71,7 @@ pub use self::Note::*;
 use self::Aliasability::*;
 
 use hir::def_id::DefId;
-use hir::map as ast_map;
+use hir::map as hir_map;
 use infer::InferCtxt;
 use hir::def::{Def, CtorKind};
 use ty::adjustment;
@@ -88,7 +88,8 @@ use std::rc::Rc;
 
 #[derive(Clone, PartialEq)]
 pub enum Categorization<'tcx> {
-    Rvalue(&'tcx ty::Region),                    // temporary val, argument is its scope
+    // temporary val, argument is its scope
+    Rvalue(&'tcx ty::Region, &'tcx ty::Region),
     StaticItem,
     Upvar(Upvar),                          // upvar referenced by closure env
     Local(ast::NodeId),                    // local variable
@@ -193,6 +194,63 @@ pub struct cmt_<'tcx> {
 
 pub type cmt<'tcx> = Rc<cmt_<'tcx>>;
 
+impl<'tcx> cmt_<'tcx> {
+    pub fn get_field(&self, name: ast::Name) -> Option<DefId> {
+        match self.cat {
+            Categorization::Deref(ref cmt, ..) |
+            Categorization::Interior(ref cmt, _) |
+            Categorization::Downcast(ref cmt, _) => {
+                if let Categorization::Local(_) = cmt.cat {
+                    if let ty::TyAdt(def, _) = self.ty.sty {
+                        return def.struct_variant().find_field_named(name).map(|x| x.did);
+                    }
+                    None
+                } else {
+                    cmt.get_field(name)
+                }
+            }
+            _ => None
+        }
+    }
+
+    pub fn get_field_name(&self) -> Option<ast::Name> {
+        match self.cat {
+            Categorization::Interior(_, ref ik) => {
+                if let InteriorKind::InteriorField(FieldName::NamedField(name)) = *ik {
+                    Some(name)
+                } else {
+                    None
+                }
+            }
+            Categorization::Deref(ref cmt, ..) |
+            Categorization::Downcast(ref cmt, _) => {
+                cmt.get_field_name()
+            }
+            _ => None,
+        }
+    }
+
+    pub fn get_arg_if_immutable(&self, map: &hir_map::Map) -> Option<ast::NodeId> {
+        match self.cat {
+            Categorization::Deref(ref cmt, ..) |
+            Categorization::Interior(ref cmt, _) |
+            Categorization::Downcast(ref cmt, _) => {
+                if let Categorization::Local(nid) = cmt.cat {
+                    if let ty::TyAdt(_, _) = self.ty.sty {
+                        if let ty::TyRef(_, ty::TypeAndMut{mutbl: MutImmutable, ..}) = cmt.ty.sty {
+                            return Some(nid);
+                        }
+                    }
+                    None
+                } else {
+                    cmt.get_arg_if_immutable(map)
+                }
+            }
+            _ => None
+        }
+    }
+}
+
 pub trait ast_node {
     fn id(&self) -> ast::NodeId;
     fn span(&self) -> Span;
@@ -268,8 +326,8 @@ impl MutabilityCategory {
     }
 
     fn from_local(tcx: TyCtxt, id: ast::NodeId) -> MutabilityCategory {
-        let ret = match tcx.map.get(id) {
-            ast_map::NodeLocal(p) => match p.node {
+        let ret = match tcx.hir.get(id) {
+            hir_map::NodeLocal(p) => match p.node {
                 PatKind::Binding(bind_mode, ..) => {
                     if bind_mode == hir::BindByValue(hir::MutMutable) {
                         McDeclared
@@ -279,7 +337,7 @@ impl MutabilityCategory {
                 }
                 _ => span_bug!(p.span, "expected identifier pattern")
             },
-            _ => span_bug!(tcx.map.span(id), "expected identifier pattern")
+            _ => span_bug!(tcx.hir.span(id), "expected identifier pattern")
         };
         debug!("MutabilityCategory::{}(tcx, id={:?}) => {:?}",
                "from_local", id, ret);
@@ -539,7 +597,7 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
           }
 
           Def::Upvar(def_id, _, fn_node_id) => {
-              let var_id = self.tcx().map.as_local_node_id(def_id).unwrap();
+              let var_id = self.tcx().hir.as_local_node_id(def_id).unwrap();
               let ty = self.node_ty(fn_node_id)?;
               match ty.sty {
                   ty::TyClosure(closure_id, _) => {
@@ -576,7 +634,7 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
           }
 
           Def::Local(def_id) => {
-            let vid = self.tcx().map.as_local_node_id(def_id).unwrap();
+            let vid = self.tcx().hir.as_local_node_id(def_id).unwrap();
             Ok(Rc::new(cmt_ {
                 id: id,
                 span: span,
@@ -698,8 +756,8 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
         // Look up the node ID of the closure body so we can construct
         // a free region within it
         let fn_body_id = {
-            let fn_expr = match self.tcx().map.find(upvar_id.closure_expr_id) {
-                Some(ast_map::NodeExpr(e)) => e,
+            let fn_expr = match self.tcx().hir.find(upvar_id.closure_expr_id) {
+                Some(hir_map::NodeExpr(e)) => e,
                 _ => bug!()
             };
 
@@ -760,11 +818,18 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
 
     /// Returns the lifetime of a temporary created by expr with id `id`.
     /// This could be `'static` if `id` is part of a constant expression.
-    pub fn temporary_scope(&self, id: ast::NodeId) -> &'tcx ty::Region {
-        self.tcx().mk_region(match self.infcx.temporary_scope(id) {
+    pub fn temporary_scope(&self, id: ast::NodeId) -> (&'tcx ty::Region, &'tcx ty::Region)
+    {
+        let (scope, old_scope) =
+            self.tcx().region_maps.old_and_new_temporary_scope(id);
+        (self.tcx().mk_region(match scope {
             Some(scope) => ty::ReScope(scope),
             None => ty::ReStatic
-        })
+        }),
+         self.tcx().mk_region(match old_scope {
+            Some(scope) => ty::ReScope(scope),
+            None => ty::ReStatic
+        }))
     }
 
     pub fn cat_rvalue_node(&self,
@@ -785,12 +850,13 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
         // Compute maximum lifetime of this rvalue. This is 'static if
         // we can promote to a constant, otherwise equal to enclosing temp
         // lifetime.
-        let re = if promotable {
-            self.tcx().mk_region(ty::ReStatic)
+        let (re, old_re) = if promotable {
+            (self.tcx().mk_region(ty::ReStatic),
+             self.tcx().mk_region(ty::ReStatic))
         } else {
             self.temporary_scope(id)
         };
-        let ret = self.cat_rvalue(id, span, re, expr_ty);
+        let ret = self.cat_rvalue(id, span, re, old_re, expr_ty);
         debug!("cat_rvalue_node ret {:?}", ret);
         ret
     }
@@ -799,11 +865,12 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
                       cmt_id: ast::NodeId,
                       span: Span,
                       temp_scope: &'tcx ty::Region,
+                      old_temp_scope: &'tcx ty::Region,
                       expr_ty: Ty<'tcx>) -> cmt<'tcx> {
         let ret = Rc::new(cmt_ {
             id:cmt_id,
             span:span,
-            cat:Categorization::Rvalue(temp_scope),
+            cat:Categorization::Rvalue(temp_scope, old_temp_scope),
             mutbl:McDeclared,
             ty:expr_ty,
             note: NoteNone
@@ -1313,7 +1380,7 @@ impl<'tcx> cmt_<'tcx> {
                 "non-lvalue".to_string()
             }
             Categorization::Local(vid) => {
-                if tcx.map.is_argument(vid) {
+                if tcx.hir.is_argument(vid) {
                     "argument".to_string()
                 } else {
                     "local variable".to_string()
@@ -1386,7 +1453,9 @@ impl<'tcx> fmt::Debug for Categorization<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Categorization::StaticItem => write!(f, "static"),
-            Categorization::Rvalue(r) => write!(f, "rvalue({:?})", r),
+            Categorization::Rvalue(r, or) => {
+                write!(f, "rvalue({:?}, {:?})", r, or)
+            }
             Categorization::Local(id) => {
                let name = ty::tls::with(|tcx| tcx.local_var_name_str(id));
                write!(f, "local({})", name)

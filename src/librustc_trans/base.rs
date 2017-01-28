@@ -710,7 +710,7 @@ pub fn set_link_section(ccx: &CrateContext,
 pub fn maybe_create_entry_wrapper(ccx: &CrateContext) {
     let (main_def_id, span) = match *ccx.sess().entry_fn.borrow() {
         Some((id, span)) => {
-            (ccx.tcx().map.local_def_id(id), span)
+            (ccx.tcx().hir.local_def_id(id), span)
         }
         None => return,
     };
@@ -1075,9 +1075,9 @@ pub fn find_exported_symbols(tcx: TyCtxt, reachable: NodeSet) -> NodeSet {
         //
         // As a result, if this id is an FFI item (foreign item) then we only
         // let it through if it's included statically.
-        match tcx.map.get(id) {
+        match tcx.hir.get(id) {
             hir_map::NodeForeignItem(..) => {
-                let def_id = tcx.map.local_def_id(id);
+                let def_id = tcx.hir.local_def_id(id);
                 tcx.sess.cstore.is_statically_included_foreign_item(def_id)
             }
 
@@ -1088,7 +1088,7 @@ pub fn find_exported_symbols(tcx: TyCtxt, reachable: NodeSet) -> NodeSet {
                 node: hir::ItemFn(..), .. }) |
             hir_map::NodeImplItem(&hir::ImplItem {
                 node: hir::ImplItemKind::Method(..), .. }) => {
-                let def_id = tcx.map.local_def_id(id);
+                let def_id = tcx.hir.local_def_id(id);
                 let generics = tcx.item_generics(def_id);
                 let attributes = tcx.get_attrs(def_id);
                 (generics.parent_types == 0 && generics.types.is_empty()) &&
@@ -1112,7 +1112,7 @@ pub fn trans_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     // entire contents of the krate. So if you push any subtasks of
     // `TransCrate`, you need to be careful to register "reads" of the
     // particular items that will be processed.
-    let krate = tcx.map.krate();
+    let krate = tcx.hir.krate();
 
     let ty::CrateAnalysis { export_map, reachable, name, .. } = analysis;
     let exported_symbols = find_exported_symbols(tcx, reachable);
@@ -1144,6 +1144,23 @@ pub fn trans_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         }),
     };
     let no_builtins = attr::contains_name(&krate.attrs, "no_builtins");
+
+    // Skip crate items and just output metadata in -Z no-trans mode.
+    if tcx.sess.opts.debugging_opts.no_trans ||
+       !tcx.sess.opts.output_types.should_trans() {
+        let empty_exported_symbols = ExportedSymbols::empty();
+        let linker_info = LinkerInfo::new(&shared_ccx, &empty_exported_symbols);
+        return CrateTranslation {
+            modules: vec![],
+            metadata_module: metadata_module,
+            link: link_meta,
+            metadata: metadata,
+            exported_symbols: empty_exported_symbols,
+            no_builtins: no_builtins,
+            linker_info: linker_info,
+            windows_subsystem: None,
+        };
+    }
 
     // Run the translation item collector and partition the collected items into
     // codegen units.
@@ -1180,22 +1197,6 @@ pub fn trans_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         .collect();
 
     assert_module_sources::assert_module_sources(tcx, &modules);
-
-    // Skip crate items and just output metadata in -Z no-trans mode.
-    if tcx.sess.opts.debugging_opts.no_trans ||
-       tcx.sess.opts.output_types.contains_key(&config::OutputType::Metadata) {
-        let linker_info = LinkerInfo::new(&shared_ccx, &ExportedSymbols::empty());
-        return CrateTranslation {
-            modules: modules,
-            metadata_module: metadata_module,
-            link: link_meta,
-            metadata: metadata,
-            exported_symbols: ExportedSymbols::empty(),
-            no_builtins: no_builtins,
-            linker_info: linker_info,
-            windows_subsystem: None,
-        };
-    }
 
     // Instantiate translation items without filling out definitions yet...
     for ccx in crate_context_list.iter_need_trans() {

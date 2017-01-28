@@ -20,6 +20,7 @@ use rustc::middle::cstore::LinkagePreference;
 use rustc::hir::def::{self, Def, CtorKind};
 use rustc::hir::def_id::{CrateNum, DefId, DefIndex, CRATE_DEF_INDEX, LOCAL_CRATE};
 use rustc::middle::lang_items;
+use rustc::middle::resolve_lifetime::ObjectLifetimeDefault;
 use rustc::session::Session;
 use rustc::ty::{self, Ty, TyCtxt};
 use rustc::ty::subst::Substs;
@@ -445,14 +446,6 @@ impl<'tcx> EntryKind<'tcx> {
             EntryKind::Closure(_) => return None,
         })
     }
-    fn is_const_fn(&self, meta: &CrateMetadata) -> bool {
-        let constness = match *self {
-            EntryKind::Method(data) => data.decode(meta).fn_data.constness,
-            EntryKind::Fn(data) => data.decode(meta).constness,
-            _ => hir::Constness::NotConst,
-        };
-        constness == hir::Constness::Const
-    }
 }
 
 impl<'a, 'tcx> CrateMetadata {
@@ -606,7 +599,26 @@ impl<'a, 'tcx> CrateMetadata {
                         item_id: DefIndex,
                         tcx: TyCtxt<'a, 'tcx, 'tcx>)
                         -> ty::Generics<'tcx> {
-        self.entry(item_id).generics.unwrap().decode((self, tcx))
+        let g = self.entry(item_id).generics.unwrap().decode(self);
+        ty::Generics {
+            parent: g.parent,
+            parent_regions: g.parent_regions,
+            parent_types: g.parent_types,
+            regions: g.regions.decode((self, tcx)).collect(),
+            types: g.types.decode((self, tcx)).collect(),
+            has_self: g.has_self,
+        }
+    }
+
+    pub fn generics_own_param_counts(&self, item_id: DefIndex) -> (usize, usize) {
+        let g = self.entry(item_id).generics.unwrap().decode(self);
+        (g.regions.len, g.types.len)
+    }
+
+    pub fn generics_object_lifetime_defaults(&self, item_id: DefIndex)
+                                             -> Vec<ObjectLifetimeDefault> {
+        self.entry(item_id).generics.unwrap().decode(self)
+                           .object_lifetime_defaults.decode(self).collect()
     }
 
     pub fn get_type(&self, id: DefIndex, tcx: TyCtxt<'a, 'tcx, 'tcx>) -> Ty<'tcx> {
@@ -784,7 +796,7 @@ impl<'a, 'tcx> CrateMetadata {
             tcx.tables.borrow_mut().insert(def_id, tcx.alloc_tables(tables));
 
             let body = ast.body.decode((self, tcx));
-            tcx.map.intern_inlined_body(def_id, body)
+            tcx.hir.intern_inlined_body(def_id, body)
         })
     }
 
@@ -802,29 +814,6 @@ impl<'a, 'tcx> CrateMetadata {
     pub fn is_item_mir_available(&self, id: DefIndex) -> bool {
         !self.is_proc_macro(id) &&
         self.maybe_entry(id).and_then(|item| item.decode(self).mir).is_some()
-    }
-
-    pub fn can_have_local_instance(&self,
-                                   tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                   id: DefIndex) -> bool {
-        self.maybe_entry(id).map_or(false, |item| {
-            let item = item.decode(self);
-            // if we don't have a MIR, then this item was never meant to be locally instantiated
-            // or we have a bug in the metadata serialization
-            item.mir.is_some() && (
-                // items with generics always can have local instances if monomorphized
-                item.generics.map_or(false, |generics| {
-                    let generics = generics.decode((self, tcx));
-                    generics.parent_types != 0 || !generics.types.is_empty()
-                }) ||
-                match item.kind {
-                    EntryKind::Closure(_) => true,
-                    _ => false,
-                } ||
-                item.kind.is_const_fn(self) ||
-                attr::requests_inline(&self.get_attributes(&item))
-            )
-        })
     }
 
     pub fn maybe_get_item_mir(&self,
@@ -1031,7 +1020,7 @@ impl<'a, 'tcx> CrateMetadata {
     }
 
     pub fn get_exported_symbols(&self) -> Vec<DefId> {
-        self.root.exported_symbols.decode(self).map(|index| self.local_def_id(index)).collect()
+        self.exported_symbols.iter().map(|&index| self.local_def_id(index)).collect()
     }
 
     pub fn get_macro(&self, id: DefIndex) -> (ast::Name, MacroDef) {
@@ -1043,7 +1032,12 @@ impl<'a, 'tcx> CrateMetadata {
     }
 
     pub fn is_const_fn(&self, id: DefIndex) -> bool {
-        self.entry(id).kind.is_const_fn(self)
+        let constness = match self.entry(id).kind {
+            EntryKind::Method(data) => data.decode(self).fn_data.constness,
+            EntryKind::Fn(data) => data.decode(self).constness,
+            _ => hir::Constness::NotConst,
+        };
+        constness == hir::Constness::Const
     }
 
     pub fn is_foreign_item(&self, id: DefIndex) -> bool {

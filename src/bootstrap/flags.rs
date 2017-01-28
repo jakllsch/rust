@@ -67,6 +67,7 @@ pub enum Subcommand {
     },
     Clean,
     Dist {
+        paths: Vec<PathBuf>,
         install: bool,
     },
 }
@@ -249,6 +250,7 @@ To learn more about a subcommand, run `./x.py <command> -h`
                 opts.optflag("", "install", "run installer as well");
                 m = parse(&opts);
                 Subcommand::Dist {
+                    paths: remaining_as_path(&m),
                     install: m.opt_present("install"),
                 }
             }
@@ -285,8 +287,8 @@ To learn more about a subcommand, run `./x.py <command> -h`
             build: m.opt_str("build").unwrap_or_else(|| {
                 env::var("BUILD").unwrap()
             }),
-            host: m.opt_strs("host"),
-            target: m.opt_strs("target"),
+            host: split(m.opt_strs("host")),
+            target: split(m.opt_strs("target")),
             config: cfg_file,
             src: m.opt_str("src").map(PathBuf::from),
             jobs: m.opt_str("jobs").map(|j| j.parse().unwrap()),
@@ -306,4 +308,8 @@ impl Subcommand {
             _ => Vec::new(),
         }
     }
+}
+
+fn split(s: Vec<String>) -> Vec<String> {
+    s.iter().flat_map(|s| s.split(',')).map(|s| s.to_string()).collect()
 }

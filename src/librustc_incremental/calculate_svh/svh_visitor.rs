@@ -441,7 +441,6 @@ enum SawTyComponent {
     SawTyTup,
     SawTyPath,
     SawTyObjectSum,
-    SawTyPolyTraitRef,
     SawTyImplTrait,
     SawTyTypeof,
     SawTyInfer
@@ -457,8 +456,7 @@ fn saw_ty(node: &Ty_) -> SawTyComponent {
       TyNever => SawTyNever,
       TyTup(..) => SawTyTup,
       TyPath(_) => SawTyPath,
-      TyObjectSum(..) => SawTyObjectSum,
-      TyPolyTraitRef(..) => SawTyPolyTraitRef,
+      TyTraitObject(..) => SawTyObjectSum,
       TyImplTrait(..) => SawTyImplTrait,
       TyTypeof(..) => SawTyTypeof,
       TyInfer => SawTyInfer
@@ -563,7 +561,7 @@ macro_rules! hash_span {
 impl<'a, 'hash, 'tcx> visit::Visitor<'tcx> for StrictVersionHashVisitor<'a, 'hash, 'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> visit::NestedVisitorMap<'this, 'tcx> {
         if self.hash_bodies {
-            visit::NestedVisitorMap::OnlyBodies(&self.tcx.map)
+            visit::NestedVisitorMap::OnlyBodies(&self.tcx.hir)
         } else {
             visit::NestedVisitorMap::None
         }
@@ -830,7 +828,7 @@ impl<'a, 'hash, 'tcx> visit::Visitor<'tcx> for StrictVersionHashVisitor<'a, 'has
         visit::walk_ty_param_bound(self, bounds)
     }
 
-    fn visit_poly_trait_ref(&mut self, t: &'tcx PolyTraitRef, m: &'tcx TraitBoundModifier) {
+    fn visit_poly_trait_ref(&mut self, t: &'tcx PolyTraitRef, m: TraitBoundModifier) {
         debug!("visit_poly_trait_ref: st={:?}", self.st);
         SawPolyTraitRef.hash(self.st);
         m.hash(self.st);
@@ -1036,18 +1034,14 @@ impl<'a, 'hash, 'tcx> StrictVersionHashVisitor<'a, 'hash, 'tcx> {
                 hash_span!(self, span);
                 let tokenstream::Delimited {
                     ref delim,
-                    open_span,
                     ref tts,
-                    close_span,
                 } = **delimited;
 
                 delim.hash(self.st);
-                hash_span!(self, open_span);
                 tts.len().hash(self.st);
                 for sub_tt in tts {
                     self.hash_token_tree(sub_tt);
                 }
-                hash_span!(self, close_span);
             }
             tokenstream::TokenTree::Sequence(span, ref sequence_repetition) => {
                 hash_span!(self, span);

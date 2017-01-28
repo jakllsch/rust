@@ -53,7 +53,7 @@ pub fn gather_loans_in_fn<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
         move_error_collector: move_error::MoveErrorCollector::new(),
     };
 
-    let body = glcx.bccx.tcx.map.body(body);
+    let body = glcx.bccx.tcx.hir.body(body);
     euv::ExprUseVisitor::new(&mut glcx, &infcx).consume_body(body);
 
     glcx.report_potential_errors();
@@ -195,7 +195,8 @@ fn check_aliasability<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
             bccx.report_aliasability_violation(
                         borrow_span,
                         loan_cause,
-                        mc::AliasableReason::UnaliasableImmutable);
+                        mc::AliasableReason::UnaliasableImmutable,
+                        cmt);
             Err(())
         }
         (mc::Aliasability::FreelyAliasable(alias_cause), ty::UniqueImmBorrow) |
@@ -203,7 +204,8 @@ fn check_aliasability<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
             bccx.report_aliasability_violation(
                         borrow_span,
                         loan_cause,
-                        alias_cause);
+                        alias_cause,
+                        cmt);
             Err(())
         }
         (..) => {
@@ -553,6 +555,6 @@ pub fn gather_loans_in_static_initializer(bccx: &mut BorrowckCtxt, body: hir::Bo
         body_id: body
     };
 
-    let body = sicx.bccx.tcx.map.body(body);
+    let body = sicx.bccx.tcx.hir.body(body);
     sicx.visit_body(body);
 }

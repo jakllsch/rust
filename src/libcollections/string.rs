@@ -68,6 +68,7 @@ use std_unicode::str as unicode_str;
 
 use borrow::{Cow, ToOwned};
 use range::RangeArgument;
+use Bound::{Excluded, Included, Unbounded};
 use str::{self, FromStr, Utf8Error, Chars};
 use vec::Vec;
 use boxed::Box;
@@ -1165,8 +1166,6 @@ impl String {
     /// Basic usage:
     ///
     /// ```
-    /// #![feature(insert_str)]
-    ///
     /// let mut s = String::from("bar");
     ///
     /// s.insert_str(0, "foo");
@@ -1174,9 +1173,7 @@ impl String {
     /// assert_eq!("foobar", s);
     /// ```
     #[inline]
-    #[unstable(feature = "insert_str",
-               reason = "recent addition",
-               issue = "35553")]
+    #[stable(feature = "insert_str", since = "1.16.0")]
     pub fn insert_str(&mut self, idx: usize, string: &str) {
         assert!(self.is_char_boundary(idx));
 
@@ -1269,7 +1266,6 @@ impl String {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(string_split_off)]
     /// # fn main() {
     /// let mut hello = String::from("Hello, World!");
     /// let world = hello.split_off(7);
@@ -1278,7 +1274,7 @@ impl String {
     /// # }
     /// ```
     #[inline]
-    #[unstable(feature = "string_split_off", issue = "38080")]
+    #[stable(feature = "string_split_off", since = "1.16.0")]
     pub fn split_off(&mut self, mid: usize) -> String {
         assert!(self.is_char_boundary(mid));
         let other = self.vec.split_off(mid);
@@ -1350,8 +1346,16 @@ impl String {
         // Because the range removal happens in Drop, if the Drain iterator is leaked,
         // the removal will not happen.
         let len = self.len();
-        let start = *range.start().unwrap_or(&0);
-        let end = *range.end().unwrap_or(&len);
+        let start = match range.start() {
+            Included(&n) => n,
+            Excluded(&n) => n + 1,
+            Unbounded => 0,
+        };
+        let end = match range.end() {
+            Included(&n) => n + 1,
+            Excluded(&n) => n,
+            Unbounded => len,
+        };
 
         // Take out two simultaneous borrows. The &mut String won't be accessed
         // until iteration is over, in Drop.

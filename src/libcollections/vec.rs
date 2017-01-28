@@ -84,6 +84,7 @@ use core::ptr::Shared;
 use core::slice;
 
 use super::range::RangeArgument;
+use Bound::{Excluded, Included, Unbounded};
 
 /// A contiguous growable array type, written `Vec<T>` but pronounced 'vector'.
 ///
@@ -819,15 +820,13 @@ impl<T> Vec<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(dedup_by)]
-    ///
     /// let mut vec = vec![10, 20, 21, 30, 20];
     ///
     /// vec.dedup_by_key(|i| *i / 10);
     ///
     /// assert_eq!(vec, [10, 20, 30, 20]);
     /// ```
-    #[unstable(feature = "dedup_by", reason = "recently added", issue = "37087")]
+    #[stable(feature = "dedup_by", since = "1.16.0")]
     #[inline]
     pub fn dedup_by_key<F, K>(&mut self, mut key: F) where F: FnMut(&mut T) -> K, K: PartialEq {
         self.dedup_by(|a, b| key(a) == key(b))
@@ -840,7 +839,6 @@ impl<T> Vec<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(dedup_by)]
     /// use std::ascii::AsciiExt;
     ///
     /// let mut vec = vec!["foo", "bar", "Bar", "baz", "bar"];
@@ -849,7 +847,7 @@ impl<T> Vec<T> {
     ///
     /// assert_eq!(vec, ["foo", "bar", "baz", "bar"]);
     /// ```
-    #[unstable(feature = "dedup_by", reason = "recently added", issue = "37087")]
+    #[stable(feature = "dedup_by", since = "1.16.0")]
     pub fn dedup_by<F>(&mut self, mut same_bucket: F) where F: FnMut(&mut T, &mut T) -> bool {
         unsafe {
             // Although we have a mutable reference to `self`, we cannot make
@@ -1022,8 +1020,8 @@ impl<T> Vec<T> {
     /// Create a draining iterator that removes the specified range in the vector
     /// and yields the removed items.
     ///
-    /// Note 1: The element range is removed even if the iterator is not
-    /// consumed until the end.
+    /// Note 1: The element range is removed even if the iterator is only
+    /// partially consumed or not consumed at all.
     ///
     /// Note 2: It is unspecified how many elements are removed from the vector,
     /// if the `Drain` value is leaked.
@@ -1060,8 +1058,16 @@ impl<T> Vec<T> {
         // the hole, and the vector length is restored to the new length.
         //
         let len = self.len();
-        let start = *range.start().unwrap_or(&0);
-        let end = *range.end().unwrap_or(&len);
+        let start = match range.start() {
+            Included(&n) => n,
+            Excluded(&n) => n + 1,
+            Unbounded    => 0,
+        };
+        let end = match range.end() {
+            Included(&n) => n + 1,
+            Excluded(&n) => n,
+            Unbounded    => len,
+        };
         assert!(start <= end);
         assert!(end <= len);
 

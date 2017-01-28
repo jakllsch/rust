@@ -17,6 +17,7 @@ use rustc::middle::cstore::{CrateStore, CrateSource, LibSource, DepKind, ExternC
 use rustc::middle::cstore::{NativeLibrary, LinkMeta, LinkagePreference, LoadedMacro};
 use rustc::hir::def::{self, Def};
 use rustc::middle::lang_items;
+use rustc::middle::resolve_lifetime::ObjectLifetimeDefault;
 use rustc::session::Session;
 use rustc::ty::{self, Ty, TyCtxt};
 use rustc::hir::def_id::{CrateNum, DefId, DefIndex, CRATE_DEF_INDEX, LOCAL_CRATE};
@@ -29,7 +30,7 @@ use rustc_back::PanicStrategy;
 
 use syntax::ast;
 use syntax::attr;
-use syntax::parse::new_parser_from_source_str;
+use syntax::parse::filemap_to_tts;
 use syntax::symbol::Symbol;
 use syntax_pos::{mk_sp, Span};
 use rustc::hir::svh::Svh;
@@ -108,6 +109,17 @@ impl<'tcx> CrateStore<'tcx> for cstore::CStore {
     {
         self.dep_graph.read(DepNode::MetaData(def));
         self.get_crate_data(def.krate).get_generics(def.index, tcx)
+    }
+
+    fn item_generics_own_param_counts(&self, def: DefId) -> (usize, usize) {
+        self.dep_graph.read(DepNode::MetaData(def));
+        self.get_crate_data(def.krate).generics_own_param_counts(def.index)
+    }
+
+    fn item_generics_object_lifetime_defaults(&self, def: DefId)
+                                              -> Vec<ObjectLifetimeDefault> {
+        self.dep_graph.read(DepNode::MetaData(def));
+        self.get_crate_data(def.krate).generics_object_lifetime_defaults(def.index)
     }
 
     fn item_attrs(&self, def_id: DefId) -> Vec<ast::Attribute>
@@ -224,6 +236,10 @@ impl<'tcx> CrateStore<'tcx> for cstore::CStore {
     fn is_statically_included_foreign_item(&self, def_id: DefId) -> bool
     {
         self.do_is_statically_included_foreign_item(def_id)
+    }
+
+    fn is_exported_symbol(&self, def_id: DefId) -> bool {
+        self.get_crate_data(def_id.krate).exported_symbols.contains(&def_id.index)
     }
 
     fn is_dllimport_foreign_item(&self, def_id: DefId) -> bool {
@@ -395,19 +411,9 @@ impl<'tcx> CrateStore<'tcx> for cstore::CStore {
         let (name, def) = data.get_macro(id.index);
         let source_name = format!("<{} macros>", name);
 
-        // NB: Don't use parse_tts_from_source_str because it parses with quote_depth > 0.
-        let mut parser = new_parser_from_source_str(&sess.parse_sess, source_name, def.body);
-
-        let lo = parser.span.lo;
-        let body = match parser.parse_all_token_trees() {
-            Ok(body) => body,
-            Err(mut err) => {
-                err.emit();
-                sess.abort_if_errors();
-                unreachable!();
-            }
-        };
-        let local_span = mk_sp(lo, parser.prev_span.hi);
+        let filemap = sess.parse_sess.codemap().new_filemap(source_name, None, def.body);
+        let local_span = mk_sp(filemap.start_pos, filemap.end_pos);
+        let body = filemap_to_tts(&sess.parse_sess, filemap);
 
         // Mark the attrs as used
         let attrs = data.get_item_attrs(id.index);
@@ -434,7 +440,7 @@ impl<'tcx> CrateStore<'tcx> for cstore::CStore {
                                def_id: DefId)
                                -> Option<&'tcx hir::Body>
     {
-        if let Some(cached) = tcx.map.get_inlined_body(def_id) {
+        if let Some(cached) = tcx.hir.get_inlined_body(def_id) {
             return Some(cached);
         }
 
@@ -464,11 +470,6 @@ impl<'tcx> CrateStore<'tcx> for cstore::CStore {
     fn is_item_mir_available(&self, def: DefId) -> bool {
         self.dep_graph.read(DepNode::MetaData(def));
         self.get_crate_data(def.krate).is_item_mir_available(def.index)
-    }
-
-    fn can_have_local_instance<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, def: DefId) -> bool {
-        self.dep_graph.read(DepNode::MetaData(def));
-        def.is_local() || self.get_crate_data(def.krate).can_have_local_instance(tcx, def.index)
     }
 
     fn crates(&self) -> Vec<CrateNum>
