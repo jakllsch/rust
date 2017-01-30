@@ -129,12 +129,6 @@ extern "C" void LLVMRustAddPass(LLVMPassManagerRef PMR, LLVMPassRef RustPass) {
 #define SUBTARGET_PPC
 #endif
 
-#ifdef LLVM_COMPONENT_SPARC
-#define SUBTARGET_SPARC SUBTARGET(Sparc)
-#else
-#define SUBTARGET_SPARC
-#endif
-
 #ifdef LLVM_COMPONENT_SYSTEMZ
 #define SUBTARGET_SYSTEMZ SUBTARGET(SystemZ)
 #else

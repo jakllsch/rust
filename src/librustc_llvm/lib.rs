@@ -355,12 +355,6 @@ pub fn initialize_available_targets() {
                  LLVMInitializePNaClTargetInfo,
                  LLVMInitializePNaClTarget,
                  LLVMInitializePNaClTargetMC);
-    init_target!(llvm_component = "sparc",
-                 LLVMInitializeSparcTargetInfo,
-                 LLVMInitializeSparcTarget,
-                 LLVMInitializeSparcTargetMC,
-                 LLVMInitializeSparcAsmPrinter,
-                 LLVMInitializeSparcAsmParser);
     init_target!(llvm_component = "systemz",
                  LLVMInitializeSystemZTargetInfo,
                  LLVMInitializeSystemZTarget,
