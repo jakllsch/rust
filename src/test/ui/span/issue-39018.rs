@@ -1,4 +1,4 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,14 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-mod Bar {
-    pub struct Foo( bool, pub i32, f32, bool);
-    //~^ NOTE private field declared here
-    //~| NOTE private field declared here
-    //~| NOTE private field declared here
+pub fn main() {
+    let x = "Hello " + "World!";
+
+    // Make sure that the span outputs a warning
+    // for not having an implementation for std::ops::Add
+    // that won't output for the above string concatenation
+    let y = World::Hello + World::Goodbye;
 }
 
-fn main() {
-    let f = Bar::Foo(false,1,0.1, true); //~ ERROR E0450
-                         //~^ NOTE cannot construct with a private field
+enum World {
+    Hello,
+    Goodbye,
 }
