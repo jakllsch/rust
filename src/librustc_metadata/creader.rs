@@ -111,6 +111,13 @@ fn register_native_lib(sess: &Session,
                                        GateIssue::Language,
                                        "is feature gated");
     }
+    if lib.kind == cstore::NativeStaticNobundle && !sess.features.borrow().static_nobundle {
+        feature_gate::emit_feature_err(&sess.parse_sess,
+                                       "static_nobundle",
+                                       span.unwrap(),
+                                       GateIssue::Language,
+                                       "kind=\"static-nobundle\" is feature gated");
+    }
     cstore.add_used_library(lib);
 }
 
@@ -577,7 +584,7 @@ impl<'a> CrateLoader<'a> {
         use proc_macro::TokenStream;
         use proc_macro::__internal::Registry;
         use rustc_back::dynamic_lib::DynamicLibrary;
-        use syntax_ext::deriving::custom::CustomDerive;
+        use syntax_ext::deriving::custom::ProcMacroDerive;
         use syntax_ext::proc_macro_impl::AttrProcMacro;
 
         let path = match dylib {
@@ -609,8 +616,8 @@ impl<'a> CrateLoader<'a> {
                                       expand: fn(TokenStream) -> TokenStream,
                                       attributes: &[&'static str]) {
                 let attrs = attributes.iter().cloned().map(Symbol::intern).collect();
-                let derive = SyntaxExtension::CustomDerive(
-                    Box::new(CustomDerive::new(expand, attrs))
+                let derive = SyntaxExtension::ProcMacroDerive(
+                    Box::new(ProcMacroDerive::new(expand, attrs))
                 );
                 self.0.push((Symbol::intern(trait_name), Rc::new(derive)));
             }
@@ -686,6 +693,9 @@ impl<'a> CrateLoader<'a> {
 
     fn register_statically_included_foreign_items(&mut self) {
         for id in self.get_foreign_items_of_kind(cstore::NativeStatic) {
+            self.cstore.add_statically_included_foreign_item(id);
+        }
+        for id in self.get_foreign_items_of_kind(cstore::NativeStaticNobundle) {
             self.cstore.add_statically_included_foreign_item(id);
         }
     }
@@ -927,6 +937,7 @@ impl<'a> CrateLoader<'a> {
             }).and_then(|a| a.value_str()).map(Symbol::as_str);
             let kind = match kind.as_ref().map(|s| &s[..]) {
                 Some("static") => cstore::NativeStatic,
+                Some("static-nobundle") => cstore::NativeStaticNobundle,
                 Some("dylib") => cstore::NativeUnknown,
                 Some("framework") => cstore::NativeFramework,
                 Some(k) => {

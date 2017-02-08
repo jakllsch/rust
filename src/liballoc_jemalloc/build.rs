@@ -21,7 +21,6 @@ use std::process::Command;
 use build_helper::{run, rerun_if_changed_anything_in_dir, up_to_date};
 
 fn main() {
-    println!("cargo:rustc-cfg=cargobuild");
     println!("cargo:rerun-if-changed=build.rs");
 
     // FIXME: This is a hack to support building targets that don't
@@ -39,6 +38,12 @@ fn main() {
        target.contains("redox") {
         println!("cargo:rustc-cfg=dummy_jemalloc");
         return;
+    }
+
+    if target.contains("android") {
+        println!("cargo:rustc-link-lib=gcc");
+    } else if !target.contains("windows") && !target.contains("musl") {
+        println!("cargo:rustc-link-lib=pthread");
     }
 
     if let Some(jemalloc) = env::var_os("JEMALLOC_OVERRIDE") {
@@ -66,11 +71,6 @@ fn main() {
         println!("cargo:rustc-link-lib=static=jemalloc_pic");
     }
     println!("cargo:rustc-link-search=native={}/lib", build_dir.display());
-    if target.contains("android") {
-        println!("cargo:rustc-link-lib=gcc");
-    } else if !target.contains("windows") && !target.contains("musl") {
-        println!("cargo:rustc-link-lib=pthread");
-    }
     let src_dir = env::current_dir().unwrap().join("../jemalloc");
     rerun_if_changed_anything_in_dir(&src_dir);
     let timestamp = build_dir.join("rustbuild.timestamp");

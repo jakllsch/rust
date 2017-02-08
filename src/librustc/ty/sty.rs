@@ -58,7 +58,7 @@ pub enum BoundRegion {
     ///
     /// The def-id is needed to distinguish free regions in
     /// the event of shadowing.
-    BrNamed(DefId, Name, Issue32330),
+    BrNamed(DefId, Name),
 
     /// Fresh bound identifiers created during GLB computations.
     BrFresh(u32),
@@ -68,23 +68,18 @@ pub enum BoundRegion {
     BrEnv
 }
 
-/// True if this late-bound region is unconstrained, and hence will
-/// become early-bound once #32330 is fixed.
+/// When a region changed from late-bound to early-bound when #32330
+/// was fixed, its `RegionParameterDef` will have one of these
+/// structures that we can use to give nicer errors.
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq, Ord, Hash,
          RustcEncodable, RustcDecodable)]
-pub enum Issue32330 {
-    WontChange,
+pub struct Issue32330 {
+    /// fn where is region declared
+    pub fn_def_id: DefId,
 
-    /// this region will change from late-bound to early-bound once
-    /// #32330 is fixed.
-    WillChange {
-        /// fn where is region declared
-        fn_def_id: DefId,
-
-        /// name of region; duplicates the info in BrNamed but convenient
-        /// to have it here, and this code is only temporary
-        region_name: ast::Name,
-    }
+    /// name of region; duplicates the info in BrNamed but convenient
+    /// to have it here, and this code is only temporary
+    pub region_name: ast::Name,
 }
 
 // NB: If you change this, you'll probably want to change the corresponding
@@ -151,7 +146,11 @@ pub enum TypeVariants<'tcx> {
     TyNever,
 
     /// A tuple type.  For example, `(i32, bool)`.
-    TyTuple(&'tcx Slice<Ty<'tcx>>),
+    /// The bool indicates whether this is a unit tuple and was created by
+    /// defaulting a diverging type variable with feature(never_type) disabled.
+    /// It's only purpose is for raising future-compatibility warnings for when
+    /// diverging type variables start defaulting to ! instead of ().
+    TyTuple(&'tcx Slice<Ty<'tcx>>, bool),
 
     /// The projection of an associated type.  For example,
     /// `<T as Trait<..>>::N`.
@@ -961,7 +960,7 @@ impl<'a, 'gcx, 'tcx> TyS<'tcx> {
 
     pub fn is_nil(&self) -> bool {
         match self.sty {
-            TyTuple(ref tys) => tys.is_empty(),
+            TyTuple(ref tys, _) => tys.is_empty(),
             _ => false
         }
     }
@@ -969,6 +968,15 @@ impl<'a, 'gcx, 'tcx> TyS<'tcx> {
     pub fn is_never(&self) -> bool {
         match self.sty {
             TyNever => true,
+            _ => false,
+        }
+    }
+
+    // Test whether this is a `()` which was produced by defaulting a
+    // diverging type variable with feature(never_type) disabled.
+    pub fn is_defaulted_unit(&self) -> bool {
+        match self.sty {
+            TyTuple(_, true) => true,
             _ => false,
         }
     }
@@ -1355,7 +1363,7 @@ impl<'a, 'gcx, 'tcx> TyS<'tcx> {
             TySlice(_) |
             TyRawPtr(_) |
             TyNever |
-            TyTuple(_) |
+            TyTuple(..) |
             TyParam(_) |
             TyInfer(_) |
             TyError => {

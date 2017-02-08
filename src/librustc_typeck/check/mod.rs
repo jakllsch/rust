@@ -102,7 +102,7 @@ use CrateCtxt;
 use TypeAndSubsts;
 use lint;
 use util::common::{ErrorReported, indenter};
-use util::nodemap::{DefIdMap, FxHashMap, FxHashSet, NodeMap};
+use util::nodemap::{DefIdMap, DefIdSet, FxHashMap, FxHashSet, NodeMap};
 
 use std::cell::{Cell, RefCell};
 use std::cmp;
@@ -179,6 +179,11 @@ pub struct Inherited<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
     // Obligations which will have to be checked at the end of
     // type-checking, after all functions have been inferred.
     deferred_obligations: RefCell<Vec<traits::DeferredObligation<'tcx>>>,
+
+    // a set of trait import def-ids that we use during method
+    // resolution; during writeback, this is written into
+    // `tcx.used_trait_imports` for this item def-id
+    used_trait_imports: RefCell<FxHashSet<DefId>>,
 }
 
 impl<'a, 'gcx, 'tcx> Deref for Inherited<'a, 'gcx, 'tcx> {
@@ -513,6 +518,7 @@ impl<'a, 'gcx, 'tcx> Inherited<'a, 'gcx, 'tcx> {
             deferred_cast_checks: RefCell::new(Vec::new()),
             anon_types: RefCell::new(DefIdMap()),
             deferred_obligations: RefCell::new(Vec::new()),
+            used_trait_imports: RefCell::new(DefIdSet()),
         }
     }
 
@@ -1412,7 +1418,7 @@ impl<'a, 'gcx, 'tcx> AstConv<'gcx, 'tcx> for FnCtxt<'a, 'gcx, 'tcx> {
     fn re_infer(&self, span: Span, def: Option<&ty::RegionParameterDef>)
                 -> Option<&'tcx ty::Region> {
         let v = match def {
-            Some(def) => infer::EarlyBoundRegion(span, def.name),
+            Some(def) => infer::EarlyBoundRegion(span, def.name, def.issue_32330),
             None => infer::MiscVariable(span)
         };
         Some(self.next_region_var(v))
@@ -1521,9 +1527,10 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         if self.diverges.get() == Diverges::Always {
             self.diverges.set(Diverges::WarnedAlways);
 
-            self.tcx.sess.add_lint(lint::builtin::UNREACHABLE_CODE,
-                                   id, span,
-                                   format!("unreachable {}", kind));
+            self.tables.borrow_mut().lints.add_lint(
+                lint::builtin::UNREACHABLE_CODE,
+                id, span,
+                format!("unreachable {}", kind));
         }
     }
 
@@ -1940,7 +1947,9 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     }
 
     /// Apply "fallbacks" to some types
-    /// ! gets replaced with (), unconstrained ints with i32, and unconstrained floats with f64.
+    /// unconstrained types get replaced with ! or  () (depending on whether
+    /// feature(never_type) is enabled), unconstrained ints with i32, and
+    /// unconstrained floats with f64.
     fn default_type_parameters(&self) {
         use rustc::ty::error::UnconstrainedNumeric::Neither;
         use rustc::ty::error::UnconstrainedNumeric::{UnconstrainedInt, UnconstrainedFloat};
@@ -2401,7 +2410,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 
             let err_inputs = match tuple_arguments {
                 DontTupleArguments => err_inputs,
-                TupleArguments => vec![self.tcx.intern_tup(&err_inputs[..])],
+                TupleArguments => vec![self.tcx.intern_tup(&err_inputs[..], false)],
             };
 
             self.check_argument_types(sp, &err_inputs[..], &[], args_no_rcvr,
@@ -2498,16 +2507,16 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         let formal_tys = if tuple_arguments == TupleArguments {
             let tuple_type = self.structurally_resolved_type(sp, fn_inputs[0]);
             match tuple_type.sty {
-                ty::TyTuple(arg_types) if arg_types.len() != args.len() => {
+                ty::TyTuple(arg_types, _) if arg_types.len() != args.len() => {
                     parameter_count_error(tcx.sess, sp_args, arg_types.len(), args.len(),
                                           "E0057", false, def_span);
                     expected_arg_tys = &[];
                     self.err_args(args.len())
                 }
-                ty::TyTuple(arg_types) => {
+                ty::TyTuple(arg_types, _) => {
                     expected_arg_tys = match expected_arg_tys.get(0) {
                         Some(&ty) => match ty.sty {
-                            ty::TyTuple(ref tys) => &tys,
+                            ty::TyTuple(ref tys, _) => &tys,
                             _ => &[]
                         },
                         None => &[]
@@ -3065,7 +3074,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                         }
                     })
                 }
-                ty::TyTuple(ref v) => {
+                ty::TyTuple(ref v, _) => {
                     tuple_like = true;
                     v.get(idx.node).cloned()
                 }
@@ -3857,7 +3866,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
           hir::ExprTup(ref elts) => {
             let flds = expected.only_has_type(self).and_then(|ty| {
                 match ty.sty {
-                    ty::TyTuple(ref flds) => Some(&flds[..]),
+                    ty::TyTuple(ref flds, _) => Some(&flds[..]),
                     _ => None
                 }
             });
@@ -3875,7 +3884,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 };
                 t
             });
-            let tuple = tcx.mk_tup(elt_ts_iter);
+            let tuple = tcx.mk_tup(elt_ts_iter, false);
             if tuple.references_error() {
                 tcx.types.err
             } else {
@@ -3916,7 +3925,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                               },
                               base_t);
                           // Try to give some advice about indexing tuples.
-                          if let ty::TyTuple(_) = base_t.sty {
+                          if let ty::TyTuple(..) = base_t.sty {
                               let mut needs_note = true;
                               // If the index is an integer, we can show the actual
                               // fixed expression:

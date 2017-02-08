@@ -198,9 +198,9 @@ impl DefaultResizePolicy {
 /// attacks such as HashDoS.
 ///
 /// The hashing algorithm can be replaced on a per-`HashMap` basis using the
-/// `HashMap::default`, `HashMap::with_hasher`, and
-/// `HashMap::with_capacity_and_hasher` methods. Many alternative algorithms
-/// are available on crates.io, such as the `fnv` crate.
+/// [`HashMap::default`], [`HashMap::with_hasher`], and
+/// [`HashMap::with_capacity_and_hasher`] methods. Many alternative algorithms
+/// are available on crates.io, such as the [`fnv`] crate.
 ///
 /// It is required that the keys implement the [`Eq`] and [`Hash`] traits, although
 /// this can frequently be achieved by using `#[derive(PartialEq, Eq, Hash)]`.
@@ -302,6 +302,10 @@ impl DefaultResizePolicy {
 /// [`PartialEq`]: ../../std/cmp/trait.PartialEq.html
 /// [`RefCell`]: ../../std/cell/struct.RefCell.html
 /// [`Cell`]: ../../std/cell/struct.Cell.html
+/// [`HashMap::default`]: #method.default
+/// [`HashMap::with_hasher`]: #method.with_hasher
+/// [`HashMap::with_capacity_and_hasher`]: #method.with_capacity_and_hasher
+/// [`fnv`]: https://crates.io/crates/fnv
 ///
 /// ```
 /// use std::collections::HashMap;
@@ -680,7 +684,9 @@ impl<K, V, S> HashMap<K, V, S>
     ///
     /// # Panics
     ///
-    /// Panics if the new allocation size overflows `usize`.
+    /// Panics if the new allocation size overflows [`usize`].
+    ///
+    /// [`usize`]: ../../std/primitive.usize.html
     ///
     /// # Examples
     ///
@@ -1141,13 +1147,14 @@ impl<K, V, S> HashMap<K, V, S>
 
     /// Inserts a key-value pair into the map.
     ///
-    /// If the map did not have this key present, `None` is returned.
+    /// If the map did not have this key present, [`None`] is returned.
     ///
     /// If the map did have this key present, the value is updated, and the old
     /// value is returned. The key is not updated, though; this matters for
     /// types that can be `==` without being identical. See the [module-level
     /// documentation] for more.
     ///
+    /// [`None`]: ../../std/option/enum.Option.html#variant.None
     /// [module-level documentation]: index.html#insert-and-complex-keys
     ///
     /// # Examples
@@ -1276,7 +1283,7 @@ impl<'a, K, V> Clone for Iter<'a, K, V> {
     }
 }
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl<'a, K: Debug, V: Debug> fmt::Debug for Iter<'a, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_list()
@@ -1311,7 +1318,7 @@ impl<'a, K, V> Clone for Keys<'a, K, V> {
     }
 }
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl<'a, K: Debug, V: Debug> fmt::Debug for Keys<'a, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_list()
@@ -1334,7 +1341,7 @@ impl<'a, K, V> Clone for Values<'a, K, V> {
     }
 }
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl<'a, K: Debug, V: Debug> fmt::Debug for Values<'a, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_list()
@@ -1584,7 +1591,7 @@ impl<'a, K, V> ExactSizeIterator for IterMut<'a, K, V> {
 #[unstable(feature = "fused", issue = "35602")]
 impl<'a, K, V> FusedIterator for IterMut<'a, K, V> {}
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl<'a, K, V> fmt::Debug for IterMut<'a, K, V>
     where K: fmt::Debug,
           V: fmt::Debug,
@@ -1619,7 +1626,7 @@ impl<K, V> ExactSizeIterator for IntoIter<K, V> {
 #[unstable(feature = "fused", issue = "35602")]
 impl<K, V> FusedIterator for IntoIter<K, V> {}
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl<K: Debug, V: Debug> fmt::Debug for IntoIter<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_list()
@@ -1697,7 +1704,7 @@ impl<'a, K, V> ExactSizeIterator for ValuesMut<'a, K, V> {
 #[unstable(feature = "fused", issue = "35602")]
 impl<'a, K, V> FusedIterator for ValuesMut<'a, K, V> {}
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl<'a, K, V> fmt::Debug for ValuesMut<'a, K, V>
     where K: fmt::Debug,
           V: fmt::Debug,
@@ -1732,7 +1739,7 @@ impl<'a, K, V> ExactSizeIterator for Drain<'a, K, V> {
 #[unstable(feature = "fused", issue = "35602")]
 impl<'a, K, V> FusedIterator for Drain<'a, K, V> {}
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl<'a, K, V> fmt::Debug for Drain<'a, K, V>
     where K: fmt::Debug,
           V: fmt::Debug,
@@ -2220,7 +2227,7 @@ impl Default for RandomState {
     }
 }
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for RandomState {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.pad("RandomState { .. }")

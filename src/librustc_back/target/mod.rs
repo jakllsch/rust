@@ -165,6 +165,7 @@ supported_targets! {
     ("armv7-linux-androideabi", armv7_linux_androideabi),
     ("aarch64-linux-android", aarch64_linux_android),
 
+    ("aarch64-unknown-freebsd", aarch64_unknown_freebsd),
     ("i686-unknown-freebsd", i686_unknown_freebsd),
     ("x86_64-unknown-freebsd", x86_64_unknown_freebsd),
 
@@ -179,7 +180,7 @@ supported_targets! {
     ("arm-unknown-netbsdelf-eabi", arm_unknown_netbsdelf_eabi),
     ("armv6-unknown-netbsdelf-eabihf", armv6_unknown_netbsdelf_eabihf),
     ("armv7-unknown-netbsdelf-eabihf", armv7_unknown_netbsdelf_eabihf),
-    ("i686-unknown-netbsdelf", i686_unknown_netbsdelf),
+    ("i686-unknown-netbsd", i686_unknown_netbsd),
     ("powerpc-unknown-netbsd", powerpc_unknown_netbsd),
     ("sparc64-unknown-netbsd", sparc64_unknown_netbsd),
     ("x86_64-unknown-netbsd", x86_64_unknown_netbsd),
@@ -335,6 +336,10 @@ pub struct TargetOptions {
     /// Whether the target toolchain is like Android's. Only useful for compiling against Android.
     /// Defaults to false.
     pub is_like_android: bool,
+    /// Whether the target toolchain is like Emscripten's. Only useful for compiling with
+    /// Emscripten toolchain.
+    /// Defaults to false.
+    pub is_like_emscripten: bool,
     /// Whether the linker support GNU-like arguments such as -O. Defaults to false.
     pub linker_is_gnu: bool,
     /// The MinGW toolchain has a known issue that prevents it from correctly
@@ -433,6 +438,7 @@ impl Default for TargetOptions {
             is_like_solaris: false,
             is_like_windows: false,
             is_like_android: false,
+            is_like_emscripten: false,
             is_like_msvc: false,
             linker_is_gnu: false,
             allows_weak_linkage: true,
@@ -608,6 +614,7 @@ impl Target {
         key!(is_like_solaris, bool);
         key!(is_like_windows, bool);
         key!(is_like_msvc, bool);
+        key!(is_like_emscripten, bool);
         key!(is_like_android, bool);
         key!(linker_is_gnu, bool);
         key!(allows_weak_linkage, bool);
@@ -772,6 +779,7 @@ impl ToJson for Target {
         target_option_val!(is_like_solaris);
         target_option_val!(is_like_windows);
         target_option_val!(is_like_msvc);
+        target_option_val!(is_like_emscripten);
         target_option_val!(is_like_android);
         target_option_val!(linker_is_gnu);
         target_option_val!(allows_weak_linkage);

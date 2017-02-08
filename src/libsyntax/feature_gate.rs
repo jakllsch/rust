@@ -318,10 +318,13 @@ declare_features! (
     (active, abi_unadjusted, "1.16.0", None),
 
     // Macros 1.1
-    (active, proc_macro, "1.16.0", Some(35900)),
+    (active, proc_macro, "1.16.0", Some(38356)),
 
     // Allows attributes on struct literal fields.
     (active, struct_field_attributes, "1.16.0", Some(38814)),
+
+    // Allows #[link(kind="static-nobundle"...]
+    (active, static_nobundle, "1.16.0", Some(37403)),
 
     // `extern "msp430-interrupt" fn()`
     (active, abi_msp430_interrupt, "1.16.0", Some(38487)),
@@ -378,7 +381,7 @@ declare_features! (
     (accepted, dotdot_in_tuple_patterns, "1.14.0", Some(33627)),
     (accepted, item_like_imports, "1.14.0", Some(35120)),
     // Allows using `Self` and associated types in struct expressions and patterns.
-    (accepted, more_struct_aliases, "1.14.0", Some(37544)),
+    (accepted, more_struct_aliases, "1.16.0", Some(37544)),
 );
 // (changing above list without updating src/doc/reference.md makes @cmr sad)
 
@@ -954,12 +957,11 @@ pub const EXPLAIN_ALLOW_INTERNAL_UNSTABLE: &'static str =
     "allow_internal_unstable side-steps feature gating and stability checks";
 
 pub const EXPLAIN_CUSTOM_DERIVE: &'static str =
-    "`#[derive]` for custom traits is not stable enough for use. It is deprecated and will \
-     be removed in v1.15";
+    "`#[derive]` for custom traits is deprecated and will be removed in the future.";
 
 pub const EXPLAIN_DEPR_CUSTOM_DERIVE: &'static str =
-    "`#[derive]` for custom traits is deprecated and will be removed in v1.15. Prefer using \
-     procedural macro custom derive";
+    "`#[derive]` for custom traits is deprecated and will be removed in the future. \
+    Prefer using procedural macro custom derive.";
 
 pub const EXPLAIN_DERIVE_UNDERSCORE: &'static str =
     "attributes of the form `#[derive_*]` are reserved for the compiler";

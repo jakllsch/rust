@@ -655,7 +655,7 @@ fn external_path_params(cx: &DocContext, trait_did: Option<DefId>, has_self: boo
         Some(did) if cx.tcx.lang_items.fn_trait_kind(did).is_some() => {
             assert_eq!(types.len(), 1);
             let inputs = match types[0].sty {
-                ty::TyTuple(ref tys) => tys.iter().map(|t| t.clean(cx)).collect(),
+                ty::TyTuple(ref tys, _) => tys.iter().map(|t| t.clean(cx)).collect(),
                 _ => {
                     return PathParameters::AngleBracketed {
                         lifetimes: lifetimes,
@@ -667,7 +667,7 @@ fn external_path_params(cx: &DocContext, trait_did: Option<DefId>, has_self: boo
             let output = None;
             // FIXME(#20299) return type comes from a projection now
             // match types[1].sty {
-            //     ty::TyTuple(ref v) if v.is_empty() => None, // -> ()
+            //     ty::TyTuple(ref v, _) if v.is_empty() => None, // -> ()
             //     _ => Some(types[1].clean(cx))
             // };
             PathParameters::Parenthesized {
@@ -710,7 +710,7 @@ impl<'tcx> Clean<TyParamBound> for ty::TraitRef<'tcx> {
         // collect any late bound regions
         let mut late_bounds = vec![];
         for ty_s in self.input_types().skip(1) {
-            if let ty::TyTuple(ts) = ty_s.sty {
+            if let ty::TyTuple(ts, _) = ty_s.sty {
                 for &ty_s in ts {
                     if let ty::TyRef(ref reg, _) = ty_s.sty {
                         if let &ty::Region::ReLateBound(..) = *reg {
@@ -810,7 +810,7 @@ impl Clean<Option<Lifetime>> for ty::Region {
     fn clean(&self, cx: &DocContext) -> Option<Lifetime> {
         match *self {
             ty::ReStatic => Some(Lifetime::statik()),
-            ty::ReLateBound(_, ty::BrNamed(_, name, _)) => Some(Lifetime(name.to_string())),
+            ty::ReLateBound(_, ty::BrNamed(_, name)) => Some(Lifetime(name.to_string())),
             ty::ReEarlyBound(ref data) => Some(Lifetime(data.name.clean(cx))),
 
             ty::ReLateBound(..) |
@@ -1895,7 +1895,7 @@ impl<'tcx> Clean<Type> for ty::Ty<'tcx> {
                     Never
                 }
             }
-            ty::TyTuple(ref t) => Tuple(t.clean(cx)),
+            ty::TyTuple(ref t, _) => Tuple(t.clean(cx)),
 
             ty::TyProjection(ref data) => data.clean(cx),
 
