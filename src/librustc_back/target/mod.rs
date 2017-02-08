@@ -177,9 +177,9 @@ supported_targets! {
     ("i686-unknown-openbsd", i686_unknown_openbsd),
     ("x86_64-unknown-openbsd", x86_64_unknown_openbsd),
 
-    ("arm-unknown-netbsdelf-eabi", arm_unknown_netbsdelf_eabi),
-    ("armv6-unknown-netbsdelf-eabihf", armv6_unknown_netbsdelf_eabihf),
-    ("armv7-unknown-netbsdelf-eabihf", armv7_unknown_netbsdelf_eabihf),
+    ("arm-unknown-netbsd-eabi", arm_unknown_netbsd_eabi),
+    ("armv6-unknown-netbsd-eabihf", armv6_unknown_netbsd_eabihf),
+    ("armv7-unknown-netbsd-eabihf", armv7_unknown_netbsd_eabihf),
     ("i686-unknown-netbsd", i686_unknown_netbsd),
     ("powerpc-unknown-netbsd", powerpc_unknown_netbsd),
     ("sparc64-unknown-netbsd", sparc64_unknown_netbsd),
