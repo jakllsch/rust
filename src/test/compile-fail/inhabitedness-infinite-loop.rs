@@ -1,4 +1,4 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,13 +8,18 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-macro_rules! foo {
-    ($a:expr) => $a; //~ ERROR macro rhs must be delimited
+// error-pattern:reached recursion limit
+
+#![feature(never_type)]
+
+struct Foo<'a, T: 'a> {
+    ph: std::marker::PhantomData<T>,
+    foo: &'a Foo<'a, (T, T)>,
 }
 
-fn main() {
-    foo!(0); // Check that we report errors at macro definition, not expansion.
-
-    let _: cfg!(foo) = (); //~ ERROR non-type macro in type position
-    derive!(); //~ ERROR macro undefined: `derive`
+fn wub(f: Foo<!>) {
+    match f {}
 }
+
+fn main() {}
+

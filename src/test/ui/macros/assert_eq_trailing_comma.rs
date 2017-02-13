@@ -1,4 +1,4 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,16 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// Test that diagnostic macros are gated by `rustc_diagnostic_macros` feature
-// gate
-
-__register_diagnostic!(E0001);
-//~^ ERROR macro undefined: `__register_diagnostic`
-
 fn main() {
-    __diagnostic_used!(E0001);
-    //~^ ERROR macro undefined: `__diagnostic_used`
+    assert_eq!(1, 1,);
 }
-
-__build_diagnostic_array!(DIAGNOSTICS);
-//~^ ERROR macro undefined: `__build_diagnostic_array`
