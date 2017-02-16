@@ -13,13 +13,14 @@ RUN yum upgrade -y && yum install -y \
       file \
       xz \
       which \
-      pkg-config \
+      pkgconfig \
       wget \
       autoconf \
       gettext
 
 ENV PATH=/rustroot/bin:$PATH
 ENV LD_LIBRARY_PATH=/rustroot/lib64:/rustroot/lib
+ENV PKG_CONFIG_PATH=/rustroot/lib/pkgconfig
 WORKDIR /tmp
 COPY shared.sh build-binutils.sh /tmp/
 
@@ -81,5 +82,9 @@ RUN curl -L https://api.pub.build.mozilla.org/tooltool/sha512/$SCCACHE_DIGEST | 
 ENV HOSTS=i686-unknown-linux-gnu
 ENV HOSTS=$HOSTS,x86_64-unknown-linux-gnu
 
-ENV RUST_CONFIGURE_ARGS --host=$HOSTS --enable-extended --enable-sanitizers
+ENV RUST_CONFIGURE_ARGS \
+      --host=$HOSTS \
+      --enable-extended \
+      --enable-sanitizers
 ENV SCRIPT python2.7 ../x.py dist --host $HOSTS --target $HOSTS
+ENV DIST_SRC 1

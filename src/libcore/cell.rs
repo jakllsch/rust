@@ -186,6 +186,7 @@ use fmt::{self, Debug, Display};
 use marker::Unsize;
 use mem;
 use ops::{Deref, DerefMut, CoerceUnsized};
+use ptr;
 
 /// A mutable memory location.
 ///
@@ -211,6 +212,102 @@ impl<T:Copy> Cell<T> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn get(&self) -> T {
         unsafe{ *self.value.get() }
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+unsafe impl<T> Send for Cell<T> where T: Send {}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl<T> !Sync for Cell<T> {}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl<T:Copy> Clone for Cell<T> {
+    #[inline]
+    fn clone(&self) -> Cell<T> {
+        Cell::new(self.get())
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl<T:Default> Default for Cell<T> {
+    /// Creates a `Cell<T>`, with the `Default` value for T.
+    #[inline]
+    fn default() -> Cell<T> {
+        Cell::new(Default::default())
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl<T:PartialEq + Copy> PartialEq for Cell<T> {
+    #[inline]
+    fn eq(&self, other: &Cell<T>) -> bool {
+        self.get() == other.get()
+    }
+}
+
+#[stable(feature = "cell_eq", since = "1.2.0")]
+impl<T:Eq + Copy> Eq for Cell<T> {}
+
+#[stable(feature = "cell_ord", since = "1.10.0")]
+impl<T:PartialOrd + Copy> PartialOrd for Cell<T> {
+    #[inline]
+    fn partial_cmp(&self, other: &Cell<T>) -> Option<Ordering> {
+        self.get().partial_cmp(&other.get())
+    }
+
+    #[inline]
+    fn lt(&self, other: &Cell<T>) -> bool {
+        self.get() < other.get()
+    }
+
+    #[inline]
+    fn le(&self, other: &Cell<T>) -> bool {
+        self.get() <= other.get()
+    }
+
+    #[inline]
+    fn gt(&self, other: &Cell<T>) -> bool {
+        self.get() > other.get()
+    }
+
+    #[inline]
+    fn ge(&self, other: &Cell<T>) -> bool {
+        self.get() >= other.get()
+    }
+}
+
+#[stable(feature = "cell_ord", since = "1.10.0")]
+impl<T:Ord + Copy> Ord for Cell<T> {
+    #[inline]
+    fn cmp(&self, other: &Cell<T>) -> Ordering {
+        self.get().cmp(&other.get())
+    }
+}
+
+#[stable(feature = "cell_from", since = "1.12.0")]
+impl<T> From<T> for Cell<T> {
+    fn from(t: T) -> Cell<T> {
+        Cell::new(t)
+    }
+}
+
+impl<T> Cell<T> {
+    /// Creates a new `Cell` containing the given value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::cell::Cell;
+    ///
+    /// let c = Cell::new(5);
+    /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
+    #[inline]
+    pub const fn new(value: T) -> Cell<T> {
+        Cell {
+            value: UnsafeCell::new(value),
+        }
     }
 
     /// Returns a reference to the underlying `UnsafeCell`.
@@ -272,102 +369,6 @@ impl<T:Copy> Cell<T> {
             &mut *self.value.get()
         }
     }
-}
-
-#[stable(feature = "rust1", since = "1.0.0")]
-unsafe impl<T> Send for Cell<T> where T: Send {}
-
-#[stable(feature = "rust1", since = "1.0.0")]
-impl<T> !Sync for Cell<T> {}
-
-#[stable(feature = "rust1", since = "1.0.0")]
-impl<T:Copy> Clone for Cell<T> {
-    #[inline]
-    fn clone(&self) -> Cell<T> {
-        Cell::new(self.get())
-    }
-}
-
-#[stable(feature = "rust1", since = "1.0.0")]
-impl<T:Default + Copy> Default for Cell<T> {
-    /// Creates a `Cell<T>`, with the `Default` value for T.
-    #[inline]
-    fn default() -> Cell<T> {
-        Cell::new(Default::default())
-    }
-}
-
-#[stable(feature = "rust1", since = "1.0.0")]
-impl<T:PartialEq + Copy> PartialEq for Cell<T> {
-    #[inline]
-    fn eq(&self, other: &Cell<T>) -> bool {
-        self.get() == other.get()
-    }
-}
-
-#[stable(feature = "cell_eq", since = "1.2.0")]
-impl<T:Eq + Copy> Eq for Cell<T> {}
-
-#[stable(feature = "cell_ord", since = "1.10.0")]
-impl<T:PartialOrd + Copy> PartialOrd for Cell<T> {
-    #[inline]
-    fn partial_cmp(&self, other: &Cell<T>) -> Option<Ordering> {
-        self.get().partial_cmp(&other.get())
-    }
-
-    #[inline]
-    fn lt(&self, other: &Cell<T>) -> bool {
-        self.get() < other.get()
-    }
-
-    #[inline]
-    fn le(&self, other: &Cell<T>) -> bool {
-        self.get() <= other.get()
-    }
-
-    #[inline]
-    fn gt(&self, other: &Cell<T>) -> bool {
-        self.get() > other.get()
-    }
-
-    #[inline]
-    fn ge(&self, other: &Cell<T>) -> bool {
-        self.get() >= other.get()
-    }
-}
-
-#[stable(feature = "cell_ord", since = "1.10.0")]
-impl<T:Ord + Copy> Ord for Cell<T> {
-    #[inline]
-    fn cmp(&self, other: &Cell<T>) -> Ordering {
-        self.get().cmp(&other.get())
-    }
-}
-
-#[stable(feature = "cell_from", since = "1.12.0")]
-impl<T: Copy> From<T> for Cell<T> {
-    fn from(t: T) -> Cell<T> {
-        Cell::new(t)
-    }
-}
-
-impl<T> Cell<T> {
-    /// Creates a new `Cell` containing the given value.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::cell::Cell;
-    ///
-    /// let c = Cell::new(5);
-    /// ```
-    #[stable(feature = "rust1", since = "1.0.0")]
-    #[inline]
-    pub const fn new(value: T) -> Cell<T> {
-        Cell {
-            value: UnsafeCell::new(value),
-        }
-    }
 
     /// Sets the contained value.
     ///
@@ -385,6 +386,32 @@ impl<T> Cell<T> {
     pub fn set(&self, val: T) {
         let old = self.replace(val);
         drop(old);
+    }
+
+    /// Swaps the values of two Cells.
+    /// Difference with `std::mem::swap` is that this function doesn't require `&mut` reference.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(move_cell)]
+    /// use std::cell::Cell;
+    ///
+    /// let c1 = Cell::new(5i32);
+    /// let c2 = Cell::new(10i32);
+    /// c1.swap(&c2);
+    /// assert_eq!(10, c1.get());
+    /// assert_eq!(5, c2.get());
+    /// ```
+    #[inline]
+    #[unstable(feature = "move_cell", issue = "39264")]
+    pub fn swap(&self, other: &Self) {
+        if ptr::eq(self, other) {
+            return;
+        }
+        unsafe {
+            ptr::swap(self.value.get(), other.value.get());
+        }
     }
 
     /// Replaces the contained value.

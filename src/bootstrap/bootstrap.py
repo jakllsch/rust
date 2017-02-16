@@ -294,6 +294,8 @@ class RustBuild(object):
             raise Exception("no cargo executable found at `%s`" % self.cargo())
         args = [self.cargo(), "build", "--manifest-path",
                 os.path.join(self.rust_root, "src/bootstrap/Cargo.toml")]
+        if self.use_locked_deps:
+            args.append("--locked")
         if self.use_vendored_sources:
             args.append("--frozen")
         self.run(args, env)
@@ -315,7 +317,7 @@ class RustBuild(object):
         try:
             ostype = subprocess.check_output(['uname', '-s']).strip().decode(default_encoding)
             cputype = subprocess.check_output(['uname', '-m']).strip().decode(default_encoding)
-        except (subprocess.CalledProcessError, WindowsError):
+        except (subprocess.CalledProcessError, OSError):
             if sys.platform == 'win32':
                 return 'x86_64-pc-windows-msvc'
             err = "uname not found"
@@ -345,6 +347,21 @@ class RustBuild(object):
             ostype = 'unknown-openbsd'
         elif ostype == 'NetBSD':
             ostype = 'unknown-netbsd'
+        elif ostype == 'SunOS':
+            ostype = 'sun-solaris'
+            # On Solaris, uname -m will return a machine classification instead
+            # of a cpu type, so uname -p is recommended instead.  However, the
+            # output from that option is too generic for our purposes (it will
+            # always emit 'i386' on x86/amd64 systems).  As such, isainfo -k
+            # must be used instead.
+            try:
+                cputype = subprocess.check_output(['isainfo',
+                  '-k']).strip().decode(default_encoding)
+            except (subprocess.CalledProcessError, OSError):
+                err = "isainfo not found"
+                if self.verbose:
+                    raise Exception(err)
+                sys.exit(err)
         elif ostype == 'Darwin':
             ostype = 'apple-darwin'
         elif ostype.startswith('MINGW'):
@@ -439,6 +456,9 @@ def main():
 
     rb.use_vendored_sources = '\nvendor = true' in rb.config_toml or \
                               'CFG_ENABLE_VENDOR' in rb.config_mk
+
+    rb.use_locked_deps = '\nlocked-deps = true' in rb.config_toml or \
+                         'CFG_ENABLE_LOCKED_DEPS' in rb.config_mk
 
     if 'SUDO_USER' in os.environ and not rb.use_vendored_sources:
         if os.environ.get('USER') != os.environ['SUDO_USER']:

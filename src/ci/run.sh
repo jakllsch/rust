@@ -23,6 +23,11 @@ fi
 RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --enable-sccache"
 RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --enable-quiet-tests"
 RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --disable-manage-submodules"
+RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --enable-locked-deps"
+
+if [ "$DIST_SRC" = "" ]; then
+  RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --disable-dist-src"
+fi
 
 # If we're deploying artifacts then we set the release channel, otherwise if
 # we're not deploying then we want to be sure to enable all assertions becauase
@@ -30,11 +35,13 @@ RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --disable-manage-submodules"
 #
 # FIXME: need a scheme for changing this `nightly` value to `beta` and `stable`
 #        either automatically or manually.
-if [ "$DEPLOY" != "" ]; then
+if [ "$DEPLOY$DEPLOY_ALT" != "" ]; then
   RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --release-channel=nightly"
   RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --enable-llvm-static-stdcpp"
 
   if [ "$NO_LLVM_ASSERTIONS" = "1" ]; then
+    RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --disable-llvm-assertions"
+  elif [ "$DEPLOY_ALT" != "" ]; then
     RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --disable-llvm-assertions"
   fi
 else
@@ -45,13 +52,6 @@ else
   if [ "$NO_LLVM_ASSERTIONS" = "" ]; then
     RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --enable-llvm-assertions"
   fi
-fi
-
-# We want to enable usage of the `src/vendor` dir as much as possible, but not
-# all test suites have all their deps in there (just the main bootstrap) so we
-# have the ability to disable this flag
-if [ "$NO_VENDOR" = "" ]; then
-  RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --enable-vendor"
 fi
 
 set -ex
