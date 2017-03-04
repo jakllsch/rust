@@ -548,6 +548,9 @@ impl<T> Vec<T> {
     /// The [`drain`] method can emulate `truncate`, but causes the excess
     /// elements to be returned instead of dropped.
     ///
+    /// Note that this method has no effect on the allocated capacity
+    /// of the vector.
+    ///
     /// # Examples
     ///
     /// Truncating a five element vector to two elements:
@@ -1091,6 +1094,9 @@ impl<T> Vec<T> {
     }
 
     /// Clears the vector, removing all values.
+    ///
+    /// Note that this method has no effect on the allocated capacity
+    /// of the vector.
     ///
     /// # Examples
     ///
@@ -1776,6 +1782,7 @@ array_impls! {
     30 31 32
 }
 
+/// Implements comparison of vectors, lexicographically.
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: PartialOrd> PartialOrd for Vec<T> {
     #[inline]
@@ -1787,6 +1794,7 @@ impl<T: PartialOrd> PartialOrd for Vec<T> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Eq> Eq for Vec<T> {}
 
+/// Implements ordering of vectors, lexicographically.
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Ord> Ord for Vec<T> {
     #[inline]

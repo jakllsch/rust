@@ -119,7 +119,7 @@ there are no arguments, and `{` starts the body of the function. Because
 we didn’t include a return type, it’s assumed to be `()`, an empty
 [tuple][tuples].
 
-[tuples]: primitive-types.html#Tuples
+[tuples]: primitive-types.html#tuples
 
 ```rust,ignore
     println!("Guess the number!");
@@ -255,7 +255,7 @@ and other whitespace. This helps you split up long lines. We _could_ have
 done:
 
 ```rust,ignore
-    io::stdin().read_line(&mut guess).expect("failed to read line");
+    io::stdin().read_line(&mut guess).expect("Failed to read line");
 ```
 
 But that gets hard to read. So we’ve split it up, two lines for two method
@@ -473,7 +473,7 @@ fn main() {
     let mut guess = String::new();
 
     io::stdin().read_line(&mut guess)
-        .expect("failed to read line");
+        .expect("Failed to read line");
 
     println!("You guessed: {}", guess);
 }
@@ -563,7 +563,7 @@ fn main() {
     let mut guess = String::new();
 
     io::stdin().read_line(&mut guess)
-        .expect("failed to read line");
+        .expect("Failed to read line");
 
     println!("You guessed: {}", guess);
 
@@ -678,7 +678,7 @@ fn main() {
     let mut guess = String::new();
 
     io::stdin().read_line(&mut guess)
-        .expect("failed to read line");
+        .expect("Failed to read line");
 
     let guess: u32 = guess.trim().parse()
         .expect("Please type a number!");
@@ -727,7 +727,7 @@ thirty-two bit integer. Rust has [a number of built-in number types][number],
 but we’ve chosen `u32`. It’s a good default choice for a small positive number.
 
 [parse]: ../std/primitive.str.html#method.parse
-[number]: primitive-types.html#Numeric%20types
+[number]: primitive-types.html#numeric-types
 
 Just like `read_line()`, our call to `parse()` could cause an error. What if
 our string contained `A👍%`? There’d be no way to convert that to a number. As
@@ -780,7 +780,7 @@ fn main() {
         let mut guess = String::new();
 
         io::stdin().read_line(&mut guess)
-            .expect("failed to read line");
+            .expect("Failed to read line");
 
         let guess: u32 = guess.trim().parse()
             .expect("Please type a number!");
@@ -847,7 +847,7 @@ fn main() {
         let mut guess = String::new();
 
         io::stdin().read_line(&mut guess)
-            .expect("failed to read line");
+            .expect("Failed to read line");
 
         let guess: u32 = guess.trim().parse()
             .expect("Please type a number!");
@@ -892,7 +892,7 @@ fn main() {
         let mut guess = String::new();
 
         io::stdin().read_line(&mut guess)
-            .expect("failed to read line");
+            .expect("Failed to read line");
 
         let guess: u32 = match guess.trim().parse() {
             Ok(num) => num,
@@ -981,7 +981,7 @@ fn main() {
         let mut guess = String::new();
 
         io::stdin().read_line(&mut guess)
-            .expect("failed to read line");
+            .expect("Failed to read line");
 
         let guess: u32 = match guess.trim().parse() {
             Ok(num) => num,

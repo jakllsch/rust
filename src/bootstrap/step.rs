@@ -26,7 +26,7 @@
 //! along with the actual implementation elsewhere. You can find more comments
 //! about how to define rules themselves below.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::mem;
 
 use check::{self, TestKind};
@@ -246,14 +246,14 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
     crate_rule(build,
                &mut rules,
                "libstd-link",
-               "build-crate-std_shim",
+               "build-crate-std",
                compile::std_link)
         .dep(|s| s.name("startup-objects"))
         .dep(|s| s.name("create-sysroot").target(s.host));
     crate_rule(build,
                &mut rules,
                "libtest-link",
-               "build-crate-test_shim",
+               "build-crate-test",
                compile::test_link)
         .dep(|s| s.name("libstd-link"));
     crate_rule(build,
@@ -263,13 +263,13 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
                compile::rustc_link)
         .dep(|s| s.name("libtest-link"));
 
-    for (krate, path, _default) in krates("std_shim") {
+    for (krate, path, _default) in krates("std") {
         rules.build(&krate.build_step, path)
              .dep(|s| s.name("startup-objects"))
              .dep(move |s| s.name("rustc").host(&build.config.build).target(s.host))
              .run(move |s| compile::std(build, s.target, &s.compiler()));
     }
-    for (krate, path, _default) in krates("test_shim") {
+    for (krate, path, _default) in krates("test") {
         rules.build(&krate.build_step, path)
              .dep(|s| s.name("libstd-link"))
              .run(move |s| compile::test(build, s.target, &s.compiler()));
@@ -384,7 +384,7 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
               "pretty", "run-fail-fulldeps");
     }
 
-    for (krate, path, _default) in krates("std_shim") {
+    for (krate, path, _default) in krates("std") {
         rules.test(&krate.test_step, path)
              .dep(|s| s.name("libtest"))
              .dep(|s| s.name("emulator-copy-libs"))
@@ -400,7 +400,7 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
                                     Mode::Libstd, TestKind::Test, None));
 
     // std benchmarks
-    for (krate, path, _default) in krates("std_shim") {
+    for (krate, path, _default) in krates("std") {
         rules.bench(&krate.bench_step, path)
              .dep(|s| s.name("libtest"))
              .dep(|s| s.name("emulator-copy-libs"))
@@ -415,7 +415,7 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
          .run(move |s| check::krate(build, &s.compiler(), s.target,
                                     Mode::Libstd, TestKind::Bench, None));
 
-    for (krate, path, _default) in krates("test_shim") {
+    for (krate, path, _default) in krates("test") {
         rules.test(&krate.test_step, path)
              .dep(|s| s.name("libtest"))
              .dep(|s| s.name("emulator-copy-libs"))
@@ -568,6 +568,24 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
          })
          .default(build.config.docs)
          .run(move |s| doc::rustbook(build, s.target, "nomicon"));
+    rules.doc("doc-reference", "src/doc/reference")
+         .dep(move |s| {
+             s.name("tool-rustbook")
+              .host(&build.config.build)
+              .target(&build.config.build)
+              .stage(0)
+         })
+         .default(build.config.docs)
+         .run(move |s| doc::rustbook(build, s.target, "reference"));
+    rules.doc("doc-unstable-book", "src/doc/unstable-book")
+         .dep(move |s| {
+             s.name("tool-rustbook")
+              .host(&build.config.build)
+              .target(&build.config.build)
+              .stage(0)
+         })
+         .default(build.config.docs)
+         .run(move |s| doc::rustbook(build, s.target, "unstable-book"));
     rules.doc("doc-standalone", "src/doc")
          .dep(move |s| {
              s.name("rustc")
@@ -583,13 +601,13 @@ pub fn build_rules<'a>(build: &'a Build) -> Rules {
          .default(build.config.docs)
          .host(true)
          .run(move |s| doc::error_index(build, s.target));
-    for (krate, path, default) in krates("std_shim") {
+    for (krate, path, default) in krates("std") {
         rules.doc(&krate.doc_step, path)
              .dep(|s| s.name("libstd-link"))
              .default(default && build.config.docs)
              .run(move |s| doc::std(build, s.stage, s.target));
     }
-    for (krate, path, default) in krates("test_shim") {
+    for (krate, path, default) in krates("test") {
         rules.doc(&krate.doc_step, path)
              .dep(|s| s.name("libtest-link"))
              .default(default && build.config.compiler_docs)
@@ -848,7 +866,7 @@ impl<'a, 'b> Drop for RuleBuilder<'a, 'b> {
 pub struct Rules<'a> {
     build: &'a Build,
     sbuild: Step<'a>,
-    rules: HashMap<&'a str, Rule<'a>>,
+    rules: BTreeMap<&'a str, Rule<'a>>,
 }
 
 impl<'a> Rules<'a> {
@@ -861,7 +879,7 @@ impl<'a> Rules<'a> {
                 host: &build.config.build,
                 name: "",
             },
-            rules: HashMap::new(),
+            rules: BTreeMap::new(),
         }
     }
 
@@ -967,6 +985,8 @@ invalid rule dependency graph detected, was a rule added and maybe typo'd?
         // 2. Next, we determine which rules we're actually executing. If a
         //    number of path filters were specified on the command line we look
         //    for those, otherwise we look for anything tagged `default`.
+        //    Here we also compute the priority of each rule based on how early
+        //    in the command line the matching path filter showed up.
         //
         // 3. Finally, we generate some steps with host and target information.
         //
@@ -997,11 +1017,22 @@ invalid rule dependency graph detected, was a rule added and maybe typo'd?
             Subcommand::Clean => panic!(),
         };
 
-        self.rules.values().filter(|rule| rule.kind == kind).filter(|rule| {
-            (paths.len() == 0 && rule.default) || paths.iter().any(|path| {
-                path.ends_with(rule.path)
-            })
-        }).flat_map(|rule| {
+        let mut rules: Vec<_> = self.rules.values().filter_map(|rule| {
+            if rule.kind != kind {
+                return None;
+            }
+
+            if paths.len() == 0 && rule.default {
+                Some((rule, 0))
+            } else {
+                paths.iter().position(|path| path.ends_with(rule.path))
+                     .map(|priority| (rule, priority))
+            }
+        }).collect();
+
+        rules.sort_by_key(|&(_, priority)| priority);
+
+        rules.into_iter().flat_map(|(rule, _)| {
             let hosts = if rule.only_host_build || rule.only_build {
                 &self.build.config.host[..1]
             } else if self.build.flags.host.len() > 0 {
@@ -1154,23 +1185,23 @@ mod tests {
 
         let mut build = Build::new(flags, config);
         let cwd = env::current_dir().unwrap();
-        build.crates.insert("std_shim".to_string(), ::Crate {
-            name: "std_shim".to_string(),
+        build.crates.insert("std".to_string(), ::Crate {
+            name: "std".to_string(),
             deps: Vec::new(),
-            path: cwd.join("src/std_shim"),
-            doc_step: "doc-std_shim".to_string(),
-            build_step: "build-crate-std_shim".to_string(),
-            test_step: "test-std_shim".to_string(),
-            bench_step: "bench-std_shim".to_string(),
+            path: cwd.join("src/std"),
+            doc_step: "doc-std".to_string(),
+            build_step: "build-crate-std".to_string(),
+            test_step: "test-std".to_string(),
+            bench_step: "bench-std".to_string(),
         });
-        build.crates.insert("test_shim".to_string(), ::Crate {
-            name: "test_shim".to_string(),
+        build.crates.insert("test".to_string(), ::Crate {
+            name: "test".to_string(),
             deps: Vec::new(),
-            path: cwd.join("src/test_shim"),
-            doc_step: "doc-test_shim".to_string(),
-            build_step: "build-crate-test_shim".to_string(),
-            test_step: "test-test_shim".to_string(),
-            bench_step: "bench-test_shim".to_string(),
+            path: cwd.join("src/test"),
+            doc_step: "doc-test".to_string(),
+            build_step: "build-crate-test".to_string(),
+            test_step: "test-test".to_string(),
+            bench_step: "bench-test".to_string(),
         });
         build.crates.insert("rustc-main".to_string(), ::Crate {
             name: "rustc-main".to_string(),
@@ -1360,7 +1391,7 @@ mod tests {
         let all = rules.expand(&plan);
         println!("all rules: {:#?}", all);
         assert!(!all.contains(&step.name("rustc")));
-        assert!(!all.contains(&step.name("build-crate-std_shim").stage(1)));
+        assert!(!all.contains(&step.name("build-crate-std").stage(1)));
 
         // all stage0 compiles should be for the build target, A
         for step in all.iter().filter(|s| s.stage == 0) {
@@ -1425,7 +1456,7 @@ mod tests {
 
         assert!(!plan.iter().any(|s| s.name.contains("rustc")));
         assert!(plan.iter().all(|s| {
-            !s.name.contains("test_shim") || s.target == "C"
+            !s.name.contains("test") || s.target == "C"
         }));
     }
 

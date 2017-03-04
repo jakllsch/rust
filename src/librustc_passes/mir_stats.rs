@@ -19,7 +19,7 @@ use rustc::mir::{Constant, Literal, Location, LocalDecl};
 use rustc::mir::{Lvalue, LvalueElem, LvalueProjection};
 use rustc::mir::{Mir, Operand, ProjectionElem};
 use rustc::mir::{Rvalue, SourceInfo, Statement, StatementKind};
-use rustc::mir::{Terminator, TerminatorKind, TypedConstVal, VisibilityScope, VisibilityScopeData};
+use rustc::mir::{Terminator, TerminatorKind, VisibilityScope, VisibilityScopeData};
 use rustc::mir::visit as mir_visit;
 use rustc::mir::visit::Visitor;
 use rustc::ty::{ClosureSubsts, TyCtxt};
@@ -44,7 +44,7 @@ pub fn print_mir_stats<'tcx, 'a>(tcx: TyCtxt<'a, 'tcx, 'tcx>, title: &str) {
     // For debugging instrumentation like this, we don't need to worry
     // about maintaining the dep graph.
     let _ignore = tcx.dep_graph.in_ignore();
-    let mir_map = tcx.mir_map.borrow();
+    let mir_map = tcx.maps.mir.borrow();
     for def_id in mir_map.keys() {
         let mir = mir_map.get(&def_id).unwrap();
         collector.visit_mir(&mir.borrow());
@@ -191,7 +191,7 @@ impl<'a, 'tcx> mir_visit::Visitor<'tcx> for StatCollector<'a, 'tcx> {
                 // AggregateKind is not distinguished by visit API, so
                 // record it. (`super_rvalue` handles `_operands`.)
                 self.record(match *kind {
-                    AggregateKind::Array => "AggregateKind::Array",
+                    AggregateKind::Array(_) => "AggregateKind::Array",
                     AggregateKind::Tuple => "AggregateKind::Tuple",
                     AggregateKind::Adt(..) => "AggregateKind::Adt",
                     AggregateKind::Closure(..) => "AggregateKind::Closure",
@@ -295,13 +295,6 @@ impl<'a, 'tcx> mir_visit::Visitor<'tcx> for StatCollector<'a, 'tcx> {
                          _: Location) {
         self.record("ConstUsize", const_usize);
         self.super_const_usize(const_usize);
-    }
-
-    fn visit_typed_const_val(&mut self,
-                             val: &TypedConstVal<'tcx>,
-                             location: Location) {
-        self.record("TypedConstVal", val);
-        self.super_typed_const_val(val, location);
     }
 
     fn visit_local_decl(&mut self,

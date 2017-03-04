@@ -101,7 +101,7 @@ trees, at compile time. The semicolon is optional on the last (here, only)
 case. The "pattern" on the left-hand side of `=>` is known as a ‘matcher’.
 These have [their own little grammar] within the language.
 
-[their own little grammar]: ../reference.html#macros
+[their own little grammar]: ../reference/macros.html
 
 The matcher `$x:expr` will match any Rust expression, binding that syntax tree
 to the ‘metavariable’ `$x`. The identifier `expr` is a ‘fragment specifier’;
@@ -363,7 +363,7 @@ fn main() {
 }
 ```
 
-[items]: ../reference.html#items
+[items]: ../reference/items.html
 
 # Recursive macros
 
@@ -430,7 +430,7 @@ Even when Rust code contains un-expanded macros, it can be parsed as a full
 tools that process code. It also has a few consequences for the design of
 Rust’s macro system.
 
-[ast]: glossary.html#Abstract%20Syntax%20Tree
+[ast]: glossary.html#abstract-syntax-tree
 
 One consequence is that Rust must determine, when it parses a macro invocation,
 whether the macro stands in for
@@ -490,7 +490,7 @@ be forced to choose between parsing `$i` and parsing `$e`. Changing the
 invocation syntax to put a distinctive token in front can solve the problem. In
 this case, you can write `$(I $i:ident)* E $e:expr`.
 
-[item]: ../reference.html#items
+[item]: ../reference/items.html
 
 # Scoping and macro import/export
 
@@ -565,7 +565,7 @@ When this library is loaded with `#[macro_use] extern crate`, only `m2` will
 be imported.
 
 The Rust Reference has a [listing of macro-related
-attributes](../reference.html#macro-related-attributes).
+attributes](../reference/attributes.html#macro-related-attributes).
 
 # The variable `$crate`
 
@@ -761,12 +761,3 @@ to typecheck, and don’t want to worry about writing out the body of the
 function. One example of this situation is implementing a trait with multiple
 required methods, where you want to tackle one at a time. Define the others
 as `unimplemented!` until you’re ready to write them.
-
-# Procedural macros
-
-If Rust’s macro system can’t do what you need, you may want to write a
-[compiler plugin](compiler-plugins.html) instead. Compared to `macro_rules!`
-macros, this is significantly more work, the interfaces are much less stable,
-and bugs can be much harder to track down. In exchange you get the
-flexibility of running arbitrary Rust code within the compiler. Syntax
-extension plugins are sometimes called ‘procedural macros’ for this reason.

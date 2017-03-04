@@ -542,7 +542,7 @@ impl<'tcx> Terminator<'tcx> {
 impl<'tcx> TerminatorKind<'tcx> {
     pub fn if_<'a, 'gcx>(tcx: ty::TyCtxt<'a, 'gcx, 'tcx>, cond: Operand<'tcx>,
                          t: BasicBlock, f: BasicBlock) -> TerminatorKind<'tcx> {
-        static BOOL_SWITCH_FALSE: &'static [ConstInt] = &[ConstInt::Infer(0)];
+        static BOOL_SWITCH_FALSE: &'static [ConstInt] = &[ConstInt::U8(0)];
         TerminatorKind::SwitchInt {
             discr: cond,
             switch_ty: tcx.types.bool,
@@ -983,7 +983,7 @@ pub enum Rvalue<'tcx> {
     Use(Operand<'tcx>),
 
     /// [x; 32]
-    Repeat(Operand<'tcx>, TypedConstVal<'tcx>),
+    Repeat(Operand<'tcx>, ConstUsize),
 
     /// &x or &mut x
     Ref(&'tcx Region, BorrowKind, Lvalue<'tcx>),
@@ -1022,6 +1022,9 @@ pub enum CastKind {
     /// Convert unique, zero-sized type for a fn to fn()
     ReifyFnPointer,
 
+    /// Convert non capturing closure to fn()
+    ClosureFnPointer,
+
     /// Convert safe fn() to unsafe fn()
     UnsafeFnPointer,
 
@@ -1035,7 +1038,8 @@ pub enum CastKind {
 
 #[derive(Clone, Debug, PartialEq, Eq, RustcEncodable, RustcDecodable)]
 pub enum AggregateKind<'tcx> {
-    Array,
+    /// The type is of the element
+    Array(Ty<'tcx>),
     Tuple,
     /// The second field is variant number (discriminant), it's equal to 0
     /// for struct and union expressions. The fourth field is active field
@@ -1132,7 +1136,7 @@ impl<'tcx> Debug for Rvalue<'tcx> {
                 }
 
                 match *kind {
-                    AggregateKind::Array => write!(fmt, "{:?}", lvs),
+                    AggregateKind::Array(_) => write!(fmt, "{:?}", lvs),
 
                     AggregateKind::Tuple => {
                         match lvs.len() {
@@ -1199,19 +1203,6 @@ pub struct Constant<'tcx> {
     pub literal: Literal<'tcx>,
 }
 
-#[derive(Clone, RustcEncodable, RustcDecodable)]
-pub struct TypedConstVal<'tcx> {
-    pub ty: Ty<'tcx>,
-    pub span: Span,
-    pub value: ConstUsize,
-}
-
-impl<'tcx> Debug for TypedConstVal<'tcx> {
-    fn fmt(&self, fmt: &mut Formatter) -> fmt::Result {
-        write!(fmt, "const {}", ConstInt::Usize(self.value))
-    }
-}
-
 newtype_index!(Promoted, "promoted");
 
 #[derive(Clone, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
@@ -1221,7 +1212,7 @@ pub enum Literal<'tcx> {
         substs: &'tcx Substs<'tcx>,
     },
     Value {
-        value: ConstVal,
+        value: ConstVal<'tcx>,
     },
     Promoted {
         // Index into the `promoted` vector of `Mir`.
@@ -1268,7 +1259,7 @@ fn fmt_const_val<W: Write>(fmt: &mut W, const_val: &ConstVal) -> fmt::Result {
             write!(fmt, "b\"{}\"", escaped)
         }
         Bool(b) => write!(fmt, "{:?}", b),
-        Function(def_id) => write!(fmt, "{}", item_path_str(def_id)),
+        Function(def_id, _) => write!(fmt, "{}", item_path_str(def_id)),
         Struct(_) | Tuple(_) | Array(_) | Repeat(..) =>
             bug!("ConstVal `{:?}` should not be in MIR", const_val),
         Char(c) => write!(fmt, "{:?}", c),

@@ -43,19 +43,16 @@ use {ast, attr};
 use codemap::{self, CodeMap, Spanned, spanned, respan};
 use syntax_pos::{self, Span, Pos, BytePos, mk_sp};
 use errors::{self, DiagnosticBuilder};
-use ext::tt::macro_parser;
-use parse;
-use parse::classify;
+use parse::{self, classify, token};
 use parse::common::SeqSep;
 use parse::lexer::TokenAndSpan;
 use parse::obsolete::ObsoleteSyntax;
-use parse::token::{self, MatchNt, SubstNt};
 use parse::{new_sub_parser_from_file, ParseSess, Directory, DirectoryOwnership};
 use util::parser::{AssocOp, Fixity};
 use print::pprust;
 use ptr::P;
 use parse::PResult;
-use tokenstream::{self, Delimited, SequenceRepetition, TokenTree};
+use tokenstream::{Delimited, TokenTree};
 use symbol::{Symbol, keywords};
 use util::ThinVec;
 
@@ -168,8 +165,6 @@ pub struct Parser<'a> {
     /// the previous token kind
     prev_token_kind: PrevTokenKind,
     pub restrictions: Restrictions,
-    pub quote_depth: usize, // not (yet) related to the quasiquoter
-    parsing_token_tree: bool,
     /// The set of seen errors about obsolete syntax. Used to suppress
     /// extra detail when the same error is seen twice
     pub obsolete_set: HashSet<ObsoleteSyntax>,
@@ -219,7 +214,7 @@ fn is_ident_or_underscore(t: &token::Token) -> bool {
 pub struct ModulePath {
     pub name: String,
     pub path_exists: bool,
-    pub result: Result<ModulePathSuccess, ModulePathError>,
+    pub result: Result<ModulePathSuccess, Error>,
 }
 
 pub struct ModulePathSuccess {
@@ -231,6 +226,63 @@ pub struct ModulePathSuccess {
 pub struct ModulePathError {
     pub err_msg: String,
     pub help_msg: String,
+}
+
+pub enum Error {
+    FileNotFoundForModule {
+        mod_name: String,
+        default_path: String,
+        secondary_path: String,
+        dir_path: String,
+    },
+    DuplicatePaths {
+        mod_name: String,
+        default_path: String,
+        secondary_path: String,
+    },
+    UselessDocComment,
+    InclusiveRangeWithNoEnd,
+}
+
+impl Error {
+    pub fn span_err<'a>(self, sp: Span, handler: &'a errors::Handler) -> DiagnosticBuilder<'a> {
+        match self {
+            Error::FileNotFoundForModule { ref mod_name,
+                                           ref default_path,
+                                           ref secondary_path,
+                                           ref dir_path } => {
+                let mut err = struct_span_err!(handler, sp, E0583,
+                                               "file not found for module `{}`", mod_name);
+                err.help(&format!("name the file either {} or {} inside the directory {:?}",
+                                  default_path,
+                                  secondary_path,
+                                  dir_path));
+                err
+            }
+            Error::DuplicatePaths { ref mod_name, ref default_path, ref secondary_path } => {
+                let mut err = struct_span_err!(handler, sp, E0584,
+                                               "file for module `{}` found at both {} and {}",
+                                               mod_name,
+                                               default_path,
+                                               secondary_path);
+                err.help("delete or rename one of them to remove the ambiguity");
+                err
+            }
+            Error::UselessDocComment => {
+                let mut err = struct_span_err!(handler, sp, E0585,
+                                  "found a documentation comment that doesn't document anything");
+                err.help("doc comments must come before what they document, maybe a comment was \
+                          intended with `//`?");
+                err
+            }
+            Error::InclusiveRangeWithNoEnd => {
+                let mut err = struct_span_err!(handler, sp, E0586,
+                                               "inclusive range with no end");
+                err.help("inclusive ranges must be bounded at the end (`...b` or `a...b`)");
+                err
+            }
+        }
+    }
 }
 
 pub enum LhsExpr {
@@ -272,8 +324,6 @@ impl<'a> Parser<'a> {
             prev_span: syntax_pos::DUMMY_SP,
             prev_token_kind: PrevTokenKind::Other,
             restrictions: Restrictions::empty(),
-            quote_depth: 0,
-            parsing_token_tree: false,
             obsolete_set: HashSet::new(),
             directory: Directory { path: PathBuf::new(), ownership: DirectoryOwnership::Owned },
             root_module_name: None,
@@ -302,20 +352,11 @@ impl<'a> Parser<'a> {
                 if i + 1 < tts.len() {
                     self.tts.push((tts, i + 1));
                 }
-                // FIXME(jseyfried): remove after fixing #39390 in #39419.
-                if self.quote_depth > 0 {
-                    if let TokenTree::Sequence(sp, _) = tt {
-                        self.span_err(sp, "attempted to repeat an expression containing no \
-                                           syntax variables matched as repeating at this depth");
-                    }
-                }
-                match tt {
-                    TokenTree::Token(sp, tok) => TokenAndSpan { tok: tok, sp: sp },
-                    _ if tt.len() > 0 => {
-                        self.tts.push((tt, 0));
-                        continue
-                    }
-                    _ => continue,
+                if let TokenTree::Token(sp, tok) = tt {
+                    TokenAndSpan { tok: tok, sp: sp }
+                } else {
+                    self.tts.push((tt, 0));
+                    continue
                 }
             } else {
                 TokenAndSpan { tok: token::Eof, sp: self.span }
@@ -461,10 +502,7 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 Err(if self.prev_token_kind == PrevTokenKind::DocComment {
-                    self.span_fatal_help(self.prev_span,
-                        "found a documentation comment that doesn't document anything",
-                        "doc comments must come before what they document, maybe a comment was \
-                        intended with `//`?")
+                        self.span_fatal_err(self.prev_span, Error::UselessDocComment)
                     } else {
                         let mut err = self.fatal(&format!("expected identifier, found `{}`",
                                                           self.this_token_to_string()));
@@ -943,7 +981,6 @@ impl<'a> Parser<'a> {
                 tok = match tts.get_tt(i) {
                     TokenTree::Token(_, tok) => tok,
                     TokenTree::Delimited(_, delimited) => token::OpenDelim(delimited.delim),
-                    TokenTree::Sequence(..) => token::Dollar,
                 };
             }
         }
@@ -954,6 +991,9 @@ impl<'a> Parser<'a> {
     }
     pub fn span_fatal(&self, sp: Span, m: &str) -> DiagnosticBuilder<'a> {
         self.sess.span_diagnostic.struct_span_fatal(sp, m)
+    }
+    pub fn span_fatal_err(&self, sp: Span, err: Error) -> DiagnosticBuilder<'a> {
+        err.span_err(sp, self.diagnostic())
     }
     pub fn span_fatal_help(&self, sp: Span, m: &str, help: &str) -> DiagnosticBuilder<'a> {
         let mut err = self.sess.span_diagnostic.struct_span_fatal(sp, m);
@@ -1130,10 +1170,7 @@ impl<'a> Parser<'a> {
             self.expect(&token::Not)?;
 
             // eat a matched-delimiter token tree:
-            let delim = self.expect_open_delim()?;
-            let tts = self.parse_seq_to_end(&token::CloseDelim(delim),
-                                            SeqSep::none(),
-                                            |pp| pp.parse_token_tree())?;
+            let (delim, tts) = self.expect_delimited_token_tree()?;
             if delim != token::Brace {
                 self.expect(&token::Semi)?
             }
@@ -1391,10 +1428,7 @@ impl<'a> Parser<'a> {
             let path = self.parse_path(PathStyle::Type)?;
             if self.eat(&token::Not) {
                 // MACRO INVOCATION
-                let delim = self.expect_open_delim()?;
-                let tts = self.parse_seq_to_end(&token::CloseDelim(delim),
-                                                SeqSep::none(),
-                                                |p| p.parse_token_tree())?;
+                let (_, tts) = self.expect_delimited_token_tree()?;
                 let hi = self.span.hi;
                 TyKind::Mac(spanned(lo, hi, Mac_ { path: path, tts: tts }))
             } else {
@@ -1944,10 +1978,7 @@ impl<'a> Parser<'a> {
                     limits: RangeLimits)
                     -> PResult<'a, ast::ExprKind> {
         if end.is_none() && limits == RangeLimits::Closed {
-            Err(self.span_fatal_help(self.span,
-                                     "inclusive range with no end",
-                                     "inclusive ranges must be bounded at the end \
-                                      (`...b` or `a...b`)"))
+            Err(self.span_fatal_err(self.span, Error::InclusiveRangeWithNoEnd))
         } else {
             Ok(ExprKind::Range(start, end, limits))
         }
@@ -1991,13 +2022,12 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn expect_open_delim(&mut self) -> PResult<'a, token::DelimToken> {
-        self.expected_tokens.push(TokenType::Token(token::Gt));
+    fn expect_delimited_token_tree(&mut self) -> PResult<'a, (token::DelimToken, Vec<TokenTree>)> {
         match self.token {
-            token::OpenDelim(delim) => {
-                self.bump();
-                Ok(delim)
-            },
+            token::OpenDelim(delim) => self.parse_token_tree().map(|tree| match tree {
+                TokenTree::Delimited(_, delimited) => (delim, delimited.tts.clone()),
+                _ => unreachable!(),
+            }),
             _ => Err(self.fatal("expected open delimiter")),
         }
     }
@@ -2207,10 +2237,7 @@ impl<'a> Parser<'a> {
                     // `!`, as an operator, is prefix, so we know this isn't that
                     if self.eat(&token::Not) {
                         // MACRO INVOCATION expression
-                        let delim = self.expect_open_delim()?;
-                        let tts = self.parse_seq_to_end(&token::CloseDelim(delim),
-                                                        SeqSep::none(),
-                                                        |p| p.parse_token_tree())?;
+                        let (_, tts) = self.expect_delimited_token_tree()?;
                         let hi = self.prev_span.hi;
                         return Ok(self.mk_mac_expr(lo, hi, Mac_ { path: pth, tts: tts }, attrs));
                     }
@@ -2532,139 +2559,22 @@ impl<'a> Parser<'a> {
         return Ok(e);
     }
 
-    // Parse unquoted tokens after a `$` in a token tree
-    fn parse_unquoted(&mut self) -> PResult<'a, TokenTree> {
-        let mut sp = self.span;
-        let name = match self.token {
-            token::Dollar => {
-                self.bump();
-
-                if self.token == token::OpenDelim(token::Paren) {
-                    let Spanned { node: seq, span: seq_span } = self.parse_seq(
-                        &token::OpenDelim(token::Paren),
-                        &token::CloseDelim(token::Paren),
-                        SeqSep::none(),
-                        |p| p.parse_token_tree()
-                    )?;
-                    let (sep, repeat) = self.parse_sep_and_kleene_op()?;
-                    let name_num = macro_parser::count_names(&seq);
-                    return Ok(TokenTree::Sequence(mk_sp(sp.lo, seq_span.hi),
-                                      Rc::new(SequenceRepetition {
-                                          tts: seq,
-                                          separator: sep,
-                                          op: repeat,
-                                          num_captures: name_num
-                                      })));
-                } else if self.token.is_keyword(keywords::Crate) {
-                    let ident = match self.token {
-                        token::Ident(id) => ast::Ident { name: Symbol::intern("$crate"), ..id },
-                        _ => unreachable!(),
-                    };
-                    self.bump();
-                    return Ok(TokenTree::Token(sp, token::Ident(ident)));
-                } else {
-                    sp = mk_sp(sp.lo, self.span.hi);
-                    self.parse_ident().unwrap_or_else(|mut e| {
-                        e.emit();
-                        keywords::Invalid.ident()
-                    })
-                }
-            }
-            token::SubstNt(name) => {
-                self.bump();
-                name
-            }
-            _ => unreachable!()
-        };
-        // continue by trying to parse the `:ident` after `$name`
-        if self.token == token::Colon &&
-                self.look_ahead(1, |t| t.is_ident() && !t.is_any_keyword()) {
-            self.bump();
-            sp = mk_sp(sp.lo, self.span.hi);
-            let nt_kind = self.parse_ident()?;
-            Ok(TokenTree::Token(sp, MatchNt(name, nt_kind)))
-        } else {
-            Ok(TokenTree::Token(sp, SubstNt(name)))
-        }
-    }
-
     pub fn check_unknown_macro_variable(&mut self) {
-        if self.quote_depth == 0 && !self.parsing_token_tree {
-            match self.token {
-                token::SubstNt(name) =>
-                    self.fatal(&format!("unknown macro variable `{}`", name)).emit(),
-                _ => {}
-            }
-        }
-    }
-
-    /// Parse an optional separator followed by a Kleene-style
-    /// repetition token (+ or *).
-    pub fn parse_sep_and_kleene_op(&mut self)
-                                   -> PResult<'a, (Option<token::Token>, tokenstream::KleeneOp)> {
-        fn parse_kleene_op<'a>(parser: &mut Parser<'a>) ->
-          PResult<'a,  Option<tokenstream::KleeneOp>> {
-            match parser.token {
-                token::BinOp(token::Star) => {
-                    parser.bump();
-                    Ok(Some(tokenstream::KleeneOp::ZeroOrMore))
-                },
-                token::BinOp(token::Plus) => {
-                    parser.bump();
-                    Ok(Some(tokenstream::KleeneOp::OneOrMore))
-                },
-                _ => Ok(None)
-            }
-        };
-
-        if let Some(kleene_op) = parse_kleene_op(self)? {
-            return Ok((None, kleene_op));
-        }
-
-        let separator = match self.token {
-            token::CloseDelim(..) => None,
-            _ => Some(self.bump_and_get()),
-        };
-        match parse_kleene_op(self)? {
-            Some(zerok) => Ok((separator, zerok)),
-            None => return Err(self.fatal("expected `*` or `+`"))
+        if let token::SubstNt(name) = self.token {
+            self.fatal(&format!("unknown macro variable `{}`", name)).emit()
         }
     }
 
     /// parse a single token tree from the input.
     pub fn parse_token_tree(&mut self) -> PResult<'a, TokenTree> {
-        // FIXME #6994: currently, this is too eager. It
-        // parses token trees but also identifies TokenType::Sequence's
-        // and token::SubstNt's; it's too early to know yet
-        // whether something will be a nonterminal or a seq
-        // yet.
         match self.token {
-            token::OpenDelim(delim) => {
-                if self.quote_depth == 0 && self.tts.last().map(|&(_, i)| i == 1).unwrap_or(false) {
-                    let tt = self.tts.pop().unwrap().0;
-                    self.bump();
-                    return Ok(tt);
-                }
-
-                let parsing_token_tree = ::std::mem::replace(&mut self.parsing_token_tree, true);
-                let lo = self.span.lo;
+            token::OpenDelim(..) => {
+                let tt = self.tts.pop().unwrap().0;
+                self.span = tt.span();
                 self.bump();
-                let tts = self.parse_seq_to_before_tokens(&[&token::CloseDelim(token::Brace),
-                                                            &token::CloseDelim(token::Paren),
-                                                            &token::CloseDelim(token::Bracket)],
-                                                          SeqSep::none(),
-                                                          |p| p.parse_token_tree(),
-                                                          |mut e| e.emit());
-                self.parsing_token_tree = parsing_token_tree;
-                self.bump();
-
-                Ok(TokenTree::Delimited(Span { lo: lo, ..self.prev_span }, Rc::new(Delimited {
-                    delim: delim,
-                    tts: tts,
-                })))
+                return Ok(tt);
             },
-            token::CloseDelim(..) | token::Eof => Ok(TokenTree::Token(self.span, token::Eof)),
-            token::Dollar | token::SubstNt(..) if self.quote_depth > 0 => self.parse_unquoted(),
+            token::CloseDelim(_) | token::Eof => unreachable!(),
             _ => Ok(TokenTree::Token(self.span, self.bump_and_get())),
         }
     }
@@ -3474,10 +3384,7 @@ impl<'a> Parser<'a> {
                     token::Not if qself.is_none() => {
                         // Parse macro invocation
                         self.bump();
-                        let delim = self.expect_open_delim()?;
-                        let tts = self.parse_seq_to_end(&token::CloseDelim(delim),
-                                                        SeqSep::none(),
-                                                        |p| p.parse_token_tree())?;
+                        let (_, tts) = self.expect_delimited_token_tree()?;
                         let mac = spanned(lo, self.prev_span.hi, Mac_ { path: path, tts: tts });
                         pat = PatKind::Mac(mac);
                     }
@@ -3777,12 +3684,7 @@ impl<'a> Parser<'a> {
                 },
             };
 
-            let tts = self.parse_unspanned_seq(
-                &token::OpenDelim(delim),
-                &token::CloseDelim(delim),
-                SeqSep::none(),
-                |p| p.parse_token_tree()
-            )?;
+            let (_, tts) = self.expect_delimited_token_tree()?;
             let hi = self.prev_span.hi;
 
             let style = if delim == token::Brace {
@@ -3862,10 +3764,7 @@ impl<'a> Parser<'a> {
                     let unused_attrs = |attrs: &[_], s: &mut Self| {
                         if attrs.len() > 0 {
                             if s.prev_token_kind == PrevTokenKind::DocComment {
-                                s.span_err_help(s.prev_span,
-                                    "found a documentation comment that doesn't document anything",
-                                    "doc comments must come before what they document, maybe a \
-                                    comment was intended with `//`?");
+                                s.span_fatal_err(s.prev_span, Error::UselessDocComment).emit();
                             } else {
                                 s.span_err(s.span, "expected statement after outer attribute");
                             }
@@ -4693,10 +4592,7 @@ impl<'a> Parser<'a> {
             self.expect(&token::Not)?;
 
             // eat a matched-delimiter token tree:
-            let delim = self.expect_open_delim()?;
-            let tts = self.parse_seq_to_end(&token::CloseDelim(delim),
-                                            SeqSep::none(),
-                                            |p| p.parse_token_tree())?;
+            let (delim, tts) = self.expect_delimited_token_tree()?;
             if delim != token::Brace {
                 self.expect(&token::Semi)?
             }
@@ -4998,10 +4894,8 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
             token::CloseDelim(token::Brace) => {}
-            token::DocComment(_) => return Err(self.span_fatal_help(self.span,
-                        "found a documentation comment that doesn't document anything",
-                        "doc comments must come before what they document, maybe a comment was \
-                        intended with `//`?")),
+            token::DocComment(_) => return Err(self.span_fatal_err(self.span,
+                                                                   Error::UselessDocComment)),
             _ => return Err(self.span_fatal_help(self.span,
                     &format!("expected `,`, or `}}`, found `{}`", self.this_token_to_string()),
                     "struct fields should be separated by commas")),
@@ -5162,8 +5056,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Returns either a path to a module, or .
-    pub fn default_submod_path(id: ast::Ident, dir_path: &Path, codemap: &CodeMap) -> ModulePath
-    {
+    pub fn default_submod_path(id: ast::Ident, dir_path: &Path, codemap: &CodeMap) -> ModulePath {
         let mod_name = id.to_string();
         let default_path_str = format!("{}.rs", mod_name);
         let secondary_path_str = format!("{}/mod.rs", mod_name);
@@ -5183,19 +5076,16 @@ impl<'a> Parser<'a> {
                 directory_ownership: DirectoryOwnership::Owned,
                 warn: false,
             }),
-            (false, false) => Err(ModulePathError {
-                err_msg: format!("file not found for module `{}`", mod_name),
-                help_msg: format!("name the file either {} or {} inside the directory {:?}",
-                                  default_path_str,
-                                  secondary_path_str,
-                                  dir_path.display()),
+            (false, false) => Err(Error::FileNotFoundForModule {
+                mod_name: mod_name.clone(),
+                default_path: default_path_str,
+                secondary_path: secondary_path_str,
+                dir_path: format!("{}", dir_path.display()),
             }),
-            (true, true) => Err(ModulePathError {
-                err_msg: format!("file for module `{}` found at both {} and {}",
-                                 mod_name,
-                                 default_path_str,
-                                 secondary_path_str),
-                help_msg: "delete or rename one of them to remove the ambiguity".to_owned(),
+            (true, true) => Err(Error::DuplicatePaths {
+                mod_name: mod_name.clone(),
+                default_path: default_path_str,
+                secondary_path: secondary_path_str,
             }),
         };
 
@@ -5232,7 +5122,7 @@ impl<'a> Parser<'a> {
                                   paths.name);
                 err.span_note(id_sp, &msg);
             }
-            return Err(err);
+            Err(err)
         } else if let DirectoryOwnership::UnownedViaMod(warn) = self.directory.ownership {
             if warn {
                 if let Ok(result) = paths.result {
@@ -5254,15 +5144,12 @@ impl<'a> Parser<'a> {
                               &format!("... or maybe `use` the module `{}` instead \
                                         of possibly redeclaring it",
                                        paths.name));
-                return Err(err);
+                Err(err)
             } else {
-                return Err(err);
-            };
-        }
-
-        match paths.result {
-            Ok(succ) => Ok(succ),
-            Err(err) => Err(self.span_fatal_help(id_sp, &err.err_msg, &err.help_msg)),
+                Err(err)
+            }
+        } else {
+            paths.result.map_err(|err| self.span_fatal_err(id_sp, err))
         }
     }
 
@@ -5851,10 +5738,7 @@ impl<'a> Parser<'a> {
                 keywords::Invalid.ident() // no special identifier
             };
             // eat a matched-delimiter token tree:
-            let delim = self.expect_open_delim()?;
-            let tts = self.parse_seq_to_end(&token::CloseDelim(delim),
-                                            SeqSep::none(),
-                                            |p| p.parse_token_tree())?;
+            let (delim, tts) = self.expect_delimited_token_tree()?;
             if delim != token::Brace {
                 if !self.eat(&token::Semi) {
                     let prev_span = self.prev_span;

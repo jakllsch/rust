@@ -12,6 +12,7 @@ use llvm::{self, ValueRef};
 use rustc::ty::{self, Ty};
 use rustc::ty::cast::{CastTy, IntTy};
 use rustc::ty::layout::Layout;
+use rustc::ty::subst::{Kind, Subst};
 use rustc::mir::tcx::LvalueTy;
 use rustc::mir;
 use middle::lang_items::ExchangeMallocFnLangItem;
@@ -94,7 +95,7 @@ impl<'a, 'tcx> MirContext<'a, 'tcx> {
 
             mir::Rvalue::Repeat(ref elem, ref count) => {
                 let tr_elem = self.trans_operand(&bcx, elem);
-                let size = count.value.as_u64(bcx.tcx().sess.target.uint_type);
+                let size = count.as_u64(bcx.tcx().sess.target.uint_type);
                 let size = C_uint(bcx.ccx, size);
                 let base = base::get_dataptr(&bcx, dest.llval);
                 tvec::slice_for_each(&bcx, base, tr_elem.ty, size, |bcx, llslot| {
@@ -105,9 +106,9 @@ impl<'a, 'tcx> MirContext<'a, 'tcx> {
             mir::Rvalue::Aggregate(ref kind, ref operands) => {
                 match *kind {
                     mir::AggregateKind::Adt(adt_def, variant_index, substs, active_field_index) => {
-                        let disr = Disr::from(adt_def.variants[variant_index].disr_val);
+                        let disr = Disr::for_variant(bcx.tcx(), adt_def, variant_index);
                         let dest_ty = dest.ty.to_ty(bcx.tcx());
-                        adt::trans_set_discr(&bcx, dest_ty, dest.llval, Disr::from(disr));
+                        adt::trans_set_discr(&bcx, dest_ty, dest.llval, disr);
                         for (i, operand) in operands.iter().enumerate() {
                             let op = self.trans_operand(&bcx, operand);
                             // Do not generate stores and GEPis for zero-sized fields.
@@ -118,7 +119,7 @@ impl<'a, 'tcx> MirContext<'a, 'tcx> {
                                 val.ty = LvalueTy::Downcast {
                                     adt_def: adt_def,
                                     substs: self.monomorphize(&substs),
-                                    variant_index: disr.0 as usize,
+                                    variant_index: variant_index,
                                 };
                                 let (lldest_i, align) = val.trans_field_ptr(&bcx, field_index);
                                 self.store_operand(&bcx, lldest_i, align.to_align(), op);
@@ -187,6 +188,29 @@ impl<'a, 'tcx> MirContext<'a, 'tcx> {
                             }
                             _ => {
                                 bug!("{} cannot be reified to a fn ptr", operand.ty)
+                            }
+                        }
+                    }
+                    mir::CastKind::ClosureFnPointer => {
+                        match operand.ty.sty {
+                            ty::TyClosure(def_id, substs) => {
+                                // Get the def_id for FnOnce::call_once
+                                let fn_once = bcx.tcx().lang_items.fn_once_trait().unwrap();
+                                let call_once = bcx.tcx()
+                                    .global_tcx().associated_items(fn_once)
+                                    .find(|it| it.kind == ty::AssociatedKind::Method)
+                                    .unwrap().def_id;
+                                // Now create its substs [Closure, Tuple]
+                                let input = bcx.tcx().closure_type(def_id)
+                                    .subst(bcx.tcx(), substs.substs).input(0);
+                                let substs = bcx.tcx().mk_substs([operand.ty, input.skip_binder()]
+                                    .iter().cloned().map(Kind::from));
+                                OperandValue::Immediate(
+                                    Callee::def(bcx.ccx, call_once, substs)
+                                        .reify(bcx.ccx))
+                            }
+                            _ => {
+                                bug!("{} cannot be cast to a fn ptr", operand.ty)
                             }
                         }
                     }
@@ -411,7 +435,7 @@ impl<'a, 'tcx> MirContext<'a, 'tcx> {
             mir::Rvalue::Discriminant(ref lvalue) => {
                 let discr_lvalue = self.trans_lvalue(&bcx, lvalue);
                 let enum_ty = discr_lvalue.ty.to_ty(bcx.tcx());
-                let discr_ty = rvalue.ty(&*self.mir, bcx.tcx()).unwrap();
+                let discr_ty = rvalue.ty(&*self.mir, bcx.tcx());
                 let discr_type = type_of::immediate_type_of(bcx.ccx, discr_ty);
                 let discr = adt::trans_get_discr(&bcx, enum_ty, discr_lvalue.llval,
                                                   discr_lvalue.alignment, Some(discr_type), true);

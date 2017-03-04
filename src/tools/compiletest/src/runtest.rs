@@ -13,6 +13,7 @@ use common::{CompileFail, ParseFail, Pretty, RunFail, RunPass, RunPassValgrind};
 use common::{Codegen, DebugInfoLldb, DebugInfoGdb, Rustdoc, CodegenUnits};
 use common::{Incremental, RunMake, Ui, MirOpt};
 use errors::{self, ErrorKind, Error};
+use filetime::FileTime;
 use json;
 use header::TestProps;
 use header;
@@ -1986,12 +1987,22 @@ actual:\n\
     fn check_rustdoc_test_option(&self, res: ProcRes) {
         let mut other_files = Vec::new();
         let mut files: HashMap<String, Vec<usize>> = HashMap::new();
-        files.insert(self.testpaths.file.to_str().unwrap().to_owned(),
+        let cwd = env::current_dir().unwrap();
+        files.insert(self.testpaths.file.strip_prefix(&cwd)
+                                        .unwrap_or(&self.testpaths.file)
+                                        .to_str()
+                                        .unwrap()
+                                        .replace('\\', "/"),
                      self.get_lines(&self.testpaths.file, Some(&mut other_files)));
         for other_file in other_files {
             let mut path = self.testpaths.file.clone();
             path.set_file_name(&format!("{}.rs", other_file));
-            files.insert(path.to_str().unwrap().to_owned(), self.get_lines(&path, None));
+            files.insert(path.strip_prefix(&cwd)
+                             .unwrap_or(&path)
+                             .to_str()
+                             .unwrap()
+                             .replace('\\', "/"),
+                         self.get_lines(&path, None));
         }
 
         let mut tested = 0;
@@ -2001,7 +2012,8 @@ actual:\n\
                                let tmp: Vec<&str> = s.split(" - ").collect();
                                if tmp.len() == 2 {
                                    let path = tmp[0].rsplit("test ").next().unwrap();
-                                   if let Some(ref mut v) = files.get_mut(path) {
+                                   if let Some(ref mut v) = files.get_mut(
+                                                                &path.replace('\\', "/")) {
                                        tested += 1;
                                        let mut iter = tmp[1].split("(line ");
                                        iter.next();
@@ -2457,12 +2469,25 @@ actual:\n\
         }
     }
 
+    fn check_mir_test_timestamp(&self, test_name: &str, output_file: &Path) {
+        let t = |file| FileTime::from_last_modification_time(&fs::metadata(file).unwrap());
+        let source_file = &self.testpaths.file;
+        let output_time = t(output_file);
+        let source_time = t(source_file);
+        if source_time > output_time {
+            debug!("source file time: {:?} output file time: {:?}", source_time, output_time);
+            panic!("test source file `{}` is newer than potentially stale output file `{}`.",
+                   source_file.display(), test_name);
+        }
+    }
+
     fn compare_mir_test_output(&self, test_name: &str, expected_content: &Vec<&str>) {
         let mut output_file = PathBuf::new();
         output_file.push(self.get_mir_dump_dir());
         output_file.push(test_name);
         debug!("comparing the contests of: {:?}", output_file);
         debug!("with: {:?}", expected_content);
+        self.check_mir_test_timestamp(test_name, &output_file);
 
         let mut dumped_file = fs::File::open(output_file.clone()).unwrap();
         let mut dumped_string = String::new();

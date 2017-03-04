@@ -156,12 +156,6 @@ declare_lint! {
 }
 
 declare_lint! {
-    pub TRANSMUTE_FROM_FN_ITEM_TYPES,
-    Deny,
-    "transmute from function item type to pointer-sized type erroneously allowed"
-}
-
-declare_lint! {
     pub HR_LIFETIME_IN_ASSOC_TYPE,
     Deny,
     "binding for associated type references higher-ranked lifetime \
@@ -237,6 +231,12 @@ declare_lint! {
 }
 
 declare_lint! {
+    pub MISSING_FRAGMENT_SPECIFIER,
+    Warn,
+    "detects missing fragment specifiers in unused `macro_rules!` patterns"
+}
+
+declare_lint! {
     pub DEPRECATED,
     Warn,
     "detects use of deprecated items"
@@ -273,7 +273,6 @@ impl LintPass for HardwiredLints {
             ILLEGAL_STRUCT_OR_ENUM_CONSTANT_PATTERN,
             CONST_ERR,
             RAW_POINTER_DERIVE,
-            TRANSMUTE_FROM_FN_ITEM_TYPES,
             OVERLAPPING_INHERENT_IMPLS,
             RENAMED_AND_REMOVED_LINTS,
             SUPER_OR_SELF_IN_GLOBAL_PATH,
@@ -286,6 +285,7 @@ impl LintPass for HardwiredLints {
             LEGACY_DIRECTORY_OWNERSHIP,
             LEGACY_IMPORTS,
             LEGACY_CONSTRUCTOR_VISIBILITY,
+            MISSING_FRAGMENT_SPECIFIER,
             DEPRECATED
         )
     }

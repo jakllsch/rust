@@ -70,6 +70,7 @@ pub enum DepNode<D: Clone + Debug> {
     Resolve,
     EntryPoint,
     CheckEntryFn,
+    CoherenceCheckTrait(D),
     CoherenceCheckImpl(D),
     CoherenceOverlapCheck(D),
     CoherenceOverlapCheckSpecial(D),
@@ -78,8 +79,6 @@ pub enum DepNode<D: Clone + Debug> {
     Variance,
     WfCheck(D),
     TypeckItemType(D),
-    Dropck,
-    DropckImpl(D),
     UnusedTraitCheck,
     CheckConst(D),
     Privacy,
@@ -88,8 +87,10 @@ pub enum DepNode<D: Clone + Debug> {
 
     // Represents the MIR for a fn; also used as the task node for
     // things read/modify that MIR.
+    MirKrate,
     Mir(D),
 
+    BorrowCheckKrate,
     BorrowCheck(D),
     RvalueCheck(D),
     Reachability,
@@ -109,11 +110,15 @@ pub enum DepNode<D: Clone + Debug> {
     // predicates for an item wind up in `ItemSignature`).
     AssociatedItems(D),
     ItemSignature(D),
+    TypeParamPredicates((D, D)),
     SizedConstraint(D),
+    AdtDestructor(D),
     AssociatedItemDefIds(D),
     InherentImpls(D),
+    TypeckBodiesKrate,
     TypeckTables(D),
     UsedTraitImports(D),
+    MonomorphicConstEval(D),
 
     // The set of impls for a given trait. Ultimately, it would be
     // nice to get more fine-grained here (e.g., to include a
@@ -206,6 +211,9 @@ impl<D: Clone + Debug> DepNode<D> {
 
         match *self {
             Krate => Some(Krate),
+            BorrowCheckKrate => Some(BorrowCheckKrate),
+            MirKrate => Some(MirKrate),
+            TypeckBodiesKrate => Some(TypeckBodiesKrate),
             CollectLanguageItems => Some(CollectLanguageItems),
             CheckStaticRecursion => Some(CheckStaticRecursion),
             ResolveLifetimes => Some(ResolveLifetimes),
@@ -220,7 +228,6 @@ impl<D: Clone + Debug> DepNode<D> {
             EntryPoint => Some(EntryPoint),
             CheckEntryFn => Some(CheckEntryFn),
             Variance => Some(Variance),
-            Dropck => Some(Dropck),
             UnusedTraitCheck => Some(UnusedTraitCheck),
             Privacy => Some(Privacy),
             Reachability => Some(Reachability),
@@ -239,6 +246,7 @@ impl<D: Clone + Debug> DepNode<D> {
             MetaData(ref d) => op(d).map(MetaData),
             CollectItem(ref d) => op(d).map(CollectItem),
             CollectItemSig(ref d) => op(d).map(CollectItemSig),
+            CoherenceCheckTrait(ref d) => op(d).map(CoherenceCheckTrait),
             CoherenceCheckImpl(ref d) => op(d).map(CoherenceCheckImpl),
             CoherenceOverlapCheck(ref d) => op(d).map(CoherenceOverlapCheck),
             CoherenceOverlapCheckSpecial(ref d) => op(d).map(CoherenceOverlapCheckSpecial),
@@ -246,7 +254,6 @@ impl<D: Clone + Debug> DepNode<D> {
             CoherenceOrphanCheck(ref d) => op(d).map(CoherenceOrphanCheck),
             WfCheck(ref d) => op(d).map(WfCheck),
             TypeckItemType(ref d) => op(d).map(TypeckItemType),
-            DropckImpl(ref d) => op(d).map(DropckImpl),
             CheckConst(ref d) => op(d).map(CheckConst),
             IntrinsicCheck(ref d) => op(d).map(IntrinsicCheck),
             MatchCheck(ref d) => op(d).map(MatchCheck),
@@ -258,11 +265,16 @@ impl<D: Clone + Debug> DepNode<D> {
             TransInlinedItem(ref d) => op(d).map(TransInlinedItem),
             AssociatedItems(ref d) => op(d).map(AssociatedItems),
             ItemSignature(ref d) => op(d).map(ItemSignature),
+            TypeParamPredicates((ref item, ref param)) => {
+                Some(TypeParamPredicates((try_opt!(op(item)), try_opt!(op(param)))))
+            }
             SizedConstraint(ref d) => op(d).map(SizedConstraint),
+            AdtDestructor(ref d) => op(d).map(AdtDestructor),
             AssociatedItemDefIds(ref d) => op(d).map(AssociatedItemDefIds),
             InherentImpls(ref d) => op(d).map(InherentImpls),
             TypeckTables(ref d) => op(d).map(TypeckTables),
             UsedTraitImports(ref d) => op(d).map(UsedTraitImports),
+            MonomorphicConstEval(ref d) => op(d).map(MonomorphicConstEval),
             TraitImpls(ref d) => op(d).map(TraitImpls),
             TraitItems(ref d) => op(d).map(TraitItems),
             ReprHints(ref d) => op(d).map(ReprHints),
@@ -289,4 +301,3 @@ impl<D: Clone + Debug> DepNode<D> {
 /// them even in the absence of a tcx.)
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
 pub struct WorkProductId(pub String);
-

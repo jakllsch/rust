@@ -139,7 +139,7 @@ associated with it, but the compiler lets you elide (i.e. omit, see
 ["Lifetime Elision"][lifetime-elision] below) them in common cases. Before we
 get to that, though, let’s look at a short example with explicit lifetimes:
 
-[lifetime-elision]: #Lifetime%20Elision
+[lifetime-elision]: #lifetime-elision
 
 ```rust,ignore
 fn bar<'a>(...)
@@ -349,8 +349,8 @@ to it.
 
 ## Lifetime Elision
 
-Rust supports powerful local type inference in the bodies of functions but not in their item signatures. 
-It's forbidden to allow reasoning about types based on the item signature alone. 
+Rust supports powerful local type inference in the bodies of functions, but it
+deliberately does not perform any reasoning about types for item signatures. 
 However, for ergonomic reasons, a very restricted secondary inference algorithm called 
 “lifetime elision” does apply when judging lifetimes. Lifetime elision is concerned solely with inferring 
 lifetime parameters using three easily memorizable and unambiguous rules. This means lifetime elision 

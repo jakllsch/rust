@@ -586,7 +586,7 @@ impl<'a> CrateLoader<'a> {
         use proc_macro::__internal::Registry;
         use rustc_back::dynamic_lib::DynamicLibrary;
         use syntax_ext::deriving::custom::ProcMacroDerive;
-        use syntax_ext::proc_macro_impl::AttrProcMacro;
+        use syntax_ext::proc_macro_impl::{AttrProcMacro, BangProcMacro};
 
         let path = match dylib {
             Some(dylib) => dylib,
@@ -627,6 +627,15 @@ impl<'a> CrateLoader<'a> {
                                         expand: fn(TokenStream, TokenStream) -> TokenStream) {
                 let expand = SyntaxExtension::AttrProcMacro(
                     Box::new(AttrProcMacro { inner: expand })
+                );
+                self.0.push((Symbol::intern(name), Rc::new(expand)));
+            }
+
+            fn register_bang_proc_macro(&mut self,
+                                        name: &str,
+                                        expand: fn(TokenStream) -> TokenStream) {
+                let expand = SyntaxExtension::ProcMacro(
+                    Box::new(BangProcMacro { inner: expand })
                 );
                 self.0.push((Symbol::intern(name), Rc::new(expand)));
             }
@@ -1077,10 +1086,20 @@ impl<'a> middle::cstore::CrateLoader for CrateLoader<'a> {
             let mut found = false;
             for lib in self.cstore.get_used_libraries().borrow_mut().iter_mut() {
                 if lib.name == name as &str {
-                    lib.kind = kind;
+                    let mut changed = false;
+                    if let Some(k) = kind {
+                        lib.kind = k;
+                        changed = true;
+                    }
                     if let &Some(ref new_name) = new_name {
                         lib.name = Symbol::intern(new_name);
+                        changed = true;
                     }
+                    if !changed {
+                        self.sess.warn(&format!("redundant linker flag specified for library `{}`",
+                                                name));
+                    }
+
                     found = true;
                 }
             }
@@ -1089,7 +1108,7 @@ impl<'a> middle::cstore::CrateLoader for CrateLoader<'a> {
                 let new_name = new_name.as_ref().map(|s| &**s); // &Option<String> -> Option<&str>
                 let lib = NativeLibrary {
                     name: Symbol::intern(new_name.unwrap_or(name)),
-                    kind: kind,
+                    kind: if let Some(k) = kind { k } else { cstore::NativeUnknown },
                     cfg: None,
                     foreign_items: Vec::new(),
                 };

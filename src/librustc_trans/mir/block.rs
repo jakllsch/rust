@@ -21,7 +21,7 @@ use builder::Builder;
 use common::{self, Funclet};
 use common::{C_bool, C_str_slice, C_struct, C_u32, C_undef};
 use consts;
-use machine::{llalign_of_min, llbitsize_of_real};
+use machine::llalign_of_min;
 use meth;
 use type_of::{self, align_of};
 use glue;
@@ -139,7 +139,7 @@ impl<'a, 'tcx> MirContext<'a, 'tcx> {
                 if switch_ty == bcx.tcx().types.bool {
                     let lltrue = llblock(self, targets[0]);
                     let llfalse = llblock(self, targets[1]);
-                    if let [ConstInt::Infer(0)] = values[..] {
+                    if let [ConstInt::U8(0)] = values[..] {
                         bcx.cond_br(discr.immediate(), llfalse, lltrue);
                     } else {
                         bcx.cond_br(discr.immediate(), lltrue, llfalse);
@@ -365,20 +365,21 @@ impl<'a, 'tcx> MirContext<'a, 'tcx> {
                 // Create the callee. This is a fn ptr or zero-sized and hence a kind of scalar.
                 let callee = self.trans_operand(&bcx, func);
 
-                let (mut callee, abi, sig) = match callee.ty.sty {
-                    ty::TyFnDef(def_id, substs, f) => {
-                        (Callee::def(bcx.ccx, def_id, substs), f.abi, &f.sig)
+                let (mut callee, sig) = match callee.ty.sty {
+                    ty::TyFnDef(def_id, substs, sig) => {
+                        (Callee::def(bcx.ccx, def_id, substs), sig)
                     }
-                    ty::TyFnPtr(f) => {
+                    ty::TyFnPtr(sig) => {
                         (Callee {
                             data: Fn(callee.immediate()),
                             ty: callee.ty
-                        }, f.abi, &f.sig)
+                        }, sig)
                     }
                     _ => bug!("{} is not callable", callee.ty)
                 };
 
-                let sig = bcx.tcx().erase_late_bound_regions_and_normalize(sig);
+                let sig = bcx.tcx().erase_late_bound_regions_and_normalize(&sig);
+                let abi = sig.abi;
 
                 // Handle intrinsics old trans wants Expr's for, ourselves.
                 let intrinsic = match (&callee.ty.sty, &callee.data) {
@@ -868,24 +869,7 @@ impl<'a, 'tcx> MirContext<'a, 'tcx> {
     fn trans_transmute_into(&mut self, bcx: &Builder<'a, 'tcx>,
                             src: &mir::Operand<'tcx>,
                             dst: &LvalueRef<'tcx>) {
-        let mut val = self.trans_operand(bcx, src);
-        if let ty::TyFnDef(def_id, substs, _) = val.ty.sty {
-            let llouttype = type_of::type_of(bcx.ccx, dst.ty.to_ty(bcx.tcx()));
-            let out_type_size = llbitsize_of_real(bcx.ccx, llouttype);
-            if out_type_size != 0 {
-                // FIXME #19925 Remove this hack after a release cycle.
-                let f = Callee::def(bcx.ccx, def_id, substs);
-                let ty = match f.ty.sty {
-                    ty::TyFnDef(.., f) => bcx.tcx().mk_fn_ptr(f),
-                    _ => f.ty
-                };
-                val = OperandRef {
-                    val: Immediate(f.reify(bcx.ccx)),
-                    ty: ty
-                };
-            }
-        }
-
+        let val = self.trans_operand(bcx, src);
         let llty = type_of::type_of(bcx.ccx, val.ty);
         let cast_ptr = bcx.pointercast(dst.llval, llty.ptr_to());
         let in_type = val.ty;

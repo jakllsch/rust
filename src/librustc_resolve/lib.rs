@@ -136,6 +136,8 @@ enum ResolutionError<'a> {
     AttemptToUseNonConstantValueInConstant,
     /// error E0530: X bindings cannot shadow Ys
     BindingShadowsSomethingUnacceptable(&'a str, Name, &'a NameBinding<'a>),
+    /// error E0128: type parameters with a default cannot use forward declared identifiers
+    ForwardDeclaredTyParam,
 }
 
 fn resolve_error<'sess, 'a>(resolver: &'sess Resolver,
@@ -320,6 +322,14 @@ fn resolve_struct_error<'sess, 'a>(resolver: &'sess Resolver,
             let participle = if binding.is_import() { "imported" } else { "defined" };
             let msg = &format!("a {} `{}` is {} here", shadows_what, name, participle);
             err.span_label(binding.span, msg);
+            err
+        }
+        ResolutionError::ForwardDeclaredTyParam => {
+            let mut err = struct_span_err!(resolver.session, span, E0128,
+                                           "type parameters with a default cannot use \
+                                            forward declared identifiers");
+            err.span_label(span, &format!("defaulted type parameters \
+                                           cannot be forward declared"));
             err
         }
     }
@@ -674,6 +684,32 @@ impl<'a, 'tcx> Visitor<'tcx> for Resolver<'a> {
         self.label_ribs.pop();
         self.ribs[ValueNS].pop();
     }
+    fn visit_generics(&mut self, generics: &'tcx Generics) {
+        // For type parameter defaults, we have to ban access
+        // to following type parameters, as the Substs can only
+        // provide previous type parameters as they're built.
+        let mut default_ban_rib = Rib::new(ForwardTyParamBanRibKind);
+        default_ban_rib.bindings.extend(generics.ty_params.iter()
+            .skip_while(|p| p.default.is_none())
+            .map(|p| (Ident::with_empty_ctxt(p.ident.name), Def::Err)));
+
+        for param in &generics.ty_params {
+            for bound in &param.bounds {
+                self.visit_ty_param_bound(bound);
+            }
+
+            if let Some(ref ty) = param.default {
+                self.ribs[TypeNS].push(default_ban_rib);
+                self.visit_ty(ty);
+                default_ban_rib = self.ribs[TypeNS].pop().unwrap();
+            }
+
+            // Allow all following defaults to refer to this type parameter.
+            default_ban_rib.bindings.remove(&Ident::with_empty_ctxt(param.ident.name));
+        }
+        for lt in &generics.lifetimes { self.visit_lifetime_def(lt); }
+        for p in &generics.where_clause.predicates { self.visit_where_predicate(p); }
+    }
 }
 
 pub type ErrorMessage = Option<(Span, String)>;
@@ -718,6 +754,11 @@ enum RibKind<'a> {
 
     // We passed through a `macro_rules!` statement with the given expansion
     MacroDefinition(Mark),
+
+    // All bindings in this rib are type parameters that can't be used
+    // from the default of a type parameter because they're not declared
+    // before said type parameter. Also see the `visit_generics` override.
+    ForwardTyParamBanRibKind,
 }
 
 /// One local scope.
@@ -734,13 +775,6 @@ impl<'a> Rib<'a> {
             kind: kind,
         }
     }
-}
-
-/// A definition along with the index of the rib it was found on
-#[derive(Copy, Clone, Debug)]
-struct LocalDef {
-    ribs: Option<(Namespace, usize)>,
-    def: Def,
 }
 
 enum LexicalScopeBinding<'a> {
@@ -1265,7 +1299,7 @@ impl<'a> Resolver<'a> {
             ribs: PerNS {
                 value_ns: vec![Rib::new(ModuleRibKind(graph_root))],
                 type_ns: vec![Rib::new(ModuleRibKind(graph_root))],
-                macro_ns: None,
+                macro_ns: Some(vec![Rib::new(ModuleRibKind(graph_root))]),
             },
             label_ribs: Vec::new(),
 
@@ -1428,7 +1462,7 @@ impl<'a> Resolver<'a> {
             if let Some(def) = self.ribs[ns][i].bindings.get(&ident).cloned() {
                 // The ident resolves to a type parameter or local variable.
                 return Some(LexicalScopeBinding::Def(
-                    self.adjust_local_def(LocalDef { ribs: Some((ns, i)), def: def }, record_used)
+                    self.adjust_local_def(ns, i, def, record_used)
                 ));
             }
 
@@ -2328,10 +2362,13 @@ impl<'a> Resolver<'a> {
                 };
             }
         }
-        if primary_ns != MacroNS && path.len() == 1 &&
-                self.macro_names.contains(&path[0].name) {
+        let is_builtin = self.builtin_macros.get(&path[0].name).cloned()
+            .map(|binding| binding.get_macro(self).kind() == MacroKind::Bang).unwrap_or(false);
+        if primary_ns != MacroNS && (is_builtin || self.macro_names.contains(&path[0].name)) {
             // Return some dummy definition, it's enough for error reporting.
-            return Some(PathResolution::new(Def::Macro(DefId::local(CRATE_DEF_INDEX))));
+            return Some(
+                PathResolution::new(Def::Macro(DefId::local(CRATE_DEF_INDEX), MacroKind::Bang))
+            );
         }
         fin_res
     }
@@ -2524,12 +2561,23 @@ impl<'a> Resolver<'a> {
     }
 
     // Resolve a local definition, potentially adjusting for closures.
-    fn adjust_local_def(&mut self, local_def: LocalDef, record_used: Option<Span>) -> Def {
-        let ribs = match local_def.ribs {
-            Some((ns, i)) => &self.ribs[ns][i + 1..],
-            None => &[] as &[_],
-        };
-        let mut def = local_def.def;
+    fn adjust_local_def(&mut self,
+                        ns: Namespace,
+                        rib_index: usize,
+                        mut def: Def,
+                        record_used: Option<Span>) -> Def {
+        let ribs = &self.ribs[ns][rib_index + 1..];
+
+        // An invalid forward use of a type parameter from a previous default.
+        if let ForwardTyParamBanRibKind = self.ribs[ns][rib_index].kind {
+            if let Some(span) = record_used {
+                resolve_error(self, span,
+                        ResolutionError::ForwardDeclaredTyParam);
+            }
+            assert_eq!(def, Def::Err);
+            return Def::Err;
+        }
+
         match def {
             Def::Upvar(..) => {
                 span_bug!(record_used.unwrap_or(DUMMY_SP), "unexpected {:?} in bindings", def)
@@ -2537,7 +2585,8 @@ impl<'a> Resolver<'a> {
             Def::Local(def_id) => {
                 for rib in ribs {
                     match rib.kind {
-                        NormalRibKind | ModuleRibKind(..) | MacroDefinition(..) => {
+                        NormalRibKind | ModuleRibKind(..) | MacroDefinition(..) |
+                        ForwardTyParamBanRibKind => {
                             // Nothing to do. Continue.
                         }
                         ClosureRibKind(function_id) => {
@@ -2590,7 +2639,7 @@ impl<'a> Resolver<'a> {
                 for rib in ribs {
                     match rib.kind {
                         NormalRibKind | MethodRibKind(_) | ClosureRibKind(..) |
-                        ModuleRibKind(..) | MacroDefinition(..) => {
+                        ModuleRibKind(..) | MacroDefinition(..) | ForwardTyParamBanRibKind => {
                             // Nothing to do. Continue.
                         }
                         ItemRibKind => {
@@ -2768,16 +2817,22 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn resolve_labeled_block(&mut self, label: Option<SpannedIdent>, id: NodeId, block: &Block) {
+    fn with_resolved_label<F>(&mut self, label: Option<SpannedIdent>, id: NodeId, f: F)
+        where F: FnOnce(&mut Resolver)
+    {
         if let Some(label) = label {
             let def = Def::Label(id);
             self.with_label_rib(|this| {
                 this.label_ribs.last_mut().unwrap().bindings.insert(label.node, def);
-                this.visit_block(block);
+                f(this);
             });
         } else {
-            self.visit_block(block);
+            f(self);
         }
+    }
+
+    fn resolve_labeled_block(&mut self, label: Option<SpannedIdent>, id: NodeId, block: &Block) {
+        self.with_resolved_label(label, id, |this| this.visit_block(block));
     }
 
     fn resolve_expr(&mut self, expr: &Expr, parent: Option<&ExprKind>) {
@@ -2833,18 +2888,18 @@ impl<'a> Resolver<'a> {
             ExprKind::Loop(ref block, label) => self.resolve_labeled_block(label, expr.id, &block),
 
             ExprKind::While(ref subexpression, ref block, label) => {
-                self.visit_expr(subexpression);
-                self.resolve_labeled_block(label, expr.id, &block);
+                self.with_resolved_label(label, expr.id, |this| {
+                    this.visit_expr(subexpression);
+                    this.visit_block(block);
+                });
             }
 
             ExprKind::WhileLet(ref pattern, ref subexpression, ref block, label) => {
-                self.visit_expr(subexpression);
-                self.ribs[ValueNS].push(Rib::new(NormalRibKind));
-                self.resolve_pattern(pattern, PatternSource::WhileLet, &mut FxHashMap());
-
-                self.resolve_labeled_block(label, expr.id, block);
-
-                self.ribs[ValueNS].pop();
+                self.with_resolved_label(label, expr.id, |this| {
+                    this.visit_expr(subexpression);
+                    this.resolve_pattern(pattern, PatternSource::WhileLet, &mut FxHashMap());
+                    this.visit_block(block);
+                });
             }
 
             ExprKind::ForLoop(ref pattern, ref subexpression, ref block, label) => {

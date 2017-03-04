@@ -64,7 +64,7 @@ pub struct Session {
     pub target: config::Config,
     pub host: Target,
     pub opts: config::Options,
-    pub cstore: Rc<for<'a> CrateStore<'a>>,
+    pub cstore: Rc<CrateStore>,
     pub parse_sess: ParseSess,
     // For a library crate, this is always none
     pub entry_fn: RefCell<Option<(NodeId, Span)>>,
@@ -372,6 +372,11 @@ impl Session {
     pub fn nonzeroing_move_hints(&self) -> bool {
         self.opts.debugging_opts.enable_nonzeroing_move_hints
     }
+    pub fn overflow_checks(&self) -> bool {
+        self.opts.cg.overflow_checks
+            .or(self.opts.debugging_opts.force_overflow_checks)
+            .unwrap_or(self.opts.debug_assertions)
+    }
 
     pub fn must_not_eliminate_frame_pointers(&self) -> bool {
         self.opts.debuginfo != DebugInfoLevel::NoDebugInfo ||
@@ -505,7 +510,7 @@ pub fn build_session(sopts: config::Options,
                      dep_graph: &DepGraph,
                      local_crate_source_file: Option<PathBuf>,
                      registry: errors::registry::Registry,
-                     cstore: Rc<for<'a> CrateStore<'a>>)
+                     cstore: Rc<CrateStore>)
                      -> Session {
     build_session_with_codemap(sopts,
                                dep_graph,
@@ -520,7 +525,7 @@ pub fn build_session_with_codemap(sopts: config::Options,
                                   dep_graph: &DepGraph,
                                   local_crate_source_file: Option<PathBuf>,
                                   registry: errors::registry::Registry,
-                                  cstore: Rc<for<'a> CrateStore<'a>>,
+                                  cstore: Rc<CrateStore>,
                                   codemap: Rc<codemap::CodeMap>,
                                   emitter_dest: Option<Box<Write + Send>>)
                                   -> Session {
@@ -570,7 +575,7 @@ pub fn build_session_(sopts: config::Options,
                       local_crate_source_file: Option<PathBuf>,
                       span_diagnostic: errors::Handler,
                       codemap: Rc<codemap::CodeMap>,
-                      cstore: Rc<for<'a> CrateStore<'a>>)
+                      cstore: Rc<CrateStore>)
                       -> Session {
     let host = match Target::search(config::host_triple()) {
         Ok(t) => t,
