@@ -19,8 +19,9 @@ use fmt::{self, Debug};
 use hash::{Hash, Hasher, BuildHasher, SipHasher13};
 use iter::{FromIterator, FusedIterator};
 use mem::{self, replace};
-use ops::{Deref, Index};
+use ops::{Deref, Index, InPlace, Place, Placer};
 use rand::{self, Rng};
+use ptr;
 
 use super::table::{self, Bucket, EmptyBucket, FullBucket, FullBucketMut, RawTable, SafeHash};
 use super::table::BucketState::{Empty, Full};
@@ -396,8 +397,6 @@ pub struct HashMap<K, V, S = RandomState> {
     table: RawTable<K, V>,
 
     resize_policy: DefaultResizePolicy,
-
-    long_probes: bool,
 }
 
 /// Search for a pre-hashed key.
@@ -485,7 +484,7 @@ fn robin_hood<'a, K: 'a, V: 'a>(bucket: FullBucketMut<'a, K, V>,
                                 mut hash: SafeHash,
                                 mut key: K,
                                 mut val: V)
-                                -> &'a mut V {
+                                -> FullBucketMut<'a, K, V> {
     let start_index = bucket.index();
     let size = bucket.table().size();
     // Save the *starting point*.
@@ -517,7 +516,7 @@ fn robin_hood<'a, K: 'a, V: 'a>(bucket: FullBucketMut<'a, K, V>,
                     // bucket, which is a FullBucket on top of a
                     // FullBucketMut, into just one FullBucketMut. The "table"
                     // refers to the inner FullBucketMut in this context.
-                    return bucket.into_table().into_mut_refs().1;
+                    return bucket.into_table();
                 }
                 Full(bucket) => bucket,
             };
@@ -655,7 +654,6 @@ impl<K, V, S> HashMap<K, V, S>
             hash_builder: hash_builder,
             resize_policy: DefaultResizePolicy::new(),
             table: RawTable::new(0),
-            long_probes: false,
         }
     }
 
@@ -688,7 +686,6 @@ impl<K, V, S> HashMap<K, V, S>
             hash_builder: hash_builder,
             resize_policy: resize_policy,
             table: RawTable::new(raw_cap),
-            long_probes: false,
         }
     }
 
@@ -746,7 +743,7 @@ impl<K, V, S> HashMap<K, V, S>
             let min_cap = self.len().checked_add(additional).expect("reserve overflow");
             let raw_cap = self.resize_policy.raw_capacity(min_cap);
             self.resize(raw_cap);
-        } else if self.long_probes && remaining <= self.len() {
+        } else if self.table.tag() && remaining <= self.len() {
             // Probe sequence is too long and table is half full,
             // resize early to reduce probing length.
             let new_capacity = self.table.capacity() * 2;
@@ -763,7 +760,6 @@ impl<K, V, S> HashMap<K, V, S>
         assert!(self.table.size() <= new_raw_cap);
         assert!(new_raw_cap.is_power_of_two() || new_raw_cap == 0);
 
-        self.long_probes = false;
         let mut old_table = replace(&mut self.table, RawTable::new(new_raw_cap));
         let old_size = old_table.size();
 
@@ -844,8 +840,7 @@ impl<K, V, S> HashMap<K, V, S>
     /// If the key already exists, the hashtable will be returned untouched
     /// and a reference to the existing element will be returned.
     fn insert_hashed_nocheck(&mut self, hash: SafeHash, k: K, v: V) -> Option<V> {
-        let entry = search_hashed(&mut self.table, hash, |key| *key == k)
-            .into_entry(k, &mut self.long_probes);
+        let entry = search_hashed(&mut self.table, hash, |key| *key == k).into_entry(k);
         match entry {
             Some(Occupied(mut elem)) => Some(elem.insert(v)),
             Some(Vacant(elem)) => {
@@ -1002,7 +997,7 @@ impl<K, V, S> HashMap<K, V, S>
         self.reserve(1);
         let hash = self.make_hash(&key);
         search_hashed(&mut self.table, hash, |q| q.eq(&key))
-            .into_entry(key, &mut self.long_probes).expect("unreachable")
+            .into_entry(key).expect("unreachable")
     }
 
     /// Returns the number of elements in the map.
@@ -1456,7 +1451,7 @@ impl<K, V, M> InternalEntry<K, V, M> {
 
 impl<'a, K, V> InternalEntry<K, V, &'a mut RawTable<K, V>> {
     #[inline]
-    fn into_entry(self, key: K, long_probes: &'a mut bool) -> Option<Entry<'a, K, V>> {
+    fn into_entry(self, key: K) -> Option<Entry<'a, K, V>> {
         match self {
             InternalEntry::Occupied { elem } => {
                 Some(Occupied(OccupiedEntry {
@@ -1469,7 +1464,6 @@ impl<'a, K, V> InternalEntry<K, V, &'a mut RawTable<K, V>> {
                     hash: hash,
                     key: key,
                     elem: elem,
-                    long_probes: long_probes,
                 }))
             }
             InternalEntry::TableIsEmpty => None,
@@ -1542,7 +1536,6 @@ pub struct VacantEntry<'a, K: 'a, V: 'a> {
     hash: SafeHash,
     key: K,
     elem: VacantEntryState<K, V, &'a mut RawTable<K, V>>,
-    long_probes: &'a mut bool,
 }
 
 #[stable(feature= "debug_hash_map", since = "1.12.0")]
@@ -1823,6 +1816,80 @@ impl<'a, K, V> fmt::Debug for Drain<'a, K, V>
         f.debug_list()
             .entries(self.inner.iter())
             .finish()
+    }
+}
+
+/// A place for insertion to a `Entry`.
+///
+/// See [`HashMap::entry`](struct.HashMap.html#method.entry) for details.
+#[must_use = "places do nothing unless written to with `<-` syntax"]
+#[unstable(feature = "collection_placement",
+           reason = "struct name and placement protocol is subject to change",
+           issue = "30172")]
+pub struct EntryPlace<'a, K: 'a, V: 'a> {
+    bucket: FullBucketMut<'a, K, V>,
+}
+
+#[unstable(feature = "collection_placement",
+           reason = "struct name and placement protocol is subject to change",
+           issue = "30172")]
+impl<'a, K: 'a + Debug, V: 'a + Debug> Debug for EntryPlace<'a, K, V> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("EntryPlace")
+            .field("key", self.bucket.read().0)
+            .field("value", self.bucket.read().1)
+            .finish()
+    }
+}
+
+#[unstable(feature = "collection_placement",
+           reason = "struct name and placement protocol is subject to change",
+           issue = "30172")]
+impl<'a, K, V> Drop for EntryPlace<'a, K, V> {
+    fn drop(&mut self) {
+        // Inplacement insertion failed. Only key need to drop.
+        // The value is failed to insert into map.
+        unsafe { self.bucket.remove_key() };
+    }
+}
+
+#[unstable(feature = "collection_placement",
+           reason = "placement protocol is subject to change",
+           issue = "30172")]
+impl<'a, K, V> Placer<V> for Entry<'a, K, V> {
+    type Place = EntryPlace<'a, K, V>;
+
+    fn make_place(self) -> EntryPlace<'a, K, V> {
+        let b = match self {
+            Occupied(mut o) => {
+                unsafe { ptr::drop_in_place(o.elem.read_mut().1); }
+                o.elem
+            }
+            Vacant(v) => {
+                unsafe { v.insert_key() }
+            }
+        };
+        EntryPlace { bucket: b }
+    }
+}
+
+#[unstable(feature = "collection_placement",
+           reason = "placement protocol is subject to change",
+           issue = "30172")]
+impl<'a, K, V> Place<V> for EntryPlace<'a, K, V> {
+    fn pointer(&mut self) -> *mut V {
+        self.bucket.read_mut().1
+    }
+}
+
+#[unstable(feature = "collection_placement",
+           reason = "placement protocol is subject to change",
+           issue = "30172")]
+impl<'a, K, V> InPlace<V> for EntryPlace<'a, K, V> {
+    type Owner = ();
+
+    unsafe fn finalize(self) {
+        mem::forget(self);
     }
 }
 
@@ -2116,18 +2183,39 @@ impl<'a, K: 'a, V: 'a> VacantEntry<'a, K, V> {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn insert(self, value: V) -> &'a mut V {
-        match self.elem {
-            NeqElem(bucket, disp) => {
+        let b = match self.elem {
+            NeqElem(mut bucket, disp) => {
                 if disp >= DISPLACEMENT_THRESHOLD {
-                    *self.long_probes = true;
+                    bucket.table_mut().set_tag(true);
                 }
                 robin_hood(bucket, disp, self.hash, self.key, value)
             },
-            NoElem(bucket, disp) => {
+            NoElem(mut bucket, disp) => {
                 if disp >= DISPLACEMENT_THRESHOLD {
-                    *self.long_probes = true;
+                    bucket.table_mut().set_tag(true);
                 }
-                bucket.put(self.hash, self.key, value).into_mut_refs().1
+                bucket.put(self.hash, self.key, value)
+            },
+        };
+        b.into_mut_refs().1
+    }
+
+    // Only used for InPlacement insert. Avoid unnecessary value copy.
+    // The value remains uninitialized.
+    unsafe fn insert_key(self) -> FullBucketMut<'a, K, V> {
+        match self.elem {
+            NeqElem(mut bucket, disp) => {
+                if disp >= DISPLACEMENT_THRESHOLD {
+                    bucket.table_mut().set_tag(true);
+                }
+                let uninit = mem::uninitialized();
+                robin_hood(bucket, disp, self.hash, self.key, uninit)
+            },
+            NoElem(mut bucket, disp) => {
+                if disp >= DISPLACEMENT_THRESHOLD {
+                    bucket.table_mut().set_tag(true);
+                }
+                bucket.put_key(self.hash, self.key)
             },
         }
     }
@@ -2400,6 +2488,7 @@ mod test_map {
     use super::RandomState;
     use cell::RefCell;
     use rand::{thread_rng, Rng};
+    use panic;
 
     #[test]
     fn test_zero_capacities() {
@@ -3272,5 +3361,58 @@ mod test_map {
             }
         }
         panic!("Adaptive early resize failed");
+    }
+
+    #[test]
+    fn test_placement_in() {
+        let mut map = HashMap::new();
+        map.extend((0..10).map(|i| (i, i)));
+
+        map.entry(100) <- 100;
+        assert_eq!(map[&100], 100);
+
+        map.entry(0) <- 10;
+        assert_eq!(map[&0], 10);
+
+        assert_eq!(map.len(), 11);
+    }
+
+    #[test]
+    fn test_placement_panic() {
+        let mut map = HashMap::new();
+        map.extend((0..10).map(|i| (i, i)));
+
+        fn mkpanic() -> usize { panic!() }
+
+        // modify existing key
+        // when panic happens, previous key is removed.
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| { map.entry(0) <- mkpanic(); }));
+        assert_eq!(map.len(), 9);
+        assert!(!map.contains_key(&0));
+
+        // add new key
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| { map.entry(100) <- mkpanic(); }));
+        assert_eq!(map.len(), 9);
+        assert!(!map.contains_key(&100));
+    }
+
+    #[test]
+    fn test_placement_drop() {
+        // correctly drop
+        struct TestV<'a>(&'a mut bool);
+        impl<'a> Drop for TestV<'a> {
+            fn drop(&mut self) {
+                if !*self.0 { panic!("value double drop!"); } // no double drop
+                *self.0 = false;
+            }
+        }
+
+        fn makepanic<'a>() -> TestV<'a> { panic!() }
+
+        let mut can_drop = true;
+        let mut hm = HashMap::new();
+        hm.insert(0, TestV(&mut can_drop));
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| { hm.entry(0) <- makepanic(); }));
+        assert_eq!(hm.len(), 0);
     }
 }

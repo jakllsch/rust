@@ -16,6 +16,7 @@ use std::mem;
 use syntax::abi;
 use syntax::ast;
 use syntax::attr;
+use syntax::tokenstream::TokenStream;
 use syntax_pos::Span;
 
 use rustc::hir::map as hir_map;
@@ -205,13 +206,17 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
                     }
                     let imported_from = self.cx.sess().cstore.original_crate_name(def_id.krate);
                     let def = match self.cx.sess().cstore.load_macro(def_id, self.cx.sess()) {
-                        LoadedMacro::MacroRules(macro_rules) => macro_rules,
+                        LoadedMacro::MacroDef(macro_def) => macro_def,
                         // FIXME(jseyfried): document proc macro reexports
                         LoadedMacro::ProcMacro(..) => continue,
                     };
 
-                    // FIXME(jseyfried) merge with `self.visit_macro()`
-                    let matchers = def.body.chunks(4).map(|arm| arm[0].span()).collect();
+                    let matchers = if let ast::ItemKind::MacroDef(ref tokens) = def.node {
+                        let tts: Vec<_> = TokenStream::from(tokens.clone()).into_trees().collect();
+                        tts.chunks(4).map(|arm| arm[0].span()).collect()
+                    } else {
+                        unreachable!()
+                    };
                     om.macros.push(Macro {
                         def_id: def_id,
                         attrs: def.attrs.clone().into(),
@@ -520,8 +525,9 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
 
     // convert each exported_macro into a doc item
     fn visit_local_macro(&self, def: &hir::MacroDef) -> Macro {
+        let tts = def.body.trees().collect::<Vec<_>>();
         // Extract the spans of all matchers. They represent the "interface" of the macro.
-        let matchers = def.body.chunks(4).map(|arm| arm[0].span()).collect();
+        let matchers = tts.chunks(4).map(|arm| arm[0].span()).collect();
 
         Macro {
             def_id: self.cx.tcx.hir.local_def_id(def.id),

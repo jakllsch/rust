@@ -8,6 +8,7 @@
 # option. This file may not be copied, modified, or distributed
 # except according to those terms.
 
+from __future__ import print_function
 import argparse
 import contextlib
 import datetime
@@ -295,8 +296,10 @@ class RustBuild(object):
 
     def get_mk(self, key):
         for line in iter(self.config_mk.splitlines()):
-            if line.startswith(key):
-                return line[line.find(':=') + 2:].strip()
+            if line.startswith(key + ' '):
+                var = line[line.find(':=') + 2:].strip()
+                if var != '':
+                    return var
         return None
 
     def cargo(self):
@@ -437,6 +440,8 @@ class RustBuild(object):
                 sys.exit(err)
         elif ostype == 'Darwin':
             ostype = 'apple-darwin'
+        elif ostype == 'Haiku':
+            ostype = 'unknown-haiku'
         elif ostype.startswith('MINGW'):
             # msys' `uname` does not print gcc configuration, but prints msys
             # configuration. so we cannot believe `uname -m`:
@@ -464,8 +469,11 @@ class RustBuild(object):
             cputype = 'i686'
         elif cputype in {'xscale', 'arm'}:
             cputype = 'arm'
-        elif cputype == 'armv7l':
+        elif cputype in {'armv6l', 'armv7l', 'armv8l'}:
             cputype = 'arm'
+            ostype += 'eabihf'
+        elif cputype == 'armv7l':
+            cputype = 'armv7'
             ostype += 'eabihf'
         elif cputype == 'aarch64':
             cputype = 'aarch64'
@@ -487,12 +495,20 @@ class RustBuild(object):
                 raise ValueError('unknown byteorder: ' + sys.byteorder)
             # only the n64 ABI is supported, indicate it
             ostype += 'abi64'
-        elif cputype in {'powerpc', 'ppc', 'ppc64'}:
+        elif cputype in {'powerpc', 'ppc'}:
             cputype = 'powerpc'
+        elif cputype in {'powerpc64', 'ppc64'}:
+            cputype = 'powerpc64'
+        elif cputype in {'powerpc64le', 'ppc64le'}:
+            cputype = 'powerpc64le'
         elif cputype == 'sparcv9':
             pass
         elif cputype in {'amd64', 'x86_64', 'x86-64', 'x64'}:
             cputype = 'x86_64'
+        elif cputype == 's390x':
+            cputype = 's390x'
+        elif cputype == 'BePC':
+            cputype = 'i686'
         else:
             err = "unknown cpu type: " + cputype
             if self.verbose:
@@ -501,7 +517,7 @@ class RustBuild(object):
 
         return "{}-{}".format(cputype, ostype)
 
-def main():
+def bootstrap():
     parser = argparse.ArgumentParser(description='Build rust')
     parser.add_argument('--config')
     parser.add_argument('--clean', action='store_true')
@@ -564,8 +580,6 @@ def main():
     rb._rustc_channel, rb._rustc_date = data['rustc'].split('-', 1)
     rb._cargo_rev = data['cargo']
 
-    start_time = time()
-
     # Fetch/build the bootstrap
     rb.build = rb.build_triple()
     rb.download_stage0()
@@ -582,9 +596,19 @@ def main():
     env["BOOTSTRAP_PARENT_ID"] = str(os.getpid())
     rb.run(args, env)
 
-    end_time = time()
-
-    print("Build completed in %s" % format_build_time(end_time - start_time))
+def main():
+    start_time = time()
+    try:
+        bootstrap()
+        print("Build completed successfully in %s" % format_build_time(time() - start_time))
+    except (SystemExit, KeyboardInterrupt) as e:
+        if hasattr(e, 'code') and isinstance(e.code, int):
+            exit_code = e.code
+        else:
+            exit_code = 1
+            print(e)
+        print("Build completed unsuccessfully in %s" % format_build_time(time() - start_time))
+        sys.exit(exit_code)
 
 if __name__ == '__main__':
     main()

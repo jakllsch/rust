@@ -13,6 +13,7 @@ use codemap::{DUMMY_SP, dummy_spanned};
 use ext::base::ExtCtxt;
 use ext::expand::{Expansion, ExpansionKind};
 use ext::hygiene::Mark;
+use tokenstream::TokenStream;
 use fold::*;
 use ptr::P;
 use symbol::keywords;
@@ -20,13 +21,12 @@ use util::move_map::MoveMap;
 use util::small_vector::SmallVector;
 
 use std::collections::HashMap;
-use std::mem;
 
 pub fn placeholder(kind: ExpansionKind, id: ast::NodeId) -> Expansion {
     fn mac_placeholder() -> ast::Mac {
         dummy_spanned(ast::Mac_ {
             path: ast::Path { span: DUMMY_SP, segments: Vec::new() },
-            tts: Vec::new(),
+            tts: TokenStream::empty().into(),
         })
     }
 
@@ -173,19 +173,10 @@ impl<'a, 'b> Folder for PlaceholderExpander<'a, 'b> {
 
     fn fold_block(&mut self, block: P<ast::Block>) -> P<ast::Block> {
         noop_fold_block(block, self).map(|mut block| {
-            let mut macros = Vec::new();
             let mut remaining_stmts = block.stmts.len();
 
             block.stmts = block.stmts.move_flat_map(|mut stmt| {
                 remaining_stmts -= 1;
-
-                // `macro_rules!` macro definition
-                if let ast::StmtKind::Item(ref item) = stmt.node {
-                    if let ast::ItemKind::Mac(_) = item.node {
-                        macros.push(Mark::from_placeholder_id(item.id));
-                        return None;
-                    }
-                }
 
                 match stmt.node {
                     // Avoid wasting a node id on a trailing expression statement,
@@ -198,11 +189,6 @@ impl<'a, 'b> Folder for PlaceholderExpander<'a, 'b> {
                     }
 
                     _ => {}
-                }
-
-                if self.monotonic && !macros.is_empty() {
-                    let macros = mem::replace(&mut macros, Vec::new());
-                    self.cx.resolver.add_expansions_at_stmt(stmt.id, macros);
                 }
 
                 Some(stmt)

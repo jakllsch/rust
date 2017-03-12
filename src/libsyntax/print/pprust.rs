@@ -286,7 +286,7 @@ pub fn token_to_string(tok: &Token) -> String {
             token::NtStmt(ref e)        => stmt_to_string(&e),
             token::NtPat(ref e)         => pat_to_string(&e),
             token::NtIdent(ref e)       => ident_to_string(e.node),
-            token::NtTT(ref e)          => tt_to_string(&e),
+            token::NtTT(ref tree)       => tt_to_string(tree.clone()),
             token::NtArm(ref e)         => arm_to_string(&e),
             token::NtImplItem(ref e)    => impl_item_to_string(&e),
             token::NtTraitItem(ref e)   => trait_item_to_string(&e),
@@ -321,12 +321,12 @@ pub fn lifetime_to_string(e: &ast::Lifetime) -> String {
     to_string(|s| s.print_lifetime(e))
 }
 
-pub fn tt_to_string(tt: &tokenstream::TokenTree) -> String {
+pub fn tt_to_string(tt: tokenstream::TokenTree) -> String {
     to_string(|s| s.print_tt(tt))
 }
 
 pub fn tts_to_string(tts: &[tokenstream::TokenTree]) -> String {
-    to_string(|s| s.print_tts(tts))
+    to_string(|s| s.print_tts(tts.iter().cloned().collect()))
 }
 
 pub fn stmt_to_string(stmt: &ast::Stmt) -> String {
@@ -1318,13 +1318,22 @@ impl<'a> State<'a> {
                 self.bclose(item.span)?;
             }
             ast::ItemKind::Mac(codemap::Spanned { ref node, .. }) => {
-                self.print_visibility(&item.vis)?;
                 self.print_path(&node.path, false, 0, false)?;
                 word(&mut self.s, "! ")?;
                 self.print_ident(item.ident)?;
                 self.cbox(INDENT_UNIT)?;
                 self.popen()?;
-                self.print_tts(&node.tts[..])?;
+                self.print_tts(node.stream())?;
+                self.pclose()?;
+                word(&mut self.s, ";")?;
+                self.end()?;
+            }
+            ast::ItemKind::MacroDef(ref tts) => {
+                word(&mut self.s, "macro_rules! ")?;
+                self.print_ident(item.ident)?;
+                self.cbox(INDENT_UNIT)?;
+                self.popen()?;
+                self.print_tts(tts.clone().into())?;
                 self.pclose()?;
                 word(&mut self.s, ";")?;
                 self.end()?;
@@ -1456,8 +1465,8 @@ impl<'a> State<'a> {
     /// appropriate macro, transcribe back into the grammar we just parsed from,
     /// and then pretty-print the resulting AST nodes (so, e.g., we print
     /// expression arguments as expressions). It can be done! I think.
-    pub fn print_tt(&mut self, tt: &tokenstream::TokenTree) -> io::Result<()> {
-        match *tt {
+    pub fn print_tt(&mut self, tt: tokenstream::TokenTree) -> io::Result<()> {
+        match tt {
             TokenTree::Token(_, ref tk) => {
                 word(&mut self.s, &token_to_string(tk))?;
                 match *tk {
@@ -1470,16 +1479,16 @@ impl<'a> State<'a> {
             TokenTree::Delimited(_, ref delimed) => {
                 word(&mut self.s, &token_to_string(&delimed.open_token()))?;
                 space(&mut self.s)?;
-                self.print_tts(&delimed.tts)?;
+                self.print_tts(delimed.stream())?;
                 space(&mut self.s)?;
                 word(&mut self.s, &token_to_string(&delimed.close_token()))
             },
         }
     }
 
-    pub fn print_tts(&mut self, tts: &[tokenstream::TokenTree]) -> io::Result<()> {
+    pub fn print_tts(&mut self, tts: tokenstream::TokenStream) -> io::Result<()> {
         self.ibox(0)?;
-        for (i, tt) in tts.iter().enumerate() {
+        for (i, tt) in tts.into_trees().enumerate() {
             if i != 0 {
                 space(&mut self.s)?;
             }
@@ -1550,7 +1559,7 @@ impl<'a> State<'a> {
                 word(&mut self.s, "! ")?;
                 self.cbox(INDENT_UNIT)?;
                 self.popen()?;
-                self.print_tts(&node.tts[..])?;
+                self.print_tts(node.stream())?;
                 self.pclose()?;
                 word(&mut self.s, ";")?;
                 self.end()?
@@ -1586,7 +1595,7 @@ impl<'a> State<'a> {
                 word(&mut self.s, "! ")?;
                 self.cbox(INDENT_UNIT)?;
                 self.popen()?;
-                self.print_tts(&node.tts[..])?;
+                self.print_tts(node.stream())?;
                 self.pclose()?;
                 word(&mut self.s, ";")?;
                 self.end()?
@@ -1779,7 +1788,7 @@ impl<'a> State<'a> {
             }
             token::NoDelim => {}
         }
-        self.print_tts(&m.node.tts)?;
+        self.print_tts(m.node.stream())?;
         match delim {
             token::Paren => self.pclose(),
             token::Bracket => word(&mut self.s, "]"),

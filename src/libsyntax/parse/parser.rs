@@ -9,7 +9,7 @@
 // except according to those terms.
 
 use abi::{self, Abi};
-use ast::BareFnTy;
+use ast::{AttrStyle, BareFnTy};
 use ast::{RegionTyParamBound, TraitTyParamBound, TraitBoundModifier};
 use ast::Unsafety;
 use ast::{Mod, Arg, Arm, Attribute, BindingMode, TraitItemKind};
@@ -27,7 +27,7 @@ use ast::Local;
 use ast::MacStmtStyle;
 use ast::Mac_;
 use ast::{MutTy, Mutability};
-use ast::{Pat, PatKind};
+use ast::{Pat, PatKind, PathSegment};
 use ast::{PolyTraitRef, QSelf};
 use ast::{Stmt, StmtKind};
 use ast::{VariantData, StructField};
@@ -46,21 +46,21 @@ use errors::{self, DiagnosticBuilder};
 use parse::{self, classify, token};
 use parse::common::SeqSep;
 use parse::lexer::TokenAndSpan;
+use parse::lexer::comments::{doc_comment_style, strip_doc_comment_decoration};
 use parse::obsolete::ObsoleteSyntax;
 use parse::{new_sub_parser_from_file, ParseSess, Directory, DirectoryOwnership};
 use util::parser::{AssocOp, Fixity};
 use print::pprust;
 use ptr::P;
 use parse::PResult;
-use tokenstream::{Delimited, TokenTree};
+use tokenstream::{self, Delimited, ThinTokenStream, TokenTree, TokenStream};
 use symbol::{Symbol, keywords};
 use util::ThinVec;
 
 use std::collections::HashSet;
-use std::mem;
+use std::{cmp, mem, slice};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::slice;
 
 bitflags! {
     flags Restrictions: u8 {
@@ -175,10 +175,110 @@ pub struct Parser<'a> {
     /// into modules, and sub-parsers have new values for this name.
     pub root_module_name: Option<String>,
     pub expected_tokens: Vec<TokenType>,
-    pub tts: Vec<(TokenTree, usize)>,
+    token_cursor: TokenCursor,
     pub desugar_doc_comments: bool,
     /// Whether we should configure out of line modules as we parse.
     pub cfg_mods: bool,
+}
+
+struct TokenCursor {
+    frame: TokenCursorFrame,
+    stack: Vec<TokenCursorFrame>,
+}
+
+struct TokenCursorFrame {
+    delim: token::DelimToken,
+    span: Span,
+    open_delim: bool,
+    tree_cursor: tokenstream::Cursor,
+    close_delim: bool,
+}
+
+impl TokenCursorFrame {
+    fn new(sp: Span, delimited: &Delimited) -> Self {
+        TokenCursorFrame {
+            delim: delimited.delim,
+            span: sp,
+            open_delim: delimited.delim == token::NoDelim,
+            tree_cursor: delimited.stream().into_trees(),
+            close_delim: delimited.delim == token::NoDelim,
+        }
+    }
+}
+
+impl TokenCursor {
+    fn next(&mut self) -> TokenAndSpan {
+        loop {
+            let tree = if !self.frame.open_delim {
+                self.frame.open_delim = true;
+                Delimited { delim: self.frame.delim, tts: TokenStream::empty().into() }
+                    .open_tt(self.frame.span)
+            } else if let Some(tree) = self.frame.tree_cursor.next() {
+                tree
+            } else if !self.frame.close_delim {
+                self.frame.close_delim = true;
+                Delimited { delim: self.frame.delim, tts: TokenStream::empty().into() }
+                    .close_tt(self.frame.span)
+            } else if let Some(frame) = self.stack.pop() {
+                self.frame = frame;
+                continue
+            } else {
+                return TokenAndSpan { tok: token::Eof, sp: syntax_pos::DUMMY_SP }
+            };
+
+            match tree {
+                TokenTree::Token(sp, tok) => return TokenAndSpan { tok: tok, sp: sp },
+                TokenTree::Delimited(sp, ref delimited) => {
+                    let frame = TokenCursorFrame::new(sp, delimited);
+                    self.stack.push(mem::replace(&mut self.frame, frame));
+                }
+            }
+        }
+    }
+
+    fn next_desugared(&mut self) -> TokenAndSpan {
+        let (sp, name) = match self.next() {
+            TokenAndSpan { sp, tok: token::DocComment(name) } => (sp, name),
+            tok @ _ => return tok,
+        };
+
+        let stripped = strip_doc_comment_decoration(&name.as_str());
+
+        // Searches for the occurrences of `"#*` and returns the minimum number of `#`s
+        // required to wrap the text.
+        let mut num_of_hashes = 0;
+        let mut count = 0;
+        for ch in stripped.chars() {
+            count = match ch {
+                '"' => 1,
+                '#' if count > 0 => count + 1,
+                _ => 0,
+            };
+            num_of_hashes = cmp::max(num_of_hashes, count);
+        }
+
+        let body = TokenTree::Delimited(sp, Delimited {
+            delim: token::Bracket,
+            tts: [TokenTree::Token(sp, token::Ident(ast::Ident::from_str("doc"))),
+                  TokenTree::Token(sp, token::Eq),
+                  TokenTree::Token(sp, token::Literal(
+                      token::StrRaw(Symbol::intern(&stripped), num_of_hashes), None))]
+                .iter().cloned().collect::<TokenStream>().into(),
+        });
+
+        self.stack.push(mem::replace(&mut self.frame, TokenCursorFrame::new(sp, &Delimited {
+            delim: token::NoDelim,
+            tts: if doc_comment_style(&name.as_str()) == AttrStyle::Inner {
+                [TokenTree::Token(sp, token::Pound), TokenTree::Token(sp, token::Not), body]
+                    .iter().cloned().collect::<TokenStream>().into()
+            } else {
+                [TokenTree::Token(sp, token::Pound), body]
+                    .iter().cloned().collect::<TokenStream>().into()
+            },
+        })));
+
+        self.next()
+    }
 }
 
 #[derive(PartialEq, Eq, Clone)]
@@ -309,14 +409,10 @@ impl From<P<Expr>> for LhsExpr {
 
 impl<'a> Parser<'a> {
     pub fn new(sess: &'a ParseSess,
-               tokens: Vec<TokenTree>,
+               tokens: TokenStream,
                directory: Option<Directory>,
                desugar_doc_comments: bool)
                -> Self {
-        let tt = TokenTree::Delimited(syntax_pos::DUMMY_SP, Rc::new(Delimited {
-            delim: token::NoDelim,
-            tts: tokens,
-        }));
         let mut parser = Parser {
             sess: sess,
             token: token::Underscore,
@@ -328,7 +424,13 @@ impl<'a> Parser<'a> {
             directory: Directory { path: PathBuf::new(), ownership: DirectoryOwnership::Owned },
             root_module_name: None,
             expected_tokens: Vec::new(),
-            tts: if tt.len() > 0 { vec![(tt, 0)] } else { Vec::new() },
+            token_cursor: TokenCursor {
+                frame: TokenCursorFrame::new(syntax_pos::DUMMY_SP, &Delimited {
+                    delim: token::NoDelim,
+                    tts: tokens.into(),
+                }),
+                stack: Vec::new(),
+            },
             desugar_doc_comments: desugar_doc_comments,
             cfg_mods: true,
         };
@@ -346,29 +448,14 @@ impl<'a> Parser<'a> {
     }
 
     fn next_tok(&mut self) -> TokenAndSpan {
-        loop {
-            let tok = if let Some((tts, i)) = self.tts.pop() {
-                let tt = tts.get_tt(i);
-                if i + 1 < tts.len() {
-                    self.tts.push((tts, i + 1));
-                }
-                if let TokenTree::Token(sp, tok) = tt {
-                    TokenAndSpan { tok: tok, sp: sp }
-                } else {
-                    self.tts.push((tt, 0));
-                    continue
-                }
-            } else {
-                TokenAndSpan { tok: token::Eof, sp: self.span }
-            };
-
-            match tok.tok {
-                token::DocComment(name) if self.desugar_doc_comments => {
-                    self.tts.push((TokenTree::Token(tok.sp, token::DocComment(name)), 0));
-                }
-                _ => return tok,
-            }
+        let mut next = match self.desugar_doc_comments {
+            true => self.token_cursor.next_desugared(),
+            false => self.token_cursor.next(),
+        };
+        if next.sp == syntax_pos::DUMMY_SP {
+            next.sp = self.prev_span;
         }
+        next
     }
 
     /// Convert a token to a string using self's reader
@@ -945,13 +1032,6 @@ impl<'a> Parser<'a> {
         self.check_unknown_macro_variable();
     }
 
-    /// Advance the parser by one token and return the bumped token.
-    pub fn bump_and_get(&mut self) -> token::Token {
-        let old_token = mem::replace(&mut self.token, token::Underscore);
-        self.bump();
-        old_token
-    }
-
     /// Advance the parser using provided token as a next one. Use this when
     /// consuming a part of a token. For example a single `<` from `<<`.
     pub fn bump_with(&mut self,
@@ -968,23 +1048,20 @@ impl<'a> Parser<'a> {
         self.expected_tokens.clear();
     }
 
-    pub fn look_ahead<R, F>(&mut self, dist: usize, f: F) -> R where
+    pub fn look_ahead<R, F>(&self, dist: usize, f: F) -> R where
         F: FnOnce(&token::Token) -> R,
     {
         if dist == 0 {
-            return f(&self.token);
+            return f(&self.token)
         }
-        let mut tok = token::Eof;
-        if let Some(&(ref tts, mut i)) = self.tts.last() {
-            i += dist - 1;
-            if i < tts.len() {
-                tok = match tts.get_tt(i) {
-                    TokenTree::Token(_, tok) => tok,
-                    TokenTree::Delimited(_, delimited) => token::OpenDelim(delimited.delim),
-                };
-            }
-        }
-        f(&tok)
+
+        f(&match self.token_cursor.frame.tree_cursor.look_ahead(dist - 1) {
+            Some(tree) => match tree {
+                TokenTree::Token(_, tok) => tok,
+                TokenTree::Delimited(_, delimited) => token::OpenDelim(delimited.delim),
+            },
+            None => token::CloseDelim(self.token_cursor.frame.delim),
+        })
     }
     pub fn fatal(&self, m: &str) -> DiagnosticBuilder<'a> {
         self.sess.span_diagnostic.struct_span_fatal(self.span, m)
@@ -1734,7 +1811,7 @@ impl<'a> Parser<'a> {
         };
 
         if is_global {
-            segments.insert(0, ast::PathSegment::crate_root());
+            segments.insert(0, PathSegment::crate_root());
         }
 
         // Assemble the span.
@@ -1752,11 +1829,12 @@ impl<'a> Parser<'a> {
     /// - `a::b<T,U>::c<V,W>`
     /// - `a::b<T,U>::c(V) -> W`
     /// - `a::b<T,U>::c(V)`
-    pub fn parse_path_segments_without_colons(&mut self) -> PResult<'a, Vec<ast::PathSegment>> {
+    pub fn parse_path_segments_without_colons(&mut self) -> PResult<'a, Vec<PathSegment>> {
         let mut segments = Vec::new();
         loop {
             // First, parse an identifier.
             let identifier = self.parse_path_segment_ident()?;
+            let ident_span = self.prev_span;
 
             if self.check(&token::ModSep) && self.look_ahead(1, |t| *t == token::Lt) {
                 self.bump();
@@ -1804,7 +1882,11 @@ impl<'a> Parser<'a> {
             };
 
             // Assemble and push the result.
-            segments.push(ast::PathSegment { identifier: identifier, parameters: parameters });
+            segments.push(PathSegment {
+                identifier: identifier,
+                span: ident_span,
+                parameters: parameters
+            });
 
             // Continue only if we see a `::`
             if !self.eat(&token::ModSep) {
@@ -1815,15 +1897,16 @@ impl<'a> Parser<'a> {
 
     /// Examples:
     /// - `a::b::<T,U>::c`
-    pub fn parse_path_segments_with_colons(&mut self) -> PResult<'a, Vec<ast::PathSegment>> {
+    pub fn parse_path_segments_with_colons(&mut self) -> PResult<'a, Vec<PathSegment>> {
         let mut segments = Vec::new();
         loop {
             // First, parse an identifier.
             let identifier = self.parse_path_segment_ident()?;
+            let ident_span = self.prev_span;
 
             // If we do not see a `::`, stop.
             if !self.eat(&token::ModSep) {
-                segments.push(identifier.into());
+                segments.push(PathSegment::from_ident(identifier, ident_span));
                 return Ok(segments);
             }
 
@@ -1832,8 +1915,9 @@ impl<'a> Parser<'a> {
                 // Consumed `a::b::<`, go look for types
                 let (lifetimes, types, bindings) = self.parse_generic_args()?;
                 self.expect_gt()?;
-                segments.push(ast::PathSegment {
+                segments.push(PathSegment {
                     identifier: identifier,
+                    span: ident_span,
                     parameters: ast::AngleBracketedParameterData {
                         lifetimes: lifetimes,
                         types: types,
@@ -1847,7 +1931,7 @@ impl<'a> Parser<'a> {
                 }
             } else {
                 // Consumed `a::`, go look for `b`
-                segments.push(identifier.into());
+                segments.push(PathSegment::from_ident(identifier, ident_span));
             }
         }
     }
@@ -1855,14 +1939,14 @@ impl<'a> Parser<'a> {
     /// Examples:
     /// - `a::b::c`
     pub fn parse_path_segments_without_types(&mut self)
-                                             -> PResult<'a, Vec<ast::PathSegment>> {
+                                             -> PResult<'a, Vec<PathSegment>> {
         let mut segments = Vec::new();
         loop {
             // First, parse an identifier.
             let identifier = self.parse_path_segment_ident()?;
 
             // Assemble and push the result.
-            segments.push(identifier.into());
+            segments.push(PathSegment::from_ident(identifier, self.prev_span));
 
             // If we do not see a `::` or see `::{`/`::*`, stop.
             if !self.check(&token::ModSep) || self.is_import_coupler() {
@@ -2022,10 +2106,10 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn expect_delimited_token_tree(&mut self) -> PResult<'a, (token::DelimToken, Vec<TokenTree>)> {
+    fn expect_delimited_token_tree(&mut self) -> PResult<'a, (token::DelimToken, ThinTokenStream)> {
         match self.token {
             token::OpenDelim(delim) => self.parse_token_tree().map(|tree| match tree {
-                TokenTree::Delimited(_, delimited) => (delim, delimited.tts.clone()),
+                TokenTree::Delimited(_, delimited) => (delim, delimited.stream().into()),
                 _ => unreachable!(),
             }),
             _ => Err(self.fatal("expected open delimiter")),
@@ -2569,13 +2653,22 @@ impl<'a> Parser<'a> {
     pub fn parse_token_tree(&mut self) -> PResult<'a, TokenTree> {
         match self.token {
             token::OpenDelim(..) => {
-                let tt = self.tts.pop().unwrap().0;
-                self.span = tt.span();
+                let frame = mem::replace(&mut self.token_cursor.frame,
+                                         self.token_cursor.stack.pop().unwrap());
+                self.span = frame.span;
                 self.bump();
-                return Ok(tt);
+                return Ok(TokenTree::Delimited(frame.span, Delimited {
+                    delim: frame.delim,
+                    tts: frame.tree_cursor.original_stream().into(),
+                }));
             },
             token::CloseDelim(_) | token::Eof => unreachable!(),
-            _ => Ok(TokenTree::Token(self.span, self.bump_and_get())),
+            _ => {
+                let token = mem::replace(&mut self.token, token::Underscore);
+                let res = Ok(TokenTree::Token(self.span, token));
+                self.bump();
+                res
+            }
         }
     }
 
@@ -3613,9 +3706,39 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn is_union_item(&mut self) -> bool {
+    fn is_union_item(&self) -> bool {
         self.token.is_keyword(keywords::Union) &&
         self.look_ahead(1, |t| t.is_ident() && !t.is_any_keyword())
+    }
+
+    fn eat_macro_def(&mut self, attrs: &[Attribute], vis: &Visibility)
+                     -> PResult<'a, Option<P<Item>>> {
+        let lo = self.span.lo;
+        match self.token {
+            token::Ident(ident) if ident.name == "macro_rules" => {
+                if self.look_ahead(1, |t| *t == token::Not) {
+                    let prev_span = self.prev_span;
+                    self.complain_if_pub_macro(vis, prev_span);
+                    self.bump();
+                    self.bump();
+                }
+            }
+            _ => return Ok(None),
+        };
+
+        let id = self.parse_ident()?;
+        let (delim, tts) = self.expect_delimited_token_tree()?;
+        if delim != token::Brace {
+            if !self.eat(&token::Semi) {
+                let msg = "macros that expand to items must either be surrounded with braces \
+                           or followed by a semicolon";
+                self.span_err(self.prev_span, msg);
+            }
+        }
+
+        let hi = self.prev_span.hi;
+        let kind = ItemKind::MacroDef(tts);
+        Ok(Some(self.mk_item(lo, hi, id, kind, Visibility::Inherited, attrs.to_owned())))
     }
 
     fn parse_stmt_without_recovery(&mut self,
@@ -3630,6 +3753,12 @@ impl<'a> Parser<'a> {
             Stmt {
                 id: ast::DUMMY_NODE_ID,
                 node: StmtKind::Local(self.parse_local(attrs.into())?),
+                span: mk_sp(lo, self.prev_span.hi),
+            }
+        } else if let Some(macro_def) = self.eat_macro_def(&attrs, &Visibility::Inherited)? {
+            Stmt {
+                id: ast::DUMMY_NODE_ID,
+                node: StmtKind::Item(macro_def),
                 span: mk_sp(lo, self.prev_span.hi),
             }
         // Starts like a simple path, but not a union item.
@@ -4519,7 +4648,7 @@ impl<'a> Parser<'a> {
 
         let mut attrs = self.parse_outer_attributes()?;
         let lo = self.span.lo;
-        let vis = self.parse_visibility(true)?;
+        let vis = self.parse_visibility()?;
         let defaultness = self.parse_defaultness()?;
         let (name, node) = if self.eat_keyword(keywords::Type) {
             let name = self.parse_ident()?;
@@ -4850,7 +4979,7 @@ impl<'a> Parser<'a> {
             |p| {
                 let attrs = p.parse_outer_attributes()?;
                 let lo = p.span.lo;
-                let mut vis = p.parse_visibility(false)?;
+                let mut vis = p.parse_visibility()?;
                 let ty_is_interpolated =
                     p.token.is_interpolated() || p.look_ahead(1, |t| t.is_interpolated());
                 let mut ty = p.parse_ty()?;
@@ -4907,38 +5036,46 @@ impl<'a> Parser<'a> {
     fn parse_struct_decl_field(&mut self) -> PResult<'a, StructField> {
         let attrs = self.parse_outer_attributes()?;
         let lo = self.span.lo;
-        let vis = self.parse_visibility(true)?;
+        let vis = self.parse_visibility()?;
         self.parse_single_struct_field(lo, vis, attrs)
     }
 
-    // If `allow_path` is false, just parse the `pub` in `pub(path)` (but still parse `pub(crate)`)
-    fn parse_visibility(&mut self, allow_path: bool) -> PResult<'a, Visibility> {
-        let pub_crate = |this: &mut Self| {
-            let span = this.prev_span;
-            this.expect(&token::CloseDelim(token::Paren))?;
-            Ok(Visibility::Crate(span))
-        };
-
+    // Parse `pub`, `pub(crate)` and `pub(in path)` plus shortcuts
+    // `pub(self)` for `pub(in self)` and `pub(super)` for `pub(in super)`.
+    fn parse_visibility(&mut self) -> PResult<'a, Visibility> {
         if !self.eat_keyword(keywords::Pub) {
-            Ok(Visibility::Inherited)
-        } else if !allow_path {
-            // Look ahead to avoid eating the `(` in `pub(path)` while still parsing `pub(crate)`
-            if self.token == token::OpenDelim(token::Paren) &&
-               self.look_ahead(1, |t| t.is_keyword(keywords::Crate)) {
-                self.bump(); self.bump();
-                pub_crate(self)
-            } else {
-                Ok(Visibility::Public)
-            }
-        } else if !self.eat(&token::OpenDelim(token::Paren)) {
-            Ok(Visibility::Public)
-        } else if self.eat_keyword(keywords::Crate) {
-            pub_crate(self)
-        } else {
-            let path = self.parse_path(PathStyle::Mod)?.default_to_global();
-            self.expect(&token::CloseDelim(token::Paren))?;
-            Ok(Visibility::Restricted { path: P(path), id: ast::DUMMY_NODE_ID })
+            return Ok(Visibility::Inherited)
         }
+
+        if self.check(&token::OpenDelim(token::Paren)) {
+            if self.look_ahead(1, |t| t.is_keyword(keywords::Crate)) {
+                // `pub(crate)`
+                self.bump(); // `(`
+                self.bump(); // `crate`
+                let vis = Visibility::Crate(self.prev_span);
+                self.expect(&token::CloseDelim(token::Paren))?; // `)`
+                return Ok(vis)
+            } else if self.look_ahead(1, |t| t.is_keyword(keywords::In)) {
+                // `pub(in path)`
+                self.bump(); // `(`
+                self.bump(); // `in`
+                let path = self.parse_path(PathStyle::Mod)?.default_to_global(); // `path`
+                let vis = Visibility::Restricted { path: P(path), id: ast::DUMMY_NODE_ID };
+                self.expect(&token::CloseDelim(token::Paren))?; // `)`
+                return Ok(vis)
+            } else if self.look_ahead(2, |t| t == &token::CloseDelim(token::Paren)) &&
+                      self.look_ahead(1, |t| t.is_keyword(keywords::Super) ||
+                                             t.is_keyword(keywords::SelfValue)) {
+                // `pub(self)` or `pub(super)`
+                self.bump(); // `(`
+                let path = self.parse_path(PathStyle::Mod)?.default_to_global(); // `super`/`self`
+                let vis = Visibility::Restricted { path: P(path), id: ast::DUMMY_NODE_ID };
+                self.expect(&token::CloseDelim(token::Paren))?; // `)`
+                return Ok(vis)
+            }
+        }
+
+        Ok(Visibility::Public)
     }
 
     /// Parse defaultness: DEFAULT or nothing
@@ -5413,7 +5550,7 @@ impl<'a> Parser<'a> {
 
         let lo = self.span.lo;
 
-        let visibility = self.parse_visibility(true)?;
+        let visibility = self.parse_visibility()?;
 
         if self.eat_keyword(keywords::Use) {
             // USE ITEM
@@ -5681,6 +5818,10 @@ impl<'a> Parser<'a> {
                                     maybe_append(attrs, extra_attrs));
             return Ok(Some(item));
         }
+        if let Some(macro_def) = self.eat_macro_def(&attrs, &visibility)? {
+            return Ok(Some(macro_def));
+        }
+
         self.parse_macro_use_or_failure(attrs,macros_allowed,attributes_allowed,lo,visibility)
     }
 
@@ -5688,7 +5829,7 @@ impl<'a> Parser<'a> {
     fn parse_foreign_item(&mut self) -> PResult<'a, Option<ForeignItem>> {
         let attrs = self.parse_outer_attributes()?;
         let lo = self.span.lo;
-        let visibility = self.parse_visibility(true)?;
+        let visibility = self.parse_visibility()?;
 
         if self.check_keyword(keywords::Static) {
             // FOREIGN STATIC ITEM
@@ -5816,7 +5957,7 @@ impl<'a> Parser<'a> {
             // `{foo, bar}`, `::{foo, bar}`, `*`, or `::*`.
             self.eat(&token::ModSep);
             let prefix = ast::Path {
-                segments: vec![ast::PathSegment::crate_root()],
+                segments: vec![PathSegment::crate_root()],
                 span: mk_sp(lo, self.span.hi),
             };
             let view_path_kind = if self.eat(&token::BinOp(token::Star)) {
@@ -5862,7 +6003,6 @@ impl<'a> Parser<'a> {
             attrs: self.parse_inner_attributes()?,
             module: self.parse_mod_items(&token::Eof, lo)?,
             span: mk_sp(lo, self.span.lo),
-            exported_macros: Vec::new(),
         })
     }
 

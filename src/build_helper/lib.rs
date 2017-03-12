@@ -12,9 +12,11 @@
 
 extern crate filetime;
 
-use std::fs;
-use std::process::{Command, Stdio};
+use std::fs::File;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::{fs, env};
 
 use filetime::FileTime;
 
@@ -50,6 +52,24 @@ pub fn run_silent(cmd: &mut Command) {
                        expected success, got: {}",
                       cmd,
                       status));
+    }
+}
+
+pub fn run_suppressed(cmd: &mut Command) {
+    let output = match cmd.output() {
+        Ok(status) => status,
+        Err(e) => fail(&format!("failed to execute command: {:?}\nerror: {}",
+                                cmd, e)),
+    };
+    if !output.status.success() {
+        fail(&format!("command did not execute successfully: {:?}\n\
+                       expected success, got: {}\n\n\
+                       stdout ----\n{}\n\
+                       stderr ----\n{}\n",
+                      cmd,
+                      output.status,
+                      String::from_utf8_lossy(&output.stdout),
+                      String::from_utf8_lossy(&output.stderr)));
     }
 }
 
@@ -148,6 +168,47 @@ pub fn up_to_date(src: &Path, dst: &Path) -> bool {
     }
 }
 
+#[must_use]
+pub struct NativeLibBoilerplate {
+    pub src_dir: PathBuf,
+    pub out_dir: PathBuf,
+}
+
+impl Drop for NativeLibBoilerplate {
+    fn drop(&mut self) {
+        t!(File::create(self.out_dir.join("rustbuild.timestamp")));
+    }
+}
+
+// Perform standard preparations for native libraries that are build only once for all stages.
+// Emit rerun-if-changed and linking attributes for Cargo, check if any source files are
+// updated, calculate paths used later in actual build with CMake/make or C/C++ compiler.
+// If Err is returned, then everything is up-to-date and further build actions can be skipped.
+// Timestamps are created automatically when the result of `native_lib_boilerplate` goes out
+// of scope, so all the build actions should be completed until then.
+pub fn native_lib_boilerplate(src_name: &str,
+                              out_name: &str,
+                              link_name: &str,
+                              search_subdir: &str)
+                              -> Result<NativeLibBoilerplate, ()> {
+    let current_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let src_dir = current_dir.join("..").join(src_name);
+    rerun_if_changed_anything_in_dir(&src_dir);
+
+    let out_dir = env::var_os("RUSTBUILD_NATIVE_DIR").unwrap_or(env::var_os("OUT_DIR").unwrap());
+    let out_dir = PathBuf::from(out_dir).join(out_name);
+    t!(create_dir_racy(&out_dir));
+    println!("cargo:rustc-link-lib=static={}", link_name);
+    println!("cargo:rustc-link-search=native={}", out_dir.join(search_subdir).display());
+
+    let timestamp = out_dir.join("rustbuild.timestamp");
+    if !up_to_date(Path::new("build.rs"), &timestamp) || !up_to_date(&src_dir, &timestamp) {
+        Ok(NativeLibBoilerplate { src_dir: src_dir, out_dir: out_dir })
+    } else {
+        Err(())
+    }
+}
+
 fn dir_up_to_date(src: &Path, threshold: &FileTime) -> bool {
     t!(fs::read_dir(src)).map(|e| t!(e)).all(|e| {
         let meta = t!(e.metadata());
@@ -162,4 +223,22 @@ fn dir_up_to_date(src: &Path, threshold: &FileTime) -> bool {
 fn fail(s: &str) -> ! {
     println!("\n\n{}\n\n", s);
     std::process::exit(1);
+}
+
+fn create_dir_racy(path: &Path) -> io::Result<()> {
+    match fs::create_dir(path) {
+        Ok(()) => return Ok(()),
+        Err(ref e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(ref e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    match path.parent() {
+        Some(p) => try!(create_dir_racy(p)),
+        None => return Err(io::Error::new(io::ErrorKind::Other, "failed to create whole tree")),
+    }
+    match fs::create_dir(path) {
+        Ok(()) => Ok(()),
+        Err(ref e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
 }

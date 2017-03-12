@@ -53,6 +53,14 @@
 # Rust team and file an issue if you need assistance in porting!
 #targets = "X86;ARM;AArch64;Mips;PowerPC;SystemZ;JSBackend;MSP430;Sparc;NVPTX"
 
+# Cap the number of parallel linker invocations when compiling LLVM.
+# This can be useful when building LLVM with debug info, which significantly
+# increases the size of binaries and consequently the memory required by
+# each linker process.
+# If absent or 0, linker invocations are treated like any other job and
+# controlled by rustbuild's -j parameter.
+#link-jobs = 0
+
 # =============================================================================
 # General build configuration options
 # =============================================================================
@@ -133,6 +141,11 @@
 
 # Build the sanitizer runtimes
 #sanitizers = false
+
+# Indicates whether the OpenSSL linked into Cargo will be statically linked or
+# not. If static linkage is specified then the build system will download a
+# known-good version of OpenSSL, compile it, and link it to Cargo.
+#openssl-static = false
 
 # =============================================================================
 # General install configuration options

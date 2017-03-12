@@ -31,6 +31,8 @@ use rustc::hir::svh::Svh;
 use rustc_back::tempdir::TempDir;
 use rustc_back::PanicStrategy;
 use rustc_incremental::IncrementalHashesMap;
+use context::get_reloc_model;
+use llvm;
 
 use std::ascii;
 use std::char;
@@ -750,8 +752,54 @@ fn link_natively(sess: &Session,
     sess.abort_if_errors();
 
     // Invoke the system linker
+    //
+    // Note that there's a terribly awful hack that really shouldn't be present
+    // in any compiler. Here an environment variable is supported to
+    // automatically retry the linker invocation if the linker looks like it
+    // segfaulted.
+    //
+    // Gee that seems odd, normally segfaults are things we want to know about!
+    // Unfortunately though in rust-lang/rust#38878 we're experiencing the
+    // linker segfaulting on Travis quite a bit which is causing quite a bit of
+    // pain to land PRs when they spuriously fail due to a segfault.
+    //
+    // The issue #38878 has some more debugging information on it as well, but
+    // this unfortunately looks like it's just a race condition in OSX's linker
+    // with some thread pool working in the background. It seems that no one
+    // currently knows a fix for this so in the meantime we're left with this...
     info!("{:?}", &cmd);
-    let prog = time(sess.time_passes(), "running linker", || cmd.output());
+    let retry_on_segfault = env::var("RUSTC_RETRY_LINKER_ON_SEGFAULT").is_ok();
+    let mut prog;
+    let mut i = 0;
+    loop {
+        i += 1;
+        prog = time(sess.time_passes(), "running linker", || cmd.output());
+        if !retry_on_segfault || i > 3 {
+            break
+        }
+        let output = match prog {
+            Ok(ref output) => output,
+            Err(_) => break,
+        };
+        if output.status.success() {
+            break
+        }
+        let mut out = output.stderr.clone();
+        out.extend(&output.stdout);
+        let out = String::from_utf8_lossy(&out);
+        let msg = "clang: error: unable to execute command: \
+                   Segmentation fault: 11";
+        if !out.contains(msg) {
+            break
+        }
+
+        sess.struct_warn("looks like the linker segfaulted when we tried to \
+                          call it, automatically retrying again")
+            .note(&format!("{:?}", cmd))
+            .note(&out)
+            .emit();
+    }
+
     match prog {
         Ok(prog) => {
             fn escape_string(s: &[u8]) -> String {
@@ -859,13 +907,11 @@ fn link_args(cmd: &mut Linker,
     if crate_type == config::CrateTypeExecutable &&
        t.options.position_independent_executables {
         let empty_vec = Vec::new();
-        let empty_str = String::new();
         let args = sess.opts.cg.link_args.as_ref().unwrap_or(&empty_vec);
         let more_args = &sess.opts.cg.link_arg;
         let mut args = args.iter().chain(more_args.iter()).chain(used_link_args.iter());
-        let relocation_model = sess.opts.cg.relocation_model.as_ref()
-                                   .unwrap_or(&empty_str);
-        if (t.options.relocation_model == "pic" || *relocation_model == "pic")
+
+        if get_reloc_model(sess) == llvm::RelocMode::PIC
             && !args.any(|x| *x == "-static") {
             cmd.position_independent_executable();
         }

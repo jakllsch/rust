@@ -59,6 +59,7 @@ pub struct Config {
     pub llvm_static_stdcpp: bool,
     pub llvm_link_shared: bool,
     pub llvm_targets: Option<String>,
+    pub llvm_link_jobs: Option<u32>,
 
     // rust codegen options
     pub rust_optimize: bool,
@@ -106,6 +107,7 @@ pub struct Config {
     pub gdb: Option<PathBuf>,
     pub python: Option<PathBuf>,
     pub configure_args: Vec<String>,
+    pub openssl_static: bool,
 }
 
 /// Per-target configuration stored in the global configuration structure.
@@ -155,6 +157,7 @@ struct Build {
     extended: Option<bool>,
     verbose: Option<usize>,
     sanitizers: Option<bool>,
+    openssl_static: Option<bool>,
 }
 
 /// TOML representation of various global install decisions.
@@ -177,6 +180,7 @@ struct Llvm {
     version_check: Option<bool>,
     static_libstdcpp: Option<bool>,
     targets: Option<String>,
+    link_jobs: Option<u32>,
 }
 
 #[derive(RustcDecodable, Default, Clone)]
@@ -305,6 +309,7 @@ impl Config {
         set(&mut config.extended, build.extended);
         set(&mut config.verbose, build.verbose);
         set(&mut config.sanitizers, build.sanitizers);
+        set(&mut config.openssl_static, build.openssl_static);
 
         if let Some(ref install) = toml.install {
             config.prefix = install.prefix.clone().map(PathBuf::from);
@@ -330,6 +335,7 @@ impl Config {
             set(&mut config.llvm_version_check, llvm.version_check);
             set(&mut config.llvm_static_stdcpp, llvm.static_libstdcpp);
             config.llvm_targets = llvm.targets.clone();
+            config.llvm_link_jobs = llvm.link_jobs;
         }
 
         if let Some(ref rust) = toml.rust {
@@ -453,17 +459,17 @@ impl Config {
                 ("EXTENDED", self.extended),
                 ("SANITIZERS", self.sanitizers),
                 ("DIST_SRC", self.rust_dist_src),
+                ("CARGO_OPENSSL_STATIC", self.openssl_static),
             }
 
             match key {
-                "CFG_BUILD" => self.build = value.to_string(),
-                "CFG_HOST" => {
-                    self.host = value.split(" ").map(|s| s.to_string())
-                                     .collect();
+                "CFG_BUILD" if value.len() > 0 => self.build = value.to_string(),
+                "CFG_HOST" if value.len() > 0 => {
+                    self.host.extend(value.split(" ").map(|s| s.to_string()));
+
                 }
-                "CFG_TARGET" => {
-                    self.target = value.split(" ").map(|s| s.to_string())
-                                       .collect();
+                "CFG_TARGET" if value.len() > 0 => {
+                    self.target.extend(value.split(" ").map(|s| s.to_string()));
                 }
                 "CFG_MUSL_ROOT" if value.len() > 0 => {
                     self.musl_root = Some(parse_configure_path(value));

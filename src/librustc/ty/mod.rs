@@ -1286,7 +1286,7 @@ pub struct Destructor {
     /// invoked even when there are lifetimes in the type-structure of
     /// `adt` that do not strictly outlive the adt value itself.
     /// (This allows programs to make cyclic structures without
-    /// resorting to unasfe means; see RFCs 769 and 1238).
+    /// resorting to unsafe means; see RFCs 769 and 1238).
     pub is_dtorck: bool,
 }
 
@@ -2300,6 +2300,20 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     /// Given the did of an item, returns its MIR, borrowed immutably.
     pub fn item_mir(self, did: DefId) -> Ref<'gcx, Mir<'gcx>> {
         queries::mir::get(self, DUMMY_SP, did).borrow()
+    }
+
+    /// Given the DefId of an item, returns its MIR, borrowed immutably.
+    /// Returns None if there is no MIR for the DefId
+    pub fn maybe_item_mir(self, did: DefId) -> Option<Ref<'gcx, Mir<'gcx>>> {
+        if did.is_local() && !self.maps.mir.borrow().contains_key(&did) {
+            return None;
+        }
+
+        if !did.is_local() && !self.sess.cstore.is_item_mir_available(did) {
+            return None;
+        }
+
+        Some(self.item_mir(did))
     }
 
     /// If `type_needs_drop` returns true, then `ty` is definitely

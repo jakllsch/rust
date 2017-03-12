@@ -34,7 +34,7 @@ use std::rc::Rc;
 
 use syntax::ast;
 use syntax::attr;
-use syntax::parse::filemap_to_tts;
+use syntax::parse::filemap_to_stream;
 use syntax::symbol::Symbol;
 use syntax_pos::{mk_sp, Span};
 use rustc::hir::svh::Svh;
@@ -401,7 +401,7 @@ impl CrateStore for cstore::CStore {
 
         let filemap = sess.parse_sess.codemap().new_filemap(source_name, None, def.body);
         let local_span = mk_sp(filemap.start_pos, filemap.end_pos);
-        let body = filemap_to_tts(&sess.parse_sess, filemap);
+        let body = filemap_to_stream(&sess.parse_sess, filemap);
 
         // Mark the attrs as used
         let attrs = data.get_item_attrs(id.index);
@@ -414,12 +414,13 @@ impl CrateStore for cstore::CStore {
         sess.imported_macro_spans.borrow_mut()
             .insert(local_span, (name.to_string(), data.get_span(id.index, sess)));
 
-        LoadedMacro::MacroRules(ast::MacroDef {
+        LoadedMacro::MacroDef(ast::Item {
             ident: ast::Ident::with_empty_ctxt(name),
             id: ast::DUMMY_NODE_ID,
             span: local_span,
             attrs: attrs,
-            body: body,
+            node: ast::ItemKind::MacroDef(body.into()),
+            vis: ast::Visibility::Inherited,
         })
     }
 
