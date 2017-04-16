@@ -39,6 +39,7 @@ use ty::error::ExpectedFound;
 use ty::fast_reject;
 use ty::fold::TypeFolder;
 use ty::subst::Subst;
+use ty::SubtypePredicate;
 use util::nodemap::{FxHashMap, FxHashSet};
 
 use syntax_pos::{DUMMY_SP, Span};
@@ -68,6 +69,19 @@ struct FindLocalByTypeVisitor<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
     found_pattern: Option<&'a Pat>,
 }
 
+impl<'a, 'gcx, 'tcx> FindLocalByTypeVisitor<'a, 'gcx, 'tcx> {
+    fn is_match(&self, ty: Ty<'tcx>) -> bool {
+        ty == *self.target_ty || match (&ty.sty, &self.target_ty.sty) {
+            (&ty::TyInfer(ty::TyVar(a_vid)), &ty::TyInfer(ty::TyVar(b_vid))) =>
+                self.infcx.type_variables
+                          .borrow_mut()
+                          .sub_unified(a_vid, b_vid),
+
+            _ => false,
+        }
+    }
+}
+
 impl<'a, 'gcx, 'tcx> Visitor<'a> for FindLocalByTypeVisitor<'a, 'gcx, 'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'a> {
         NestedVisitorMap::None
@@ -76,7 +90,7 @@ impl<'a, 'gcx, 'tcx> Visitor<'a> for FindLocalByTypeVisitor<'a, 'gcx, 'tcx> {
     fn visit_local(&mut self, local: &'a Local) {
         if let Some(&ty) = self.infcx.tables.borrow().node_types.get(&local.id) {
             let ty = self.infcx.resolve_type_vars_if_possible(&ty);
-            let is_match = ty.walk().any(|t| t == *self.target_ty);
+            let is_match = ty.walk().any(|t| self.is_match(t));
 
             if is_match && self.found_pattern.is_none() {
                 self.found_pattern = Some(&*local.pat);
@@ -111,6 +125,13 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             }
             FulfillmentErrorCode::CodeAmbiguity => {
                 self.maybe_report_ambiguity(&error.obligation);
+            }
+            FulfillmentErrorCode::CodeSubtypeError(ref expected_found, ref err) => {
+                self.report_mismatched_types(&error.obligation.cause,
+                                             expected_found.expected,
+                                             expected_found.found,
+                                             err.clone())
+                    .emit();
             }
         }
     }
@@ -274,7 +295,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             .filter(|a| a.check_name("rustc_on_unimplemented"))
             .next()
         {
-            let err_sp = item.meta().span.substitute_dummy(span);
+            let err_sp = item.span.substitute_dummy(span);
             let trait_str = self.tcx.item_path_str(trait_ref.def_id);
             if let Some(istring) = item.value_str() {
                 let istring = &*istring.as_str();
@@ -524,15 +545,8 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                             "the trait bound `{}` is not satisfied{}",
                             trait_ref.to_predicate(),
                             post_message);
-                        err.span_label(span,
-                                        &format!("{}the trait `{}` is not \
-                                                    implemented for `{}`",
-                                                pre_message,
-                                                trait_ref,
-                                                trait_ref.self_ty()));
 
                         // Try to report a help message
-
                         if !trait_ref.has_infer_types() &&
                             self.predicate_can_apply(trait_ref) {
                             // If a where-clause may be useful, remind the
@@ -544,18 +558,29 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                             // which is somewhat confusing.
                             err.help(&format!("consider adding a `where {}` bound",
                                                 trait_ref.to_predicate()));
-                        } else if let Some(s) = self.on_unimplemented_note(trait_ref,
-                                                                            obligation) {
+                        } else if let Some(s) = self.on_unimplemented_note(trait_ref, obligation) {
                             // If it has a custom "#[rustc_on_unimplemented]"
                             // error message, let's display it!
                             err.note(&s);
                         } else {
-                            // If we can't show anything useful, try to find
-                            // similar impls.
+                            // Can't show anything else useful, try to find similar impls.
                             let impl_candidates = self.find_similar_impl_candidates(trait_ref);
                             self.report_similar_impl_candidates(impl_candidates, &mut err);
                         }
+
+                        err.span_label(span,
+                                       &format!("{}the trait `{}` is not implemented for `{}`",
+                                                pre_message,
+                                                trait_ref,
+                                                trait_ref.self_ty()));
                         err
+                    }
+
+                    ty::Predicate::Subtype(ref predicate) => {
+                        // Errors for Subtype predicates show up as
+                        // `FulfillmentErrorCode::CodeSubtypeError`,
+                        // not selection error.
+                        span_bug!(span, "subtype requirement gave wrong error: `{:?}`", predicate)
                     }
 
                     ty::Predicate::Equate(ref predicate) => {
@@ -764,6 +789,17 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                 }
             }
 
+            ty::Predicate::Subtype(ref data) => {
+                if data.references_error() || self.tcx.sess.has_errors() {
+                    // no need to overload user in such cases
+                } else {
+                    let &SubtypePredicate { a_is_expected: _, a, b } = data.skip_binder();
+                    // both must be type variables, or the other would've been instantiated
+                    assert!(a.is_ty_var() && b.is_ty_var());
+                    self.need_type_info(obligation, a);
+                }
+            }
+
             _ => {
                 if !self.tcx.sess.has_errors() {
                     let mut err = struct_span_err!(self.tcx.sess,
@@ -904,6 +940,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             ObligationCauseCode::StartFunctionType |
             ObligationCauseCode::IntrinsicType |
             ObligationCauseCode::MethodReceiver |
+            ObligationCauseCode::ReturnNoExpression |
             ObligationCauseCode::MiscObligation => {
             }
             ObligationCauseCode::SliceOrArrayElem => {
@@ -996,3 +1033,4 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                           suggested_limit));
     }
 }
+

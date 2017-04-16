@@ -11,9 +11,11 @@
 use context::SharedCrateContext;
 use monomorphize::Instance;
 use symbol_map::SymbolMap;
+use back::symbol_names::symbol_name;
 use util::nodemap::FxHashMap;
 use rustc::hir::def_id::{DefId, CrateNum, LOCAL_CRATE};
 use rustc::session::config;
+use rustc::ty::TyCtxt;
 use syntax::attr;
 use trans_item::TransItem;
 
@@ -63,15 +65,15 @@ impl ExportedSymbols {
         }
 
         if let Some(id) = scx.sess().derive_registrar_fn.get() {
-            let svh = &scx.link_meta().crate_hash;
             let def_id = scx.tcx().hir.local_def_id(id);
             let idx = def_id.index;
-            let registrar = scx.sess().generate_derive_registrar_symbol(svh, idx);
+            let disambiguator = scx.sess().local_crate_disambiguator();
+            let registrar = scx.sess().generate_derive_registrar_symbol(disambiguator, idx);
             local_crate.push((registrar, SymbolExportLevel::C));
         }
 
         if scx.sess().crate_types.borrow().contains(&config::CrateTypeDylib) {
-            local_crate.push((scx.metadata_symbol_name(),
+            local_crate.push((metadata_symbol_name(scx.tcx()),
                               SymbolExportLevel::Rust));
         }
 
@@ -106,7 +108,7 @@ impl ExportedSymbols {
                 .exported_symbols(cnum)
                 .iter()
                 .map(|&def_id| {
-                    let name = Instance::mono(scx, def_id).symbol_name(scx);
+                    let name = symbol_name(Instance::mono(scx.tcx(), def_id), scx);
                     let export_level = if special_runtime_crate {
                         // We can probably do better here by just ensuring that
                         // it has hidden visibility rather than public
@@ -153,7 +155,7 @@ impl ExportedSymbols {
                             cnum: CrateNum)
                             -> &[(String, SymbolExportLevel)] {
         match self.exports.get(&cnum) {
-            Some(exports) => &exports[..],
+            Some(exports) => exports,
             None => &[]
         }
     }
@@ -166,10 +168,16 @@ impl ExportedSymbols {
     {
         for &(ref name, export_level) in self.exported_symbols(cnum) {
             if is_below_threshold(export_level, export_threshold) {
-                f(&name[..], export_level)
+                f(&name, export_level)
             }
         }
     }
+}
+
+pub fn metadata_symbol_name(tcx: TyCtxt) -> String {
+    format!("rust_metadata_{}_{}",
+            tcx.crate_name(LOCAL_CRATE),
+            tcx.crate_disambiguator(LOCAL_CRATE))
 }
 
 pub fn crate_export_threshold(crate_type: config::CrateType)
@@ -218,9 +226,9 @@ fn symbol_for_def_id<'a, 'tcx>(scx: &SharedCrateContext<'a, 'tcx>,
         }
     }
 
-    let instance = Instance::mono(scx, def_id);
+    let instance = Instance::mono(scx.tcx(), def_id);
 
     symbol_map.get(TransItem::Fn(instance))
               .map(str::to_owned)
-              .unwrap_or_else(|| instance.symbol_name(scx))
+              .unwrap_or_else(|| symbol_name(instance, scx))
 }

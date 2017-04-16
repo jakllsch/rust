@@ -11,7 +11,7 @@
 extern crate toml;
 extern crate rustc_serialize;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -101,13 +101,13 @@ static MINGW: &'static [&'static str] = &[
 struct Manifest {
     manifest_version: String,
     date: String,
-    pkg: HashMap<String, Package>,
+    pkg: BTreeMap<String, Package>,
 }
 
 #[derive(RustcEncodable)]
 struct Package {
     version: String,
-    target: HashMap<String, Target>,
+    target: BTreeMap<String, Target>,
 }
 
 #[derive(RustcEncodable)]
@@ -135,14 +135,16 @@ macro_rules! t {
 struct Builder {
     rust_release: String,
     cargo_release: String,
+    rls_release: String,
     input: PathBuf,
     output: PathBuf,
     gpg_passphrase: String,
-    digests: HashMap<String, String>,
+    digests: BTreeMap<String, String>,
     s3_address: String,
     date: String,
     rust_version: String,
     cargo_version: String,
+    rls_version: String,
 }
 
 fn main() {
@@ -152,6 +154,7 @@ fn main() {
     let date = args.next().unwrap();
     let rust_release = args.next().unwrap();
     let cargo_release = args.next().unwrap();
+    let rls_release = args.next().unwrap();
     let s3_address = args.next().unwrap();
     let mut passphrase = String::new();
     t!(io::stdin().read_to_string(&mut passphrase));
@@ -159,14 +162,16 @@ fn main() {
     Builder {
         rust_release: rust_release,
         cargo_release: cargo_release,
+        rls_release: rls_release,
         input: input,
         output: output,
         gpg_passphrase: passphrase,
-        digests: HashMap::new(),
+        digests: BTreeMap::new(),
         s3_address: s3_address,
         date: date,
         rust_version: String::new(),
         cargo_version: String::new(),
+        rls_version: String::new(),
     }.build();
 }
 
@@ -174,6 +179,7 @@ impl Builder {
     fn build(&mut self) {
         self.rust_version = self.version("rust", "x86_64-unknown-linux-gnu");
         self.cargo_version = self.version("cargo", "x86_64-unknown-linux-gnu");
+        self.rls_version = self.version("rls", "x86_64-unknown-linux-gnu");
 
         self.digest_and_sign();
         let Manifest { manifest_version, date, pkg } = self.build_manifest();
@@ -214,7 +220,7 @@ impl Builder {
         let mut manifest = Manifest {
             manifest_version: "2".to_string(),
             date: self.date.to_string(),
-            pkg: HashMap::new(),
+            pkg: BTreeMap::new(),
         };
 
         self.package("rustc", &mut manifest.pkg, HOSTS);
@@ -223,14 +229,12 @@ impl Builder {
         self.package("rust-std", &mut manifest.pkg, TARGETS);
         self.package("rust-docs", &mut manifest.pkg, TARGETS);
         self.package("rust-src", &mut manifest.pkg, &["*"]);
-
-        if self.rust_release == "nightly" {
-            self.package("rust-analysis", &mut manifest.pkg, TARGETS);
-        }
+        self.package("rls", &mut manifest.pkg, HOSTS);
+        self.package("rust-analysis", &mut manifest.pkg, TARGETS);
 
         let mut pkg = Package {
             version: self.cached_version("rust").to_string(),
-            target: HashMap::new(),
+            target: BTreeMap::new(),
         };
         for host in HOSTS {
             let filename = self.filename("rust", host);
@@ -250,12 +254,13 @@ impl Builder {
             let mut components = Vec::new();
             let mut extensions = Vec::new();
 
-            // rustc/rust-std/cargo are all required, and so is rust-mingw if it's
-            // available for the target.
+            // rustc/rust-std/cargo/docs are all required, and so is rust-mingw
+            // if it's available for the target.
             components.extend(vec![
                 Component { pkg: "rustc".to_string(), target: host.to_string() },
                 Component { pkg: "rust-std".to_string(), target: host.to_string() },
                 Component { pkg: "cargo".to_string(), target: host.to_string() },
+                Component { pkg: "rust-docs".to_string(), target: host.to_string() },
             ]);
             if host.contains("pc-windows-gnu") {
                 components.push(Component {
@@ -264,22 +269,18 @@ impl Builder {
                 });
             }
 
-            // Docs, other standard libraries, and the source package are all
-            // optional.
             extensions.push(Component {
-                pkg: "rust-docs".to_string(),
+                pkg: "rls".to_string(),
+                target: host.to_string(),
+            });
+            extensions.push(Component {
+                pkg: "rust-analysis".to_string(),
                 target: host.to_string(),
             });
             for target in TARGETS {
                 if target != host {
                     extensions.push(Component {
                         pkg: "rust-std".to_string(),
-                        target: target.to_string(),
-                    });
-                }
-                if self.rust_release == "nightly" {
-                    extensions.push(Component {
-                        pkg: "rust-analysis".to_string(),
                         target: target.to_string(),
                     });
                 }
@@ -304,7 +305,7 @@ impl Builder {
 
     fn package(&mut self,
                pkgname: &str,
-               dst: &mut HashMap<String, Package>,
+               dst: &mut BTreeMap<String, Package>,
                targets: &[&str]) {
         let targets = targets.iter().map(|name| {
             let filename = self.filename(pkgname, name);
@@ -348,6 +349,8 @@ impl Builder {
             format!("rust-src-{}.tar.gz", self.rust_release)
         } else if component == "cargo" {
             format!("cargo-{}-{}.tar.gz", self.cargo_release, target)
+        } else if component == "rls" {
+            format!("rls-{}-{}.tar.gz", self.rls_release, target)
         } else {
             format!("{}-{}-{}.tar.gz", component, self.rust_release, target)
         }
@@ -356,6 +359,8 @@ impl Builder {
     fn cached_version(&self, component: &str) -> &str {
         if component == "cargo" {
             &self.cargo_version
+        } else if component == "rls" {
+            &self.rls_version
         } else {
             &self.rust_version
         }

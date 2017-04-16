@@ -10,8 +10,8 @@
 
 //! Collection types.
 //!
-//! See [std::collections](../std/collections/index.html) for a detailed discussion of
-//! collections in Rust.
+//! See [`std::collections`](../std/collections/index.html) for a detailed
+//! discussion of collections in Rust.
 
 #![crate_name = "collections"]
 #![crate_type = "rlib"]
@@ -44,6 +44,7 @@
 #![feature(heap_api)]
 #![feature(inclusive_range)]
 #![feature(lang_items)]
+#![feature(manually_drop)]
 #![feature(nonzero)]
 #![feature(pattern)]
 #![feature(placement_in)]
@@ -52,14 +53,19 @@
 #![feature(shared)]
 #![feature(slice_get_slice)]
 #![feature(slice_patterns)]
+#![feature(slice_rsplit)]
+#![cfg_attr(not(test), feature(sort_unstable))]
 #![feature(specialization)]
 #![feature(staged_api)]
 #![feature(str_internals)]
+#![feature(str_mut_extras)]
 #![feature(trusted_len)]
 #![feature(unicode)]
 #![feature(unique)]
 #![feature(untagged_unions)]
+#![cfg_attr(not(test), feature(str_checked_slicing))]
 #![cfg_attr(test, feature(rand, test))]
+#![feature(offset_to)]
 
 #![no_std]
 
@@ -129,14 +135,53 @@ mod std {
 }
 
 /// An endpoint of a range of keys.
-#[unstable(feature = "collections_bound", issue = "27787")]
+///
+/// # Examples
+///
+/// `Bound`s are range endpoints:
+///
+/// ```
+/// #![feature(collections_range)]
+///
+/// use std::collections::range::RangeArgument;
+/// use std::collections::Bound::*;
+///
+/// assert_eq!((..100).start(), Unbounded);
+/// assert_eq!((1..12).start(), Included(&1));
+/// assert_eq!((1..12).end(), Excluded(&12));
+/// ```
+///
+/// Using a tuple of `Bound`s as an argument to [`BTreeMap::range`].
+/// Note that in most cases, it's better to use range syntax (`1..5`) instead.
+///
+/// ```
+/// use std::collections::BTreeMap;
+/// use std::collections::Bound::{Excluded, Included, Unbounded};
+///
+/// let mut map = BTreeMap::new();
+/// map.insert(3, "a");
+/// map.insert(5, "b");
+/// map.insert(8, "c");
+///
+/// for (key, value) in map.range((Excluded(3), Included(8))) {
+///     println!("{}: {}", key, value);
+/// }
+///
+/// assert_eq!(Some((&3, &"a")), map.range((Unbounded, Included(5))).next());
+/// ```
+///
+/// [`BTreeMap::range`]: btree_map/struct.BTreeMap.html#method.range
+#[stable(feature = "collections_bound", since = "1.17.0")]
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum Bound<T> {
     /// An inclusive bound.
+    #[stable(feature = "collections_bound", since = "1.17.0")]
     Included(T),
     /// An exclusive bound.
+    #[stable(feature = "collections_bound", since = "1.17.0")]
     Excluded(T),
     /// An infinite endpoint. Indicates that there is no bound in this direction.
+    #[stable(feature = "collections_bound", since = "1.17.0")]
     Unbounded,
 }
 

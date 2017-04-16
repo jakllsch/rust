@@ -46,7 +46,7 @@ fn unpack_option_like<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         _ => return ty
     };
 
-    if def.variants.len() == 2 && !def.repr.c && def.repr.int.is_none() {
+    if def.variants.len() == 2 && !def.repr.c() && def.repr.int.is_none() {
         let data_idx;
 
         if def.variants[0].fields.is_empty() {
@@ -89,7 +89,7 @@ impl<'a, 'gcx, 'tcx> ExprVisitor<'a, 'gcx, 'tcx> {
             let from = unpack_option_like(self.infcx.tcx.global_tcx(), from);
             match (&from.sty, sk_to) {
                 (&ty::TyFnDef(..), SizeSkeleton::Known(size_to))
-                        if size_to == Pointer.size(&self.infcx.tcx.data_layout) => {
+                        if size_to == Pointer.size(self.infcx) => {
                     struct_span_err!(self.infcx.tcx.sess, span, E0591,
                                      "`{}` is zero-sized and can't be transmuted to `{}`",
                                      from, to)

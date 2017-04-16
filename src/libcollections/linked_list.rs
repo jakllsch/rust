@@ -56,7 +56,13 @@ struct Node<T> {
     element: T,
 }
 
-/// An iterator over references to the elements of a `LinkedList`.
+/// An iterator over the elements of a `LinkedList`.
+///
+/// This `struct` is created by the [`iter`] method on [`LinkedList`]. See its
+/// documentation for more.
+///
+/// [`iter`]: struct.LinkedList.html#method.iter
+/// [`LinkedList`]: struct.LinkedList.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Iter<'a, T: 'a> {
     head: Option<Shared<Node<T>>>,
@@ -82,7 +88,13 @@ impl<'a, T> Clone for Iter<'a, T> {
     }
 }
 
-/// An iterator over mutable references to the elements of a `LinkedList`.
+/// A mutable iterator over the elements of a `LinkedList`.
+///
+/// This `struct` is created by the [`iter_mut`] method on [`LinkedList`]. See its
+/// documentation for more.
+///
+/// [`iter_mut`]: struct.LinkedList.html#method.iter_mut
+/// [`LinkedList`]: struct.LinkedList.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct IterMut<'a, T: 'a> {
     list: &'a mut LinkedList<T>,
@@ -100,7 +112,13 @@ impl<'a, T: 'a + fmt::Debug> fmt::Debug for IterMut<'a, T> {
     }
 }
 
-/// An iterator over the elements of a `LinkedList`.
+/// An owning iterator over the elements of a `LinkedList`.
+///
+/// This `struct` is created by the [`into_iter`] method on [`LinkedList`]
+/// (provided by the `IntoIterator` trait). See its documentation for more.
+///
+/// [`into_iter`]: struct.LinkedList.html#method.into_iter
+/// [`LinkedList`]: struct.LinkedList.html
 #[derive(Clone)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct IntoIter<T> {
@@ -142,7 +160,7 @@ impl<T> LinkedList<T> {
 
             match self.head {
                 None => self.tail = node,
-                Some(head) => (**head).prev = node,
+                Some(head) => (*head.as_mut_ptr()).prev = node,
             }
 
             self.head = node;
@@ -154,12 +172,12 @@ impl<T> LinkedList<T> {
     #[inline]
     fn pop_front_node(&mut self) -> Option<Box<Node<T>>> {
         self.head.map(|node| unsafe {
-            let node = Box::from_raw(*node);
+            let node = Box::from_raw(node.as_mut_ptr());
             self.head = node.next;
 
             match self.head {
                 None => self.tail = None,
-                Some(head) => (**head).prev = None,
+                Some(head) => (*head.as_mut_ptr()).prev = None,
             }
 
             self.len -= 1;
@@ -177,7 +195,7 @@ impl<T> LinkedList<T> {
 
             match self.tail {
                 None => self.head = node,
-                Some(tail) => (**tail).next = node,
+                Some(tail) => (*tail.as_mut_ptr()).next = node,
             }
 
             self.tail = node;
@@ -189,12 +207,12 @@ impl<T> LinkedList<T> {
     #[inline]
     fn pop_back_node(&mut self) -> Option<Box<Node<T>>> {
         self.tail.map(|node| unsafe {
-            let node = Box::from_raw(*node);
+            let node = Box::from_raw(node.as_mut_ptr());
             self.tail = node.prev;
 
             match self.tail {
                 None => self.head = None,
-                Some(tail) => (**tail).next = None,
+                Some(tail) => (*tail.as_mut_ptr()).next = None,
             }
 
             self.len -= 1;
@@ -269,8 +287,8 @@ impl<T> LinkedList<T> {
             Some(tail) => {
                 if let Some(other_head) = other.head.take() {
                     unsafe {
-                        (**tail).next = Some(other_head);
-                        (**other_head).prev = Some(tail);
+                        (*tail.as_mut_ptr()).next = Some(other_head);
+                        (*other_head.as_mut_ptr()).prev = Some(tail);
                     }
 
                     self.tail = other.tail.take();
@@ -484,7 +502,7 @@ impl<T> LinkedList<T> {
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn front_mut(&mut self) -> Option<&mut T> {
-        self.head.map(|node| unsafe { &mut (**node).element })
+        self.head.map(|node| unsafe { &mut (*node.as_mut_ptr()).element })
     }
 
     /// Provides a reference to the back element, or `None` if the list is
@@ -530,7 +548,7 @@ impl<T> LinkedList<T> {
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn back_mut(&mut self) -> Option<&mut T> {
-        self.tail.map(|node| unsafe { &mut (**node).element })
+        self.tail.map(|node| unsafe { &mut (*node.as_mut_ptr()).element })
     }
 
     /// Adds an element first in the list.
@@ -618,11 +636,11 @@ impl<T> LinkedList<T> {
     /// Splits the list into two at the given index. Returns everything after the given index,
     /// including the index.
     ///
+    /// This operation should compute in O(n) time.
+    ///
     /// # Panics
     ///
     /// Panics if `at > len`.
-    ///
-    /// This operation should compute in O(n) time.
     ///
     /// # Examples
     ///
@@ -675,9 +693,9 @@ impl<T> LinkedList<T> {
         let second_part_head;
 
         unsafe {
-            second_part_head = (**split_node.unwrap()).next.take();
+            second_part_head = (*split_node.unwrap().as_mut_ptr()).next.take();
             if let Some(head) = second_part_head {
-                (**head).prev = None;
+                (*head.as_mut_ptr()).prev = None;
             }
         }
 
@@ -697,8 +715,8 @@ impl<T> LinkedList<T> {
 
     /// Returns a place for insertion at the front of the list.
     ///
-    /// Using this method with placement syntax is equivalent to [`push_front`]
-    /// (#method.push_front), but may be more efficient.
+    /// Using this method with placement syntax is equivalent to
+    /// [`push_front`](#method.push_front), but may be more efficient.
     ///
     /// # Examples
     ///
@@ -816,7 +834,7 @@ impl<'a, T> Iterator for IterMut<'a, T> {
             None
         } else {
             self.head.map(|node| unsafe {
-                let node = &mut **node;
+                let node = &mut *node.as_mut_ptr();
                 self.len -= 1;
                 self.head = node.next;
                 &mut node.element
@@ -838,7 +856,7 @@ impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
             None
         } else {
             self.tail.map(|node| unsafe {
-                let node = &mut **node;
+                let node = &mut *node.as_mut_ptr();
                 self.len -= 1;
                 self.tail = node.prev;
                 &mut node.element
@@ -896,8 +914,8 @@ impl<'a, T> IterMut<'a, T> {
                     element: element,
                 })));
 
-                (**prev).next = node;
-                (**head).prev = node;
+                (*prev.as_mut_ptr()).next = node;
+                (*head.as_mut_ptr()).prev = node;
 
                 self.list.len += 1;
             },
@@ -929,7 +947,7 @@ impl<'a, T> IterMut<'a, T> {
         if self.len == 0 {
             None
         } else {
-            self.head.map(|node| unsafe { &mut (**node).element })
+            self.head.map(|node| unsafe { &mut (*node.as_mut_ptr()).element })
         }
     }
 }
@@ -1376,7 +1394,7 @@ mod tests {
         thread::spawn(move || {
                 check_links(&n);
                 let a: &[_] = &[&1, &2, &3];
-                assert_eq!(a, &n.iter().collect::<Vec<_>>()[..]);
+                assert_eq!(a, &*n.iter().collect::<Vec<_>>());
             })
             .join()
             .ok()

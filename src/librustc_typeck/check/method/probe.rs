@@ -479,14 +479,9 @@ impl<'a, 'gcx, 'tcx> ProbeContext<'a, 'gcx, 'tcx> {
     }
 
     fn assemble_inherent_impl_candidates_for_type(&mut self, def_id: DefId) {
-        // Read the inherent implementation candidates for this type from the
-        // metadata if necessary.
-        self.tcx.populate_inherent_implementations_for_type_if_necessary(self.span, def_id);
-
-        if let Some(impl_infos) = self.tcx.maps.inherent_impls.borrow().get(&def_id) {
-            for &impl_def_id in impl_infos.iter() {
-                self.assemble_inherent_impl_probe(impl_def_id);
-            }
+        let impl_def_ids = ty::queries::inherent_impls::get(self.tcx, self.span, def_id);
+        for &impl_def_id in impl_def_ids.iter() {
+            self.assemble_inherent_impl_probe(impl_def_id);
         }
     }
 
@@ -581,6 +576,7 @@ impl<'a, 'gcx, 'tcx> ProbeContext<'a, 'gcx, 'tcx> {
                         }
                     }
                     ty::Predicate::Equate(..) |
+                    ty::Predicate::Subtype(..) |
                     ty::Predicate::Projection(..) |
                     ty::Predicate::RegionOutlives(..) |
                     ty::Predicate::WellFormed(..) |
@@ -1153,19 +1149,16 @@ impl<'a, 'gcx, 'tcx> ProbeContext<'a, 'gcx, 'tcx> {
 
         self.probe(|_| {
             // First check that the self type can be related.
-            match self.sub_types(false,
-                                 &ObligationCause::dummy(),
-                                 self_ty,
-                                 probe.xform_self_ty) {
-                Ok(InferOk { obligations, value: () }) => {
-                    // FIXME(#32730) propagate obligations
-                    assert!(obligations.is_empty())
-                }
+            let sub_obligations = match self.sub_types(false,
+                                                       &ObligationCause::dummy(),
+                                                       self_ty,
+                                                       probe.xform_self_ty) {
+                Ok(InferOk { obligations, value: () }) => obligations,
                 Err(_) => {
                     debug!("--> cannot relate self-types");
                     return false;
                 }
-            }
+            };
 
             // If so, impls may carry other conditions (e.g., where
             // clauses) that must be considered. Make sure that those
@@ -1204,6 +1197,7 @@ impl<'a, 'gcx, 'tcx> ProbeContext<'a, 'gcx, 'tcx> {
             // Evaluate those obligations to see if they might possibly hold.
             let mut all_true = true;
             for o in obligations.iter()
+                .chain(sub_obligations.iter())
                 .chain(norm_obligations.iter())
                 .chain(ref_obligations.iter()) {
                 if !selcx.evaluate_obligation(o) {

@@ -490,8 +490,10 @@ fn convert_item<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, item_id: ast::NodeId) {
     let def_id = tcx.hir.local_def_id(item_id);
     match it.node {
         // These don't define types.
-        hir::ItemExternCrate(_) | hir::ItemUse(..) | hir::ItemMod(_) => {
-        }
+        hir::ItemExternCrate(_) |
+        hir::ItemUse(..) |
+        hir::ItemMod(_) |
+        hir::ItemGlobalAsm(_) => {}
         hir::ItemForeignMod(ref foreign_mod) => {
             for item in &foreign_mod.items {
                 let def_id = tcx.hir.local_def_id(item.id);
@@ -543,12 +545,12 @@ fn convert_item<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, item_id: ast::NodeId) {
             tcx.item_generics(def_id);
             tcx.item_type(def_id);
             tcx.item_predicates(def_id);
-        },
-        _ => {
+        }
+        hir::ItemStatic(..) | hir::ItemConst(..) | hir::ItemFn(..) => {
             tcx.item_generics(def_id);
             tcx.item_type(def_id);
             tcx.item_predicates(def_id);
-        },
+        }
     }
 }
 
@@ -689,12 +691,6 @@ fn adt_def<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     let node_id = tcx.hir.as_local_node_id(def_id).unwrap();
     let item = match tcx.hir.get(node_id) {
         NodeItem(item) => item,
-
-        // Make adt definition available through constructor id as well.
-        NodeStructCtor(_) => {
-            return tcx.lookup_adt_def(tcx.hir.get_parent_did(node_id));
-        }
-
         _ => bug!()
     };
 
@@ -812,7 +808,7 @@ fn trait_def<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         err.emit();
     }
 
-    let def_path_hash = tcx.def_path(def_id).deterministic_hash(tcx);
+    let def_path_hash = tcx.def_path_hash(def_id);
     let def = ty::TraitDef::new(def_id, unsafety, paren_sugar, def_path_hash);
 
     if tcx.hir.trait_is_auto(def_id) {
@@ -1080,6 +1076,7 @@ fn ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                 ItemTrait(..) |
                 ItemMod(..) |
                 ItemForeignMod(..) |
+                ItemGlobalAsm(..) |
                 ItemExternCrate(..) |
                 ItemUse(..) => {
                     span_bug!(

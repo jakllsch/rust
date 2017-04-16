@@ -32,7 +32,7 @@ RUN curl -OL https://github.com/Yelp/dumb-init/releases/download/v1.2.0/dumb-ini
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
 RUN curl -o /usr/local/bin/sccache \
-      https://s3.amazonaws.com/rust-lang-ci/rust-ci-mirror/2017-02-25-sccache-x86_64-unknown-linux-musl && \
+      https://s3.amazonaws.com/rust-lang-ci/rust-ci-mirror/2017-04-04-sccache-x86_64-unknown-linux-musl && \
       chmod +x /usr/local/bin/sccache
 
 ENV TARGETS=arm-linux-androideabi
@@ -42,6 +42,7 @@ ENV TARGETS=$TARGETS,armv7-linux-androideabi
 
 ENV RUST_CONFIGURE_ARGS \
       --target=$TARGETS \
+      --enable-extended \
       --arm-linux-androideabi-ndk=/android/ndk-arm-9 \
       --armv7-linux-androideabi-ndk=/android/ndk-arm-9 \
       --i686-linux-android-ndk=/android/ndk-x86-9 \

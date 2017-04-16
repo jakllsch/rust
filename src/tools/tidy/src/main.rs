@@ -14,9 +14,13 @@
 //! etc. This is run by default on `make check` and as part of the auto
 //! builders.
 
-use std::fs;
-use std::path::{PathBuf, Path};
+extern crate regex;
+
 use std::env;
+use std::fs;
+use std::io::{self, Write};
+use std::path::{PathBuf, Path};
+use std::process;
 
 macro_rules! t {
     ($e:expr, $p:expr) => (match $e {
@@ -30,6 +34,15 @@ macro_rules! t {
     })
 }
 
+macro_rules! tidy_error {
+    ($bad:expr, $fmt:expr, $($arg:tt)*) => ({
+        use std::io::Write;
+        *$bad = true;
+        write!(::std::io::stderr(), "tidy error: ").expect("could not write to stderr");
+        writeln!(::std::io::stderr(), $fmt, $($arg)*).expect("could not write to stderr");
+    });
+}
+
 mod bins;
 mod style;
 mod errors;
@@ -37,6 +50,7 @@ mod features;
 mod cargo;
 mod pal;
 mod deps;
+mod unstable_book;
 
 fn main() {
     let path = env::args_os().skip(1).next().expect("need an argument");
@@ -51,12 +65,14 @@ fn main() {
     cargo::check(&path, &mut bad);
     features::check(&path, &mut bad);
     pal::check(&path, &mut bad);
+    unstable_book::check(&path, &mut bad);
     if !args.iter().any(|s| *s == "--no-vendor") {
         deps::check(&path, &mut bad);
     }
 
     if bad {
-        panic!("some tidy checks failed");
+        writeln!(io::stderr(), "some tidy checks failed").expect("could not write to stderr");
+        process::exit(1);
     }
 }
 
@@ -66,11 +82,9 @@ fn filter_dirs(path: &Path) -> bool {
         "src/llvm",
         "src/libbacktrace",
         "src/compiler-rt",
-        "src/rt/hoedown",
         "src/rustllvm",
         "src/rust-installer",
         "src/liblibc",
-        "src/tools/cargo",
         "src/vendor",
     ];
     skip.iter().any(|p| path.ends_with(p))

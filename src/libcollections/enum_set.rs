@@ -106,7 +106,7 @@ impl<E: CLike> EnumSet<E> {
         self.bits.count_ones() as usize
     }
 
-    /// Returns true if the `EnumSet` is empty.
+    /// Returns `true` if the `EnumSet` is empty.
     pub fn is_empty(&self) -> bool {
         self.bits == 0
     }
@@ -215,7 +215,7 @@ impl<E: CLike> BitXor for EnumSet<E> {
     }
 }
 
-/// An iterator over an EnumSet
+/// An iterator over an `EnumSet`
 pub struct Iter<E> {
     index: usize,
     bits: usize,

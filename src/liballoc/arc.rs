@@ -102,7 +102,7 @@ const MAX_REFCOUNT: usize = (isize::MAX) as usize;
 /// [downgrade]: struct.Arc.html#method.downgrade
 /// [upgrade]: struct.Weak.html#method.upgrade
 /// [`None`]: ../../std/option/enum.Option.html#variant.None
-/// [assoc]: ../../book/method-syntax.html#associated-functions
+/// [assoc]: ../../book/first-edition/method-syntax.html#associated-functions
 ///
 /// # Examples
 ///
@@ -165,18 +165,29 @@ unsafe impl<T: ?Sized + Sync + Send> Sync for Arc<T> {}
 #[unstable(feature = "coerce_unsized", issue = "27732")]
 impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<Arc<U>> for Arc<T> {}
 
-/// A weak version of [`Arc`][arc].
+/// `Weak` is a version of [`Arc`] that holds a non-owning reference to the
+/// managed value. The value is accessed by calling [`upgrade`] on the `Weak`
+/// pointer, which returns an [`Option`]`<`[`Arc`]`<T>>`.
 ///
-/// `Weak` pointers do not count towards determining if the inner value
-/// should be dropped.
+/// Since a `Weak` reference does not count towards ownership, it will not
+/// prevent the inner value from being dropped, and `Weak` itself makes no
+/// guarantees about the value still being present and may return [`None`]
+/// when [`upgrade`]d.
 ///
-/// The typical way to obtain a `Weak` pointer is to call
-/// [`Arc::downgrade`][downgrade].
+/// A `Weak` pointer is useful for keeping a temporary reference to the value
+/// within [`Arc`] without extending its lifetime. It is also used to prevent
+/// circular references between [`Arc`] pointers, since mutual owning references
+/// would never allow either [`Arc`] to be dropped. For example, a tree could
+/// have strong [`Arc`] pointers from parent nodes to children, and `Weak`
+/// pointers from children back to their parents.
 ///
-/// See the [`Arc`][arc] documentation for more details.
+/// The typical way to obtain a `Weak` pointer is to call [`Arc::downgrade`].
 ///
-/// [arc]: struct.Arc.html
-/// [downgrade]: struct.Arc.html#method.downgrade
+/// [`Arc`]: struct.Arc.html
+/// [`Arc::downgrade`]: struct.Arc.html#method.downgrade
+/// [`upgrade`]: struct.Weak.html#method.upgrade
+/// [`Option`]: ../../std/option/enum.Option.html
+/// [`None`]: ../../std/option/enum.Option.html#variant.None
 #[stable(feature = "arc_weak", since = "1.4.0")]
 pub struct Weak<T: ?Sized> {
     ptr: Shared<ArcInner<T>>,
@@ -287,17 +298,15 @@ impl<T> Arc<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(rc_raw)]
-    ///
     /// use std::sync::Arc;
     ///
     /// let x = Arc::new(10);
     /// let x_ptr = Arc::into_raw(x);
     /// assert_eq!(unsafe { *x_ptr }, 10);
     /// ```
-    #[unstable(feature = "rc_raw", issue = "37197")]
-    pub fn into_raw(this: Self) -> *mut T {
-        let ptr = unsafe { &mut (**this.ptr).data as *mut _ };
+    #[stable(feature = "rc_raw", since = "1.17.0")]
+    pub fn into_raw(this: Self) -> *const T {
+        let ptr = unsafe { &(**this.ptr).data as *const _ };
         mem::forget(this);
         ptr
     }
@@ -315,8 +324,6 @@ impl<T> Arc<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(rc_raw)]
-    ///
     /// use std::sync::Arc;
     ///
     /// let x = Arc::new(10);
@@ -332,11 +339,14 @@ impl<T> Arc<T> {
     ///
     /// // The memory was freed when `x` went out of scope above, so `x_ptr` is now dangling!
     /// ```
-    #[unstable(feature = "rc_raw", issue = "37197")]
-    pub unsafe fn from_raw(ptr: *mut T) -> Self {
+    #[stable(feature = "rc_raw", since = "1.17.0")]
+    pub unsafe fn from_raw(ptr: *const T) -> Self {
         // To find the corresponding pointer to the `ArcInner` we need to subtract the offset of the
         // `data` field from the pointer.
-        Arc { ptr: Shared::new((ptr as *mut u8).offset(-offset_of!(ArcInner<T>, data)) as *mut _) }
+        let ptr = (ptr as *const u8).offset(-offset_of!(ArcInner<T>, data));
+        Arc {
+            ptr: Shared::new(ptr as *const _),
+        }
     }
 }
 
@@ -448,7 +458,7 @@ impl<T: ?Sized> Arc<T> {
     // Non-inlined part of `drop`.
     #[inline(never)]
     unsafe fn drop_slow(&mut self) {
-        let ptr = *self.ptr;
+        let ptr = self.ptr.as_mut_ptr();
 
         // Destroy the data at this time, even though we may not free the box
         // allocation itself (there may still be weak pointers lying around).
@@ -461,17 +471,13 @@ impl<T: ?Sized> Arc<T> {
     }
 
     #[inline]
-    #[unstable(feature = "ptr_eq",
-               reason = "newly added",
-               issue = "36497")]
+    #[stable(feature = "ptr_eq", since = "1.17.0")]
     /// Returns true if the two `Arc`s point to the same value (not
     /// just values that compare as equal).
     ///
     /// # Examples
     ///
     /// ```
-    /// #![feature(ptr_eq)]
-    ///
     /// use std::sync::Arc;
     ///
     /// let five = Arc::new(5);
@@ -628,7 +634,7 @@ impl<T: Clone> Arc<T> {
         // As with `get_mut()`, the unsafety is ok because our reference was
         // either unique to begin with, or became one upon cloning the contents.
         unsafe {
-            let inner = &mut **this.ptr;
+            let inner = &mut *this.ptr.as_mut_ptr();
             &mut inner.data
         }
     }
@@ -671,7 +677,7 @@ impl<T: ?Sized> Arc<T> {
             // the Arc itself to be `mut`, so we're returning the only possible
             // reference to the inner data.
             unsafe {
-                let inner = &mut **this.ptr;
+                let inner = &mut *this.ptr.as_mut_ptr();
                 Some(&mut inner.data)
             }
         } else {
@@ -771,14 +777,11 @@ unsafe impl<#[may_dangle] T: ?Sized> Drop for Arc<T> {
 }
 
 impl<T> Weak<T> {
-    /// Constructs a new `Weak<T>`, without an accompanying instance of `T`.
+    /// Constructs a new `Weak<T>`, allocating memory for `T` without initializing
+    /// it. Calling [`upgrade`] on the return value always gives [`None`].
     ///
-    /// This allocates memory for `T`, but does not initialize it. Calling
-    /// [`upgrade`][upgrade] on the return value always gives
-    /// [`None`][option].
-    ///
-    /// [upgrade]: struct.Weak.html#method.upgrade
-    /// [option]: ../../std/option/enum.Option.html
+    /// [`upgrade`]: struct.Weak.html#method.upgrade
+    /// [`None`]: ../../std/option/enum.Option.html#variant.None
     ///
     /// # Examples
     ///
@@ -803,13 +806,13 @@ impl<T> Weak<T> {
 }
 
 impl<T: ?Sized> Weak<T> {
-    /// Upgrades the `Weak` pointer to an [`Arc`][arc], if possible.
+    /// Attempts to upgrade the `Weak` pointer to an [`Arc`], extending
+    /// the lifetime of the value if successful.
     ///
-    /// Returns [`None`][option] if the strong count has reached zero and the
-    /// inner value was destroyed.
+    /// Returns [`None`] if the value has since been dropped.
     ///
-    /// [arc]: struct.Arc.html
-    /// [option]: ../../std/option/enum.Option.html
+    /// [`Arc`]: struct.Arc.html
+    /// [`None`]: ../../std/option/enum.Option.html#variant.None
     ///
     /// # Examples
     ///
@@ -870,10 +873,7 @@ impl<T: ?Sized> Weak<T> {
 
 #[stable(feature = "arc_weak", since = "1.4.0")]
 impl<T: ?Sized> Clone for Weak<T> {
-    /// Makes a clone of the `Weak` pointer.
-    ///
-    /// This creates another pointer to the same inner value, increasing the
-    /// weak reference count.
+    /// Makes a clone of the `Weak` pointer that points to the same value.
     ///
     /// # Examples
     ///
@@ -905,14 +905,11 @@ impl<T: ?Sized> Clone for Weak<T> {
 
 #[stable(feature = "downgraded_weak", since = "1.10.0")]
 impl<T> Default for Weak<T> {
-    /// Constructs a new `Weak<T>`, without an accompanying instance of `T`.
+    /// Constructs a new `Weak<T>`, allocating memory for `T` without initializing
+    /// it. Calling [`upgrade`] on the return value always gives [`None`].
     ///
-    /// This allocates memory for `T`, but does not initialize it. Calling
-    /// [`upgrade`][upgrade] on the return value always gives
-    /// [`None`][option].
-    ///
-    /// [upgrade]: struct.Weak.html#method.upgrade
-    /// [option]: ../../std/option/enum.Option.html
+    /// [`upgrade`]: struct.Weak.html#method.upgrade
+    /// [`None`]: ../../std/option/enum.Option.html#variant.None
     ///
     /// # Examples
     ///
@@ -930,8 +927,6 @@ impl<T> Default for Weak<T> {
 #[stable(feature = "arc_weak", since = "1.4.0")]
 impl<T: ?Sized> Drop for Weak<T> {
     /// Drops the `Weak` pointer.
-    ///
-    /// This will decrement the weak reference count.
     ///
     /// # Examples
     ///

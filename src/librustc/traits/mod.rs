@@ -20,7 +20,8 @@ use hir::def_id::DefId;
 use middle::free_region::FreeRegionMap;
 use ty::subst::Substs;
 use ty::{self, Ty, TyCtxt, TypeFoldable, ToPredicate};
-use infer::InferCtxt;
+use ty::error::{ExpectedFound, TypeError};
+use infer::{InferCtxt};
 
 use std::rc::Rc;
 use syntax::ast;
@@ -37,10 +38,8 @@ pub use self::project::{ProjectionCache, ProjectionCacheSnapshot, Reveal};
 pub use self::object_safety::ObjectSafetyViolation;
 pub use self::object_safety::MethodViolationCode;
 pub use self::select::{EvaluationCache, SelectionContext, SelectionCache};
-pub use self::select::{MethodMatchResult, MethodMatched, MethodAmbiguous, MethodDidNotMatch};
-pub use self::select::{MethodMatchedData}; // intentionally don't export variants
 pub use self::specialize::{OverlapError, specialization_graph, specializes, translate_substs};
-pub use self::specialize::{SpecializesCache, find_method};
+pub use self::specialize::{SpecializesCache, find_associated_item};
 pub use self::util::elaborate_predicates;
 pub use self::util::supertraits;
 pub use self::util::Supertraits;
@@ -173,6 +172,9 @@ pub enum ObligationCauseCode<'tcx> {
 
     // method receiver
     MethodReceiver,
+
+    // `return` with no expression
+    ReturnNoExpression,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -211,6 +213,8 @@ pub struct FulfillmentError<'tcx> {
 pub enum FulfillmentErrorCode<'tcx> {
     CodeSelectionError(SelectionError<'tcx>),
     CodeProjectionError(MismatchedProjectionTypes<'tcx>),
+    CodeSubtypeError(ExpectedFound<Ty<'tcx>>,
+                     TypeError<'tcx>), // always comes from a SubtypePredicate
     CodeAmbiguity,
 }
 

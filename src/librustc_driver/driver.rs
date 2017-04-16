@@ -10,6 +10,7 @@
 
 use rustc::hir::{self, map as hir_map};
 use rustc::hir::lowering::lower_crate;
+use rustc::ich::Fingerprint;
 use rustc_data_structures::stable_hasher::StableHasher;
 use rustc_mir as mir;
 use rustc::session::{Session, CompileResult, compile_result_from_err_count};
@@ -25,7 +26,6 @@ use rustc::util::nodemap::NodeSet;
 use rustc::util::fs::rename_or_copy_remove;
 use rustc_borrowck as borrowck;
 use rustc_incremental::{self, IncrementalHashesMap};
-use rustc_incremental::ich::Fingerprint;
 use rustc_resolve::{MakeGlobMap, Resolver};
 use rustc_metadata::creader::CrateLoader;
 use rustc_metadata::cstore::{self, CStore};
@@ -35,7 +35,7 @@ use rustc_typeck as typeck;
 use rustc_privacy;
 use rustc_plugin::registry::Registry;
 use rustc_plugin as plugin;
-use rustc_passes::{ast_validation, no_asm, loops, consts, rvalues,
+use rustc_passes::{ast_validation, no_asm, loops, consts,
                    static_recursion, hir_stats, mir_stats};
 use rustc_const_eval::check_match;
 use super::Compilation;
@@ -48,6 +48,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::iter;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use syntax::{ast, diagnostics, visit};
 use syntax::attr;
 use syntax::ext::base::ExtCtxt;
@@ -198,15 +199,22 @@ pub fn compile_input(sess: &Session,
 
             result?;
 
-            if log_enabled!(::log::INFO) {
+            if log_enabled!(::log::LogLevel::Info) {
                 println!("Pre-trans");
                 tcx.print_debug_stats();
             }
             let trans = phase_4_translate_to_llvm(tcx, analysis, &incremental_hashes_map);
 
-            if log_enabled!(::log::INFO) {
+            if log_enabled!(::log::LogLevel::Info) {
                 println!("Post-trans");
                 tcx.print_debug_stats();
+            }
+
+            if tcx.sess.opts.output_types.contains_key(&OutputType::Mir) {
+                if let Err(e) = mir::transform::dump_mir::emit_mir(tcx, &outputs) {
+                    sess.err(&format!("could not emit MIR: {}", e));
+                    sess.abort_if_errors();
+                }
             }
 
             Ok((outputs, trans))
@@ -250,10 +258,7 @@ fn keep_hygiene_data(sess: &Session) -> bool {
 }
 
 fn keep_ast(sess: &Session) -> bool {
-    sess.opts.debugging_opts.keep_ast ||
-    sess.opts.debugging_opts.save_analysis ||
-    sess.opts.debugging_opts.save_analysis_csv ||
-    sess.opts.debugging_opts.save_analysis_api
+    sess.opts.debugging_opts.keep_ast || ::save_analysis(sess)
 }
 
 /// The name used for source code that doesn't originate in a file
@@ -575,7 +580,7 @@ pub fn phase_2_configure_and_expand<F>(sess: &Session,
 
     krate = time(time_passes, "crate injection", || {
         let alt_std_name = sess.opts.alt_std_name.clone();
-        syntax::std_inject::maybe_inject_crates_ref(&sess.parse_sess, krate, alt_std_name)
+        syntax::std_inject::maybe_inject_crates_ref(krate, alt_std_name)
     });
 
     let mut addl_plugins = Some(addl_plugins);
@@ -642,8 +647,12 @@ pub fn phase_2_configure_and_expand<F>(sess: &Session,
     let mut crate_loader = CrateLoader::new(sess, &cstore, crate_name);
     crate_loader.preprocess(&krate);
     let resolver_arenas = Resolver::arenas();
-    let mut resolver =
-        Resolver::new(sess, &krate, make_glob_map, &mut crate_loader, &resolver_arenas);
+    let mut resolver = Resolver::new(sess,
+                                     &krate,
+                                     crate_name,
+                                     make_glob_map,
+                                     &mut crate_loader,
+                                     &resolver_arenas);
     resolver.whitelisted_legacy_custom_derives = whitelisted_legacy_custom_derives;
     syntax_ext::register_builtins(&mut resolver, syntax_exts, sess.features.borrow().quote);
 
@@ -793,25 +802,25 @@ pub fn phase_2_configure_and_expand<F>(sess: &Session,
 
     // Discard hygiene data, which isn't required after lowering to HIR.
     if !keep_hygiene_data(sess) {
-        syntax::ext::hygiene::reset_hygiene_data();
+        syntax::ext::hygiene::clear_markings();
     }
 
     Ok(ExpansionResult {
         expanded_crate: krate,
         defs: resolver.definitions,
         analysis: ty::CrateAnalysis {
-            export_map: resolver.export_map,
-            access_levels: AccessLevels::default(),
+            access_levels: Rc::new(AccessLevels::default()),
             reachable: NodeSet(),
             name: crate_name.to_string(),
             glob_map: if resolver.make_glob_map { Some(resolver.glob_map) } else { None },
         },
         resolutions: Resolutions {
             freevars: resolver.freevars,
+            export_map: resolver.export_map,
             trait_map: resolver.trait_map,
             maybe_unused_trait_imports: resolver.maybe_unused_trait_imports,
         },
-        hir_forest: hir_forest
+        hir_forest: hir_forest,
     })
 }
 
@@ -881,10 +890,15 @@ pub fn phase_3_run_analysis_passes<'tcx, F, R>(sess: &'tcx Session,
 
     let mut local_providers = ty::maps::Providers::default();
     mir::provide(&mut local_providers);
+    rustc_privacy::provide(&mut local_providers);
+    borrowck::provide(&mut local_providers);
     typeck::provide(&mut local_providers);
+    ty::provide(&mut local_providers);
+    reachable::provide(&mut local_providers);
 
     let mut extern_providers = ty::maps::Providers::default();
     cstore::provide(&mut extern_providers);
+    ty::provide_extern(&mut extern_providers);
 
     TyCtxt::create_and_enter(sess,
                              local_providers,
@@ -923,9 +937,7 @@ pub fn phase_3_run_analysis_passes<'tcx, F, R>(sess: &'tcx Session,
              || consts::check_crate(tcx));
 
         analysis.access_levels =
-            time(time_passes, "privacy checking", || {
-                rustc_privacy::check_crate(tcx, &analysis.export_map)
-            });
+            time(time_passes, "privacy checking", || rustc_privacy::check_crate(tcx));
 
         time(time_passes,
              "intrinsic checking",
@@ -948,10 +960,6 @@ pub fn phase_3_run_analysis_passes<'tcx, F, R>(sess: &'tcx Session,
              || middle::liveness::check_crate(tcx));
 
         time(time_passes,
-             "rvalue checking",
-             || rvalues::check_crate(tcx));
-
-        time(time_passes,
              "MIR dump",
              || mir::mir_map::build_mir_for_crate(tcx));
 
@@ -966,8 +974,8 @@ pub fn phase_3_run_analysis_passes<'tcx, F, R>(sess: &'tcx Session,
             // in stage 4 below.
             passes.push_hook(box mir::transform::dump_mir::DumpMir);
             passes.push_pass(box mir::transform::simplify::SimplifyCfg::new("initial"));
-            passes.push_pass(box mir::transform::qualify_consts::QualifyAndPromoteConstants);
             passes.push_pass(box mir::transform::type_check::TypeckMir);
+            passes.push_pass(box mir::transform::qualify_consts::QualifyAndPromoteConstants);
             passes.push_pass(
                 box mir::transform::simplify_branches::SimplifyBranches::new("initial"));
             passes.push_pass(box mir::transform::simplify::SimplifyCfg::new("qualify-consts"));
@@ -992,19 +1000,15 @@ pub fn phase_3_run_analysis_passes<'tcx, F, R>(sess: &'tcx Session,
         analysis.reachable =
             time(time_passes,
                  "reachability checking",
-                 || reachable::find_reachable(tcx, &analysis.access_levels));
+                 || reachable::find_reachable(tcx));
 
-        time(time_passes, "death checking", || {
-            middle::dead::check_crate(tcx, &analysis.access_levels);
-        });
+        time(time_passes, "death checking", || middle::dead::check_crate(tcx));
 
         time(time_passes, "unused lib feature checking", || {
-            stability::check_unused_or_stable_features(tcx, &analysis.access_levels)
+            stability::check_unused_or_stable_features(tcx)
         });
 
-        time(time_passes,
-             "lint checking",
-             || lint::check_crate(tcx, &analysis.access_levels));
+        time(time_passes, "lint checking", || lint::check_crate(tcx));
 
         // The above three passes generate errors w/o aborting
         if sess.err_count() > 0 {
@@ -1077,6 +1081,7 @@ pub fn phase_4_translate_to_llvm<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
          "serialize dep graph",
          || rustc_incremental::save_dep_graph(tcx,
                                               &incremental_hashes_map,
+                                              &translation.metadata.hashes,
                                               translation.link.crate_hash));
     translation
 }
@@ -1136,7 +1141,7 @@ pub fn phase_6_link_output(sess: &Session,
                            outputs: &OutputFilenames) {
     time(sess.time_passes(),
          "linking",
-         || link::link_binary(sess, trans, outputs, &trans.link.crate_name.as_str()));
+         || link::link_binary(sess, trans, outputs, &trans.crate_name.as_str()));
 }
 
 fn escape_dep_filename(filename: &str) -> String {
@@ -1357,10 +1362,9 @@ pub fn build_output_filenames(input: &Input,
                                            .values()
                                            .filter(|a| a.is_none())
                                            .count();
-            let ofile = if unnamed_output_types > 1 &&
-                            sess.opts.output_types.contains_key(&OutputType::Exe) {
-                sess.warn("ignoring specified output filename for 'link' output because multiple \
-                           outputs were requested");
+            let ofile = if unnamed_output_types > 1 {
+                sess.warn("due to multiple output types requested, the explicitly specified \
+                           output file name will be adapted for each output type");
                 None
             } else {
                 Some(out_file.clone())

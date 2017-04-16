@@ -46,7 +46,7 @@ impl ObjectSafetyViolation {
                 "the trait cannot require that `Self : Sized`".into(),
             ObjectSafetyViolation::SupertraitSelf =>
                 "the trait cannot use `Self` as a type parameter \
-                 in the supertrait listing".into(),
+                 in the supertraits or where-clauses".into(),
             ObjectSafetyViolation::Method(name, MethodViolationCode::StaticMethod) =>
                 format!("method `{}` has no receiver", name).into(),
             ObjectSafetyViolation::Method(name, MethodViolationCode::ReferencesSelf) =>
@@ -178,6 +178,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                     ty::Predicate::TypeOutlives(..) |
                     ty::Predicate::RegionOutlives(..) |
                     ty::Predicate::ClosureKind(..) |
+                    ty::Predicate::Subtype(..) |
                     ty::Predicate::Equate(..) => {
                         false
                     }
@@ -209,6 +210,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                     ty::Predicate::Projection(..) |
                     ty::Predicate::Trait(..) |
                     ty::Predicate::Equate(..) |
+                    ty::Predicate::Subtype(..) |
                     ty::Predicate::RegionOutlives(..) |
                     ty::Predicate::WellFormed(..) |
                     ty::Predicate::ObjectSafe(..) |

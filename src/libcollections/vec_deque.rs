@@ -8,8 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! VecDeque is a double-ended queue, which is implemented with the help of a
-//! growing ring buffer.
+//! A double-ended queue implemented with a growable ring buffer.
 //!
 //! This queue has `O(1)` amortized inserts and removals from both ends of the
 //! container. It also has `O(1)` indexing like a vector. The contained elements
@@ -43,13 +42,17 @@ const MAXIMUM_ZST_CAPACITY: usize = 1 << (32 - 1); // Largest possible power of 
 #[cfg(target_pointer_width = "64")]
 const MAXIMUM_ZST_CAPACITY: usize = 1 << (64 - 1); // Largest possible power of two
 
-/// `VecDeque` is a growable ring buffer, which can be used as a double-ended
-/// queue efficiently.
+/// A double-ended queue implemented with a growable ring buffer.
 ///
-/// The "default" usage of this type as a queue is to use `push_back` to add to
-/// the queue, and `pop_front` to remove from the queue. `extend` and `append`
+/// The "default" usage of this type as a queue is to use [`push_back`] to add to
+/// the queue, and [`pop_front`] to remove from the queue. [`extend`] and [`append`]
 /// push onto the back in this manner, and iterating over `VecDeque` goes front
 /// to back.
+///
+/// [`push_back`]: #method.push_back
+/// [`pop_front`]: #method.pop_front
+/// [`extend`]: #method.extend
+/// [`append`]: #method.append
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct VecDeque<T> {
     // tail and head are pointers into the buffer. Tail always points
@@ -133,7 +136,7 @@ impl<T> VecDeque<T> {
         ptr::write(self.ptr().offset(off as isize), value);
     }
 
-    /// Returns true if and only if the buffer is at capacity
+    /// Returns `true` if and only if the buffer is at full capacity.
     #[inline]
     fn is_full(&self) -> bool {
         self.cap() - self.len() == 1
@@ -506,7 +509,7 @@ impl<T> VecDeque<T> {
     /// given `VecDeque`. Does nothing if the capacity is already sufficient.
     ///
     /// Note that the allocator may give the collection more space than it requests. Therefore
-    /// capacity can not be relied upon to be precisely minimal. Prefer `reserve` if future
+    /// capacity can not be relied upon to be precisely minimal. Prefer [`reserve`] if future
     /// insertions are expected.
     ///
     /// # Panics
@@ -522,6 +525,8 @@ impl<T> VecDeque<T> {
     /// buf.reserve_exact(10);
     /// assert!(buf.capacity() >= 11);
     /// ```
+    ///
+    /// [`reserve`]: #method.reserve
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn reserve_exact(&mut self, additional: usize) {
         self.reserve(additional);
@@ -635,7 +640,7 @@ impl<T> VecDeque<T> {
         }
     }
 
-    /// Shortens a `VecDeque`, dropping excess elements from the back.
+    /// Shortens the `VecDeque`, dropping excess elements from the back.
     ///
     /// If `len` is greater than the `VecDeque`'s current length, this has no
     /// effect.
@@ -788,7 +793,7 @@ impl<T> VecDeque<T> {
         count(self.tail, self.head, self.cap())
     }
 
-    /// Returns true if the buffer contains no elements
+    /// Returns `true` if the `VecDeque` is empty.
     ///
     /// # Examples
     ///
@@ -941,7 +946,7 @@ impl<T> VecDeque<T> {
         a.contains(x) || b.contains(x)
     }
 
-    /// Provides a reference to the front element, or `None` if the sequence is
+    /// Provides a reference to the front element, or `None` if the `VecDeque` is
     /// empty.
     ///
     /// # Examples
@@ -966,7 +971,7 @@ impl<T> VecDeque<T> {
     }
 
     /// Provides a mutable reference to the front element, or `None` if the
-    /// sequence is empty.
+    /// `VecDeque` is empty.
     ///
     /// # Examples
     ///
@@ -993,7 +998,7 @@ impl<T> VecDeque<T> {
         }
     }
 
-    /// Provides a reference to the back element, or `None` if the sequence is
+    /// Provides a reference to the back element, or `None` if the `VecDeque` is
     /// empty.
     ///
     /// # Examples
@@ -1018,7 +1023,7 @@ impl<T> VecDeque<T> {
     }
 
     /// Provides a mutable reference to the back element, or `None` if the
-    /// sequence is empty.
+    /// `VecDeque` is empty.
     ///
     /// # Examples
     ///
@@ -1046,7 +1051,7 @@ impl<T> VecDeque<T> {
         }
     }
 
-    /// Removes the first element and returns it, or `None` if the sequence is
+    /// Removes the first element and returns it, or `None` if the `VecDeque` is
     /// empty.
     ///
     /// # Examples
@@ -1073,7 +1078,7 @@ impl<T> VecDeque<T> {
         }
     }
 
-    /// Inserts an element first in the sequence.
+    /// Prepends an element to the `VecDeque`.
     ///
     /// # Examples
     ///
@@ -1096,7 +1101,7 @@ impl<T> VecDeque<T> {
         }
     }
 
-    /// Appends an element to the back of a buffer
+    /// Appends an element to the back of the `VecDeque`.
     ///
     /// # Examples
     ///
@@ -1117,7 +1122,7 @@ impl<T> VecDeque<T> {
         unsafe { self.buffer_write(head, value) }
     }
 
-    /// Removes the last element from a buffer and returns it, or `None` if
+    /// Removes the last element from the `VecDeque` and returns it, or `None` if
     /// it is empty.
     ///
     /// # Examples
@@ -1847,7 +1852,7 @@ fn wrap_index(index: usize, size: usize) -> usize {
     index & (size - 1)
 }
 
-/// Returns the two slices that cover the VecDeque's valid range
+/// Returns the two slices that cover the `VecDeque`'s valid range
 trait RingSlices: Sized {
     fn slice(self, from: usize, to: usize) -> Self;
     fn split_at(self, i: usize) -> (Self, Self);
@@ -1890,7 +1895,13 @@ fn count(tail: usize, head: usize, size: usize) -> usize {
     (head.wrapping_sub(tail)) & (size - 1)
 }
 
-/// `VecDeque` iterator.
+/// An iterator over the elements of a `VecDeque`.
+///
+/// This `struct` is created by the [`iter`] method on [`VecDeque`]. See its
+/// documentation for more.
+///
+/// [`iter`]: struct.VecDeque.html#method.iter
+/// [`VecDeque`]: struct.VecDeque.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Iter<'a, T: 'a> {
     ring: &'a [T],
@@ -1971,7 +1982,13 @@ impl<'a, T> ExactSizeIterator for Iter<'a, T> {
 impl<'a, T> FusedIterator for Iter<'a, T> {}
 
 
-/// `VecDeque` mutable iterator.
+/// A mutable iterator over the elements of a `VecDeque`.
+///
+/// This `struct` is created by the [`iter_mut`] method on [`VecDeque`]. See its
+/// documentation for more.
+///
+/// [`iter_mut`]: struct.VecDeque.html#method.iter_mut
+/// [`VecDeque`]: struct.VecDeque.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct IterMut<'a, T: 'a> {
     ring: &'a mut [T],
@@ -2047,7 +2064,13 @@ impl<'a, T> ExactSizeIterator for IterMut<'a, T> {
 #[unstable(feature = "fused", issue = "35602")]
 impl<'a, T> FusedIterator for IterMut<'a, T> {}
 
-/// A by-value VecDeque iterator
+/// An owning iterator over the elements of a `VecDeque`.
+///
+/// This `struct` is created by the [`into_iter`] method on [`VecDeque`]
+/// (provided by the `IntoIterator` trait). See its documentation for more.
+///
+/// [`into_iter`]: struct.VecDeque.html#method.into_iter
+/// [`VecDeque`]: struct.VecDeque.html
 #[derive(Clone)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct IntoIter<T> {
@@ -2097,7 +2120,13 @@ impl<T> ExactSizeIterator for IntoIter<T> {
 #[unstable(feature = "fused", issue = "35602")]
 impl<T> FusedIterator for IntoIter<T> {}
 
-/// A draining VecDeque iterator
+/// A draining iterator over the elements of a `VecDeque`.
+///
+/// This `struct` is created by the [`drain`] method on [`VecDeque`]. See its
+/// documentation for more.
+///
+/// [`drain`]: struct.VecDeque.html#method.drain
+/// [`VecDeque`]: struct.VecDeque.html
 #[stable(feature = "drain", since = "1.6.0")]
 pub struct Drain<'a, T: 'a> {
     after_tail: usize,
@@ -2125,7 +2154,7 @@ impl<'a, T: 'a> Drop for Drain<'a, T> {
     fn drop(&mut self) {
         for _ in self.by_ref() {}
 
-        let source_deque = unsafe { &mut **self.deque };
+        let source_deque = unsafe { &mut *self.deque.as_mut_ptr() };
 
         // T = source_deque_tail; H = source_deque_head; t = drain_tail; h = drain_head
         //

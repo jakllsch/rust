@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use hir::def_id::CrateNum;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -56,17 +57,13 @@ pub enum DepNode<D: Clone + Debug> {
 
     // Represents different phases in the compiler.
     CollectLanguageItems,
-    CheckStaticRecursion,
     ResolveLifetimes,
     RegionResolveCrate,
-    CheckLoops,
     PluginRegistrar,
     StabilityIndex,
     CollectItem(D),
     CollectItemSig(D),
     Coherence,
-    EffectCheck,
-    Liveness,
     Resolve,
     EntryPoint,
     CheckEntryFn,
@@ -74,14 +71,13 @@ pub enum DepNode<D: Clone + Debug> {
     CoherenceCheckImpl(D),
     CoherenceOverlapCheck(D),
     CoherenceOverlapCheckSpecial(D),
-    CoherenceOverlapInherentCheck(D),
     CoherenceOrphanCheck(D),
     Variance,
     WfCheck(D),
     TypeckItemType(D),
     UnusedTraitCheck,
     CheckConst(D),
-    Privacy,
+    PrivacyAccessLevels(CrateNum),
     IntrinsicCheck(D),
     MatchCheck(D),
 
@@ -89,6 +85,7 @@ pub enum DepNode<D: Clone + Debug> {
     // things read/modify that MIR.
     MirKrate,
     Mir(D),
+    MirShim(Vec<D>),
 
     BorrowCheckKrate,
     BorrowCheck(D),
@@ -215,21 +212,17 @@ impl<D: Clone + Debug> DepNode<D> {
             MirKrate => Some(MirKrate),
             TypeckBodiesKrate => Some(TypeckBodiesKrate),
             CollectLanguageItems => Some(CollectLanguageItems),
-            CheckStaticRecursion => Some(CheckStaticRecursion),
             ResolveLifetimes => Some(ResolveLifetimes),
             RegionResolveCrate => Some(RegionResolveCrate),
-            CheckLoops => Some(CheckLoops),
             PluginRegistrar => Some(PluginRegistrar),
             StabilityIndex => Some(StabilityIndex),
             Coherence => Some(Coherence),
-            EffectCheck => Some(EffectCheck),
-            Liveness => Some(Liveness),
             Resolve => Some(Resolve),
             EntryPoint => Some(EntryPoint),
             CheckEntryFn => Some(CheckEntryFn),
             Variance => Some(Variance),
             UnusedTraitCheck => Some(UnusedTraitCheck),
-            Privacy => Some(Privacy),
+            PrivacyAccessLevels(k) => Some(PrivacyAccessLevels(k)),
             Reachability => Some(Reachability),
             DeadCheck => Some(DeadCheck),
             LateLintCheck => Some(LateLintCheck),
@@ -250,7 +243,6 @@ impl<D: Clone + Debug> DepNode<D> {
             CoherenceCheckImpl(ref d) => op(d).map(CoherenceCheckImpl),
             CoherenceOverlapCheck(ref d) => op(d).map(CoherenceOverlapCheck),
             CoherenceOverlapCheckSpecial(ref d) => op(d).map(CoherenceOverlapCheckSpecial),
-            CoherenceOverlapInherentCheck(ref d) => op(d).map(CoherenceOverlapInherentCheck),
             CoherenceOrphanCheck(ref d) => op(d).map(CoherenceOrphanCheck),
             WfCheck(ref d) => op(d).map(WfCheck),
             TypeckItemType(ref d) => op(d).map(TypeckItemType),
@@ -258,6 +250,10 @@ impl<D: Clone + Debug> DepNode<D> {
             IntrinsicCheck(ref d) => op(d).map(IntrinsicCheck),
             MatchCheck(ref d) => op(d).map(MatchCheck),
             Mir(ref d) => op(d).map(Mir),
+            MirShim(ref def_ids) => {
+                let def_ids: Option<Vec<E>> = def_ids.iter().map(op).collect();
+                def_ids.map(MirShim)
+            }
             BorrowCheck(ref d) => op(d).map(BorrowCheck),
             RvalueCheck(ref d) => op(d).map(RvalueCheck),
             StabilityCheck(ref d) => op(d).map(StabilityCheck),

@@ -40,6 +40,7 @@
 #![feature(conservative_impl_trait)]
 
 use rustc::dep_graph::WorkProduct;
+use syntax_pos::symbol::Symbol;
 
 extern crate flate;
 extern crate libc;
@@ -112,7 +113,6 @@ mod cabi_x86;
 mod cabi_x86_64;
 mod cabi_x86_win64;
 mod callee;
-mod cleanup;
 mod collector;
 mod common;
 mod consts;
@@ -166,10 +166,11 @@ unsafe impl Send for ModuleTranslation { }
 unsafe impl Sync for ModuleTranslation { }
 
 pub struct CrateTranslation {
+    pub crate_name: Symbol,
     pub modules: Vec<ModuleTranslation>,
     pub metadata_module: ModuleTranslation,
     pub link: middle::cstore::LinkMeta,
-    pub metadata: Vec<u8>,
+    pub metadata: middle::cstore::EncodedMetadata,
     pub exported_symbols: back::symbol_export::ExportedSymbols,
     pub no_builtins: bool,
     pub windows_subsystem: Option<String>,

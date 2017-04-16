@@ -60,6 +60,7 @@ use rustc::middle::privacy::AccessLevels;
 use rustc::middle::stability;
 use rustc::hir;
 use rustc::util::nodemap::{FxHashMap, FxHashSet};
+use rustc::session::config::nightly_options::is_nightly_build;
 use rustc_data_structures::flock;
 
 use clean::{self, AttributesExt, GetDefId, SelfTy, Mutability};
@@ -71,7 +72,7 @@ use html::format::{TyParamBounds, WhereClause, href, AbiSpace};
 use html::format::{VisSpace, Method, UnsafetySpace, MutableSpace};
 use html::format::fmt_impl_for_trait_page;
 use html::item_type::ItemType;
-use html::markdown::{self, Markdown, MarkdownHtml};
+use html::markdown::{self, Markdown, MarkdownHtml, MarkdownSummaryLine};
 use html::{highlight, layout};
 
 /// A pair of name and its optional document.
@@ -1649,7 +1650,8 @@ fn document_short(w: &mut fmt::Formatter, item: &clean::Item, link: AssocItemLin
         } else {
             format!("{}", &plain_summary_line(Some(s)))
         };
-        write!(w, "<div class='docblock'>{}</div>", Markdown(&markdown))?;
+        write!(w, "<div class='docblock'>{}</div>",
+               Markdown(&markdown))?;
     }
     Ok(())
 }
@@ -1699,6 +1701,23 @@ fn document_stability(w: &mut fmt::Formatter, cx: &Context, item: &clean::Item) 
     Ok(())
 }
 
+fn name_key(name: &str) -> (&str, u64, usize) {
+    // find number at end
+    let split = name.bytes().rposition(|b| b < b'0' || b'9' < b).map_or(0, |s| s + 1);
+
+    // count leading zeroes
+    let after_zeroes =
+        name[split..].bytes().position(|b| b != b'0').map_or(name.len(), |extra| split + extra);
+
+    // sort leading zeroes last
+    let num_zeroes = after_zeroes - split;
+
+    match name[split..].parse() {
+        Ok(n) => (&name[..split], n, num_zeroes),
+        Err(_) => (name, 0, num_zeroes),
+    }
+}
+
 fn item_module(w: &mut fmt::Formatter, cx: &Context,
                item: &clean::Item, items: &[clean::Item]) -> fmt::Result {
     document(w, cx, item)?;
@@ -1743,7 +1762,9 @@ fn item_module(w: &mut fmt::Formatter, cx: &Context,
             (Some(stability::Stable), Some(stability::Unstable)) => return Ordering::Less,
             _ => {}
         }
-        i1.name.cmp(&i2.name)
+        let lhs = i1.name.as_ref().map_or("", |s| &**s);
+        let rhs = i2.name.as_ref().map_or("", |s| &**s);
+        name_key(lhs).cmp(&name_key(rhs))
     }
 
     indices.sort_by(|&i1, &i2| cmp(&items[i1], &items[i2], i1, i2));
@@ -1851,7 +1872,7 @@ fn item_module(w: &mut fmt::Formatter, cx: &Context,
                        </tr>",
                        name = *myitem.name.as_ref().unwrap(),
                        stab_docs = stab_docs,
-                       docs = shorter(Some(&Markdown(doc_value).to_string())),
+                       docs = MarkdownSummaryLine(doc_value),
                        class = myitem.type_(),
                        stab = myitem.stability_class().unwrap_or("".to_string()),
                        unsafety_flag = unsafety_flag,
@@ -1995,13 +2016,13 @@ fn item_function(w: &mut fmt::Formatter, cx: &Context, it: &clean::Item,
         UnstableFeatures::Allow => f.constness,
         _ => hir::Constness::NotConst
     };
-    let indent = format!("{}{}{}{:#}fn {}{:#}",
-                         VisSpace(&it.visibility),
-                         ConstnessSpace(vis_constness),
-                         UnsafetySpace(f.unsafety),
-                         AbiSpace(f.abi),
-                         it.name.as_ref().unwrap(),
-                         f.generics).len();
+    let name_len = format!("{}{}{}{:#}fn {}{:#}",
+                           VisSpace(&it.visibility),
+                           ConstnessSpace(vis_constness),
+                           UnsafetySpace(f.unsafety),
+                           AbiSpace(f.abi),
+                           it.name.as_ref().unwrap(),
+                           f.generics).len();
     write!(w, "<pre class='rust fn'>")?;
     render_attributes(w, it)?;
     write!(w, "{vis}{constness}{unsafety}{abi}fn \
@@ -2012,8 +2033,12 @@ fn item_function(w: &mut fmt::Formatter, cx: &Context, it: &clean::Item,
            abi = AbiSpace(f.abi),
            name = it.name.as_ref().unwrap(),
            generics = f.generics,
-           where_clause = WhereClause(&f.generics, 2),
-           decl = Method(&f.decl, indent))?;
+           where_clause = WhereClause { gens: &f.generics, indent: 0, end_newline: true },
+           decl = Method {
+               decl: &f.decl,
+               name_len: name_len,
+               indent: 0,
+           })?;
     document(w, cx, it)
 }
 
@@ -2041,14 +2066,18 @@ fn item_trait(w: &mut fmt::Formatter, cx: &Context, it: &clean::Item,
     // Output the trait definition
     write!(w, "<pre class='rust trait'>")?;
     render_attributes(w, it)?;
-    write!(w, "{}{}trait {}{}{}{} ",
+    write!(w, "{}{}trait {}{}{}",
            VisSpace(&it.visibility),
            UnsafetySpace(t.unsafety),
            it.name.as_ref().unwrap(),
            t.generics,
-           bounds,
-           // Where clauses in traits are indented nine spaces, per rustdoc.css
-           WhereClause(&t.generics, 9))?;
+           bounds)?;
+
+    if !t.generics.where_predicates.is_empty() {
+        write!(w, "{}", WhereClause { gens: &t.generics, indent: 0, end_newline: true })?;
+    } else {
+        write!(w, " ")?;
+    }
 
     let types = t.items.iter().filter(|m| m.is_associated_type()).collect::<Vec<_>>();
     let consts = t.items.iter().filter(|m| m.is_associated_const()).collect::<Vec<_>>();
@@ -2087,7 +2116,14 @@ fn item_trait(w: &mut fmt::Formatter, cx: &Context, it: &clean::Item,
         for m in &provided {
             write!(w, "    ")?;
             render_assoc_item(w, m, AssocItemLink::Anchor(None), ItemType::Trait)?;
-            write!(w, " {{ ... }}\n")?;
+            match m.inner {
+                clean::MethodItem(ref inner) if !inner.generics.where_predicates.is_empty() => {
+                    write!(w, ",\n    {{ ... }}\n")?;
+                },
+                _ => {
+                    write!(w, " {{ ... }}\n")?;
+                },
+            }
         }
         write!(w, "}}")?;
     }
@@ -2316,25 +2352,22 @@ fn render_assoc_item(w: &mut fmt::Formatter,
             }
         };
         // FIXME(#24111): remove when `const_fn` is stabilized
-        let vis_constness = match UnstableFeatures::from_environment() {
-            UnstableFeatures::Allow => constness,
-            _ => hir::Constness::NotConst
-        };
-        let prefix = format!("{}{}{:#}fn {}{:#}",
-                             ConstnessSpace(vis_constness),
-                             UnsafetySpace(unsafety),
-                             AbiSpace(abi),
-                             name,
-                             *g);
-        let mut indent = prefix.len();
-        let where_indent = if parent == ItemType::Trait {
-            indent += 4;
-            8
-        } else if parent == ItemType::Impl {
-            2
+        let vis_constness = if is_nightly_build() {
+            constness
         } else {
-            let prefix = prefix + &format!("{:#}", Method(d, indent));
-            prefix.lines().last().unwrap().len() + 1
+            hir::Constness::NotConst
+        };
+        let mut head_len = format!("{}{}{:#}fn {}{:#}",
+                                   ConstnessSpace(vis_constness),
+                                   UnsafetySpace(unsafety),
+                                   AbiSpace(abi),
+                                   name,
+                                   *g).len();
+        let (indent, end_newline) = if parent == ItemType::Trait {
+            head_len += 4;
+            (4, false)
+        } else {
+            (0, true)
         };
         write!(w, "{}{}{}fn <a href='{href}' class='fnname'>{name}</a>\
                    {generics}{decl}{where_clause}",
@@ -2344,8 +2377,16 @@ fn render_assoc_item(w: &mut fmt::Formatter,
                href = href,
                name = name,
                generics = *g,
-               decl = Method(d, indent),
-               where_clause = WhereClause(g, where_indent))
+               decl = Method {
+                   decl: d,
+                   name_len: head_len,
+                   indent: indent,
+               },
+               where_clause = WhereClause {
+                   gens: g,
+                   indent: indent,
+                   end_newline: end_newline,
+               })
     }
     match item.inner {
         clean::StrippedItem(..) => Ok(()),
@@ -2458,15 +2499,11 @@ fn item_enum(w: &mut fmt::Formatter, cx: &Context, it: &clean::Item,
              e: &clean::Enum) -> fmt::Result {
     write!(w, "<pre class='rust enum'>")?;
     render_attributes(w, it)?;
-    let padding = format!("{}enum {}{:#} ",
-                          VisSpace(&it.visibility),
-                          it.name.as_ref().unwrap(),
-                          e.generics).len();
     write!(w, "{}enum {}{}{}",
            VisSpace(&it.visibility),
            it.name.as_ref().unwrap(),
            e.generics,
-           WhereClause(&e.generics, padding))?;
+           WhereClause { gens: &e.generics, indent: 0, end_newline: true })?;
     if e.variants.is_empty() && !e.variants_stripped {
         write!(w, " {{}}")?;
     } else {
@@ -2590,7 +2627,7 @@ fn render_attribute(attr: &ast::MetaItem) -> Option<String> {
     if attr.is_word() {
         Some(format!("{}", name))
     } else if let Some(v) = attr.value_str() {
-        Some(format!("{} = {:?}", name, &v.as_str()[..]))
+        Some(format!("{} = {:?}", name, v.as_str()))
     } else if let Some(values) = attr.meta_item_list() {
         let display: Vec<_> = values.iter().filter_map(|attr| {
             attr.meta_item().and_then(|mi| render_attribute(mi))
@@ -2620,11 +2657,11 @@ fn render_attributes(w: &mut fmt::Formatter, it: &clean::Item) -> fmt::Result {
     let mut attrs = String::new();
 
     for attr in &it.attrs.other_attrs {
-        let name = attr.name();
-        if !ATTRIBUTE_WHITELIST.contains(&&name.as_str()[..]) {
+        let name = attr.name().unwrap();
+        if !ATTRIBUTE_WHITELIST.contains(&&*name.as_str()) {
             continue;
         }
-        if let Some(s) = render_attribute(attr.meta()) {
+        if let Some(s) = render_attribute(&attr.meta().unwrap()) {
             attrs.push_str(&format!("#[{}]\n", s));
         }
     }
@@ -2640,23 +2677,17 @@ fn render_struct(w: &mut fmt::Formatter, it: &clean::Item,
                  fields: &[clean::Item],
                  tab: &str,
                  structhead: bool) -> fmt::Result {
-    let mut plain = String::new();
     write!(w, "{}{}{}",
            VisSpace(&it.visibility),
            if structhead {"struct "} else {""},
            it.name.as_ref().unwrap())?;
-    plain.push_str(&format!("{}{}{}",
-                            VisSpace(&it.visibility),
-                            if structhead {"struct "} else {""},
-                            it.name.as_ref().unwrap()));
     if let Some(g) = g {
-        plain.push_str(&format!("{:#}", g));
         write!(w, "{}", g)?
     }
     match ty {
         doctree::Plain => {
             if let Some(g) = g {
-                write!(w, "{}", WhereClause(g, plain.len() + 1))?
+                write!(w, "{}", WhereClause { gens: g, indent: 0, end_newline: true })?
             }
             let mut has_visible_fields = false;
             write!(w, " {{")?;
@@ -2685,35 +2716,30 @@ fn render_struct(w: &mut fmt::Formatter, it: &clean::Item,
         }
         doctree::Tuple => {
             write!(w, "(")?;
-            plain.push_str("(");
             for (i, field) in fields.iter().enumerate() {
                 if i > 0 {
                     write!(w, ", ")?;
-                    plain.push_str(", ");
                 }
                 match field.inner {
                     clean::StrippedItem(box clean::StructFieldItem(..)) => {
-                        plain.push_str("_");
                         write!(w, "_")?
                     }
                     clean::StructFieldItem(ref ty) => {
-                        plain.push_str(&format!("{}{:#}", VisSpace(&field.visibility), *ty));
                         write!(w, "{}{}", VisSpace(&field.visibility), *ty)?
                     }
                     _ => unreachable!()
                 }
             }
             write!(w, ")")?;
-            plain.push_str(")");
             if let Some(g) = g {
-                write!(w, "{}", WhereClause(g, plain.len() + 1))?
+                write!(w, "{}", WhereClause { gens: g, indent: 0, end_newline: false })?
             }
             write!(w, ";")?;
         }
         doctree::Unit => {
             // Needed for PhantomData.
             if let Some(g) = g {
-                write!(w, "{}", WhereClause(g, plain.len() + 1))?
+                write!(w, "{}", WhereClause { gens: g, indent: 0, end_newline: false })?
             }
             write!(w, ";")?;
         }
@@ -2726,19 +2752,13 @@ fn render_union(w: &mut fmt::Formatter, it: &clean::Item,
                 fields: &[clean::Item],
                 tab: &str,
                 structhead: bool) -> fmt::Result {
-    let mut plain = String::new();
     write!(w, "{}{}{}",
            VisSpace(&it.visibility),
            if structhead {"union "} else {""},
            it.name.as_ref().unwrap())?;
-    plain.push_str(&format!("{}{}{}",
-                            VisSpace(&it.visibility),
-                            if structhead {"union "} else {""},
-                            it.name.as_ref().unwrap()));
     if let Some(g) = g {
         write!(w, "{}", g)?;
-        plain.push_str(&format!("{:#}", g));
-        write!(w, "{}", WhereClause(g, plain.len() + 1))?;
+        write!(w, "{}", WhereClause { gens: g, indent: 0, end_newline: true })?;
     }
 
     write!(w, " {{\n{}", tab)?;
@@ -2806,7 +2826,7 @@ fn render_assoc_items(w: &mut fmt::Formatter,
             }
             AssocItemRender::DerefFor { trait_, type_, deref_mut_ } => {
                 write!(w, "<h2 id='deref-methods'>Methods from \
-                               {}&lt;Target={}&gt;</h2>", trait_, type_)?;
+                               {}&lt;Target = {}&gt;</h2>", trait_, type_)?;
                 RenderMode::ForDeref { mut_: deref_mut_ }
             }
         };
@@ -3037,13 +3057,12 @@ fn render_impl(w: &mut fmt::Formatter, cx: &Context, i: &Impl, link: AssocItemLi
 
 fn item_typedef(w: &mut fmt::Formatter, cx: &Context, it: &clean::Item,
                 t: &clean::Typedef) -> fmt::Result {
-    let indent = format!("type {}{:#} ", it.name.as_ref().unwrap(), t.generics).len();
     write!(w, "<pre class='rust typedef'>")?;
     render_attributes(w, it)?;
     write!(w, "type {}{}{where_clause} = {type_};</pre>",
            it.name.as_ref().unwrap(),
            t.generics,
-           where_clause = WhereClause(&t.generics, indent),
+           where_clause = WhereClause { gens: &t.generics, indent: 0, end_newline: true },
            type_ = t.type_)?;
 
     document(w, cx, it)
@@ -3195,4 +3214,33 @@ fn test_unique_id() {
     test();
     reset_ids(true);
     test();
+}
+
+#[cfg(test)]
+#[test]
+fn test_name_key() {
+    assert_eq!(name_key("0"), ("", 0, 1));
+    assert_eq!(name_key("123"), ("", 123, 0));
+    assert_eq!(name_key("Fruit"), ("Fruit", 0, 0));
+    assert_eq!(name_key("Fruit0"), ("Fruit", 0, 1));
+    assert_eq!(name_key("Fruit0000"), ("Fruit", 0, 4));
+    assert_eq!(name_key("Fruit01"), ("Fruit", 1, 1));
+    assert_eq!(name_key("Fruit10"), ("Fruit", 10, 0));
+    assert_eq!(name_key("Fruit123"), ("Fruit", 123, 0));
+}
+
+#[cfg(test)]
+#[test]
+fn test_name_sorting() {
+    let names = ["Apple",
+                 "Banana",
+                 "Fruit", "Fruit0", "Fruit00",
+                 "Fruit1", "Fruit01",
+                 "Fruit2", "Fruit02",
+                 "Fruit20",
+                 "Fruit100",
+                 "Pear"];
+    let mut sorted = names.to_owned();
+    sorted.sort_by_key(|&s| name_key(s));
+    assert_eq!(names, sorted);
 }
