@@ -2,6 +2,7 @@
 authors = ["The Rust Project Developers"]
 name = "rustdoc"
 version = "0.0.0"
+build = "build.rs"
 
 [lib]
 name = "rustdoc"
@@ -14,7 +15,6 @@ env_logger = { version = "0.4", default-features = false }
 log = "0.3"
 rustc = { path = "../librustc" }
 rustc_back = { path = "../librustc_back" }
-rustc_const_eval = { path = "../librustc_const_eval" }
 rustc_data_structures = { path = "../librustc_data_structures" }
 rustc_driver = { path = "../librustc_driver" }
 rustc_errors = { path = "../librustc_errors" }

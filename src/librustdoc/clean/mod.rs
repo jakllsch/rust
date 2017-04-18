@@ -292,7 +292,7 @@ impl Item {
         self.type_() == ItemType::Struct
     }
     pub fn is_enum(&self) -> bool {
-        self.type_() == ItemType::Module
+        self.type_() == ItemType::Enum
     }
     pub fn is_fn(&self) -> bool {
         self.type_() == ItemType::Function
@@ -311,6 +311,9 @@ impl Item {
     }
     pub fn is_primitive(&self) -> bool {
         self.type_() == ItemType::Primitive
+    }
+    pub fn is_union(&self) -> bool {
+        self.type_() == ItemType::Union
     }
     pub fn is_stripped(&self) -> bool {
         match self.inner { StrippedItem(..) => true, _ => false }
@@ -1715,7 +1718,7 @@ impl Clean<Type> for hir::Ty {
             }
             TySlice(ref ty) => Vector(box ty.clean(cx)),
             TyArray(ref ty, length) => {
-                use rustc_const_eval::eval_length;
+                use rustc::middle::const_val::eval_length;
                 let n = eval_length(cx.tcx, length, "array length").unwrap();
                 FixedVector(box ty.clean(cx), n.to_string())
             },
