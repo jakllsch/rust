@@ -223,9 +223,10 @@ impl<'a, 'tcx> LanguageItemCollector<'a, 'tcx> {
 
 pub fn extract(attrs: &[ast::Attribute]) -> Option<Symbol> {
     for attribute in attrs {
-        match attribute.value_str() {
-            Some(value) if attribute.check_name("lang") => return Some(value),
-            _ => {}
+        if attribute.check_name("lang") {
+            if let Some(value) = attribute.value_str() {
+                return Some(value)
+            }
         }
     }
 
@@ -274,6 +275,7 @@ language_item_table! {
     UnsizeTraitLangItem,             "unsize",                  unsize_trait;
     CopyTraitLangItem,               "copy",                    copy_trait;
     SyncTraitLangItem,               "sync",                    sync_trait;
+    FreezeTraitLangItem,             "freeze",                  freeze_trait;
 
     DropTraitLangItem,               "drop",                    drop_trait;
 
