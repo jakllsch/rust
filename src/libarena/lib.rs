@@ -19,7 +19,7 @@
 //! objects of a single type.
 
 #![crate_name = "arena"]
-#![unstable(feature = "rustc_private", issue = "27812")]
+#![cfg_attr(stage0, unstable(feature = "rustc_private", issue = "27812"))]
 #![crate_type = "rlib"]
 #![crate_type = "dylib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
@@ -31,9 +31,8 @@
 #![feature(alloc)]
 #![feature(core_intrinsics)]
 #![feature(dropck_eyepatch)]
-#![feature(heap_api)]
 #![feature(generic_param_attrs)]
-#![feature(staged_api)]
+#![cfg_attr(stage0, feature(staged_api))]
 #![cfg_attr(test, feature(test))]
 
 #![allow(deprecated)]
@@ -48,7 +47,6 @@ use std::mem;
 use std::ptr;
 use std::slice;
 
-use alloc::heap;
 use alloc::raw_vec::RawVec;
 
 /// An arena that can hold objects of only one type.
@@ -140,7 +138,7 @@ impl<T> TypedArena<T> {
         unsafe {
             if mem::size_of::<T>() == 0 {
                 self.ptr.set(intrinsics::arith_offset(self.ptr.get() as *mut u8, 1) as *mut T);
-                let ptr = heap::EMPTY as *mut T;
+                let ptr = mem::align_of::<T>() as *mut T;
                 // Don't drop the object. This `write` is equivalent to `forget`.
                 ptr::write(ptr, object);
                 &mut *ptr

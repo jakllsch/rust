@@ -132,7 +132,6 @@
 //! use std::cell::Cell;
 //! use std::ptr::Shared;
 //! use std::intrinsics::abort;
-//! use std::intrinsics::assume;
 //!
 //! struct Rc<T: ?Sized> {
 //!     ptr: Shared<RcBox<T>>
@@ -171,8 +170,7 @@
 //! impl<T: ?Sized> RcBoxPtr<T> for Rc<T> {
 //!    fn inner(&self) -> &RcBox<T> {
 //!        unsafe {
-//!            assume(!(*(&self.ptr as *const _ as *const *const ())).is_null());
-//!            &(**self.ptr)
+//!            self.ptr.as_ref()
 //!        }
 //!    }
 //! }
@@ -724,6 +722,15 @@ impl<T: ?Sized> RefCell<T> {
     ///
     /// This call borrows `RefCell` mutably (at compile-time) so there is no
     /// need for dynamic checks.
+    ///
+    /// However be cautious: this method expects `self` to be mutable, which is
+    /// generally not the case when using a `RefCell`. Take a look at the
+    /// [`borrow_mut`] method instead if `self` isn't mutable.
+    ///
+    /// Also, please be aware that this method is only for special circumstances and is usually
+    /// not you want. In case of doubt, use [`borrow_mut`] instead.
+    ///
+    /// [`borrow_mut`]: #method.borrow_mut
     ///
     /// # Examples
     ///

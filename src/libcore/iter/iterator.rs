@@ -119,7 +119,7 @@ pub trait Iterator {
     /// // exactly wouldn't be possible without executing filter().
     /// assert_eq!((0, Some(10)), iter.size_hint());
     ///
-    /// // Let's add one five more numbers with chain()
+    /// // Let's add five more numbers with chain()
     /// let iter = (0..10).filter(|x| x % 2 == 0).chain(15..20);
     ///
     /// // now both bounds are increased by five
@@ -629,8 +629,9 @@ pub trait Iterator {
     ///
     /// Note that the underlying iterator is still advanced when [`peek`] is
     /// called for the first time: In order to retrieve the next element,
-    /// [`next`] is called on the underlying iterator, hence any side effects of
-    /// the [`next`] method will occur.
+    /// [`next`] is called on the underlying iterator, hence any side effects (i.e.
+    /// anything other than fetching the next value) of the [`next`] method
+    /// will occur.
     ///
     /// [`peek`]: struct.Peekable.html#method.peek
     /// [`next`]: ../../std/iter/trait.Iterator.html#tymethod.next

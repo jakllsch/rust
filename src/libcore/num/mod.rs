@@ -96,13 +96,6 @@ pub mod dec2flt;
 pub mod bignum;
 pub mod diy_float;
 
-macro_rules! checked_op {
-    ($U:ty, $op:path, $x:expr, $y:expr) => {{
-        let (result, overflowed) = unsafe { $op($x as $U, $y as $U) };
-        if overflowed { None } else { Some(result as Self) }
-    }}
-}
-
 // `Int` + `SignedInt` implemented for signed integers
 macro_rules! int_impl {
     ($SelfT:ty, $ActualT:ident, $UnsignedT:ty, $BITS:expr,
@@ -778,19 +771,10 @@ macro_rules! int_impl {
         /// ```
         #[stable(feature = "num_wrapping", since = "1.2.0")]
         #[inline(always)]
-        #[cfg(not(stage0))]
         pub fn wrapping_shl(self, rhs: u32) -> Self {
             unsafe {
                 intrinsics::unchecked_shl(self, (rhs & ($BITS - 1)) as $SelfT)
             }
-        }
-
-        /// Stage 0
-        #[stable(feature = "num_wrapping", since = "1.2.0")]
-        #[inline(always)]
-        #[cfg(stage0)]
-        pub fn wrapping_shl(self, rhs: u32) -> Self {
-            self.overflowing_shl(rhs).0
         }
 
         /// Panic-free bitwise shift-right; yields `self >> mask(rhs)`,
@@ -814,19 +798,10 @@ macro_rules! int_impl {
         /// ```
         #[stable(feature = "num_wrapping", since = "1.2.0")]
         #[inline(always)]
-        #[cfg(not(stage0))]
         pub fn wrapping_shr(self, rhs: u32) -> Self {
             unsafe {
                 intrinsics::unchecked_shr(self, (rhs & ($BITS - 1)) as $SelfT)
             }
-        }
-
-        /// Stage 0
-        #[stable(feature = "num_wrapping", since = "1.2.0")]
-        #[inline(always)]
-        #[cfg(stage0)]
-        pub fn wrapping_shr(self, rhs: u32) -> Self {
-            self.overflowing_shr(rhs).0
         }
 
         /// Wrapping (modular) absolute value. Computes `self.abs()`,
@@ -1039,17 +1014,8 @@ macro_rules! int_impl {
         /// ```
         #[inline]
         #[stable(feature = "wrapping", since = "1.7.0")]
-        #[cfg(not(stage0))]
         pub fn overflowing_shl(self, rhs: u32) -> (Self, bool) {
             (self.wrapping_shl(rhs), (rhs > ($BITS - 1)))
-        }
-
-        /// Stage 0
-        #[inline]
-        #[stable(feature = "wrapping", since = "1.7.0")]
-        #[cfg(stage0)]
-        pub fn overflowing_shl(self, rhs: u32) -> (Self, bool) {
-            (self << (rhs & ($BITS - 1)), (rhs > ($BITS - 1)))
         }
 
         /// Shifts self right by `rhs` bits.
@@ -1070,17 +1036,8 @@ macro_rules! int_impl {
         /// ```
         #[inline]
         #[stable(feature = "wrapping", since = "1.7.0")]
-        #[cfg(not(stage0))]
         pub fn overflowing_shr(self, rhs: u32) -> (Self, bool) {
             (self.wrapping_shr(rhs), (rhs > ($BITS - 1)))
-        }
-
-        /// Stage 0
-        #[inline]
-        #[stable(feature = "wrapping", since = "1.7.0")]
-        #[cfg(stage0)]
-        pub fn overflowing_shr(self, rhs: u32) -> (Self, bool) {
-            (self >> (rhs & ($BITS - 1)), (rhs > ($BITS - 1)))
         }
 
         /// Computes the absolute value of `self`.
@@ -1946,19 +1903,10 @@ macro_rules! uint_impl {
         /// ```
         #[stable(feature = "num_wrapping", since = "1.2.0")]
         #[inline(always)]
-        #[cfg(not(stage0))]
         pub fn wrapping_shl(self, rhs: u32) -> Self {
             unsafe {
                 intrinsics::unchecked_shl(self, (rhs & ($BITS - 1)) as $SelfT)
             }
-        }
-
-        /// Stage 0
-        #[stable(feature = "num_wrapping", since = "1.2.0")]
-        #[inline(always)]
-        #[cfg(stage0)]
-        pub fn wrapping_shl(self, rhs: u32) -> Self {
-            self.overflowing_shl(rhs).0
         }
 
         /// Panic-free bitwise shift-right; yields `self >> mask(rhs)`,
@@ -1982,19 +1930,10 @@ macro_rules! uint_impl {
         /// ```
         #[stable(feature = "num_wrapping", since = "1.2.0")]
         #[inline(always)]
-        #[cfg(not(stage0))]
         pub fn wrapping_shr(self, rhs: u32) -> Self {
             unsafe {
                 intrinsics::unchecked_shr(self, (rhs & ($BITS - 1)) as $SelfT)
             }
-        }
-
-        /// Stage 0
-        #[stable(feature = "num_wrapping", since = "1.2.0")]
-        #[inline(always)]
-        #[cfg(stage0)]
-        pub fn wrapping_shr(self, rhs: u32) -> Self {
-            self.overflowing_shr(rhs).0
         }
 
         /// Calculates `self` + `rhs`
@@ -2160,17 +2099,8 @@ macro_rules! uint_impl {
         /// ```
         #[inline]
         #[stable(feature = "wrapping", since = "1.7.0")]
-        #[cfg(not(stage0))]
         pub fn overflowing_shl(self, rhs: u32) -> (Self, bool) {
             (self.wrapping_shl(rhs), (rhs > ($BITS - 1)))
-        }
-
-        /// Stage 0
-        #[inline]
-        #[stable(feature = "wrapping", since = "1.7.0")]
-        #[cfg(stage0)]
-        pub fn overflowing_shl(self, rhs: u32) -> (Self, bool) {
-            (self << (rhs & ($BITS - 1)), (rhs > ($BITS - 1)))
         }
 
         /// Shifts self right by `rhs` bits.
@@ -2191,18 +2121,9 @@ macro_rules! uint_impl {
         /// ```
         #[inline]
         #[stable(feature = "wrapping", since = "1.7.0")]
-        #[cfg(not(stage0))]
         pub fn overflowing_shr(self, rhs: u32) -> (Self, bool) {
             (self.wrapping_shr(rhs), (rhs > ($BITS - 1)))
 
-        }
-
-        /// Stage 0
-        #[inline]
-        #[stable(feature = "wrapping", since = "1.7.0")]
-        #[cfg(stage0)]
-        pub fn overflowing_shr(self, rhs: u32) -> (Self, bool) {
-            (self >> (rhs & ($BITS - 1)), (rhs > ($BITS - 1)))
         }
 
         /// Raises self to the power of `exp`, using exponentiation by squaring.
