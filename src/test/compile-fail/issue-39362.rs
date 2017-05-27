@@ -1,4 +1,4 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,21 +8,21 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![allow(unused)]
-#![deny(improper_ctypes)]
-
-#[repr(C)]
-union U {
-    a: u8,
+enum Foo {
+    Bar { bar: Bar, id: usize }
 }
 
-union W {
-    a: u8,
+enum Bar {
+    A, B, C, D, E, F
 }
 
-extern "C" {
-    static FOREIGN1: U; // OK
-    static FOREIGN2: W; //~ ERROR found union without foreign-function-safe representation
+fn test(f: Foo) {
+    match f {
+        //~^ ERROR non-exhaustive patterns
+        //~| patterns
+        Foo::Bar { bar: Bar::A, .. } => (),
+        Foo::Bar { bar: Bar::B, .. } => (),
+    }
 }
 
 fn main() {}

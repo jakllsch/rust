@@ -1,4 +1,4 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,21 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![allow(unused)]
-#![deny(improper_ctypes)]
+// compile-flags: -Z unstable-options --unpretty=mir
 
-#[repr(C)]
-union U {
-    a: u8,
+use std::path::MAIN_SEPARATOR;
+
+fn main() {
+    let mut foo : String = "hello".to_string();
+    foo.push(MAIN_SEPARATOR);
+    println!("{}", foo);
+    let x: () = 0; //~ ERROR: mismatched types
 }
-
-union W {
-    a: u8,
-}
-
-extern "C" {
-    static FOREIGN1: U; // OK
-    static FOREIGN2: W; //~ ERROR found union without foreign-function-safe representation
-}
-
-fn main() {}

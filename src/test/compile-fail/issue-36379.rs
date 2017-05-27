@@ -1,4 +1,4 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,21 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![allow(unused)]
-#![deny(improper_ctypes)]
+#![feature(conservative_impl_trait, rustc_attrs)]
 
-#[repr(C)]
-union U {
-    a: u8,
-}
+fn _test() -> impl Default { }
 
-union W {
-    a: u8,
-}
-
-extern "C" {
-    static FOREIGN1: U; // OK
-    static FOREIGN2: W; //~ ERROR found union without foreign-function-safe representation
-}
-
-fn main() {}
+#[rustc_error]
+fn main() { } //~ ERROR compilation successful
