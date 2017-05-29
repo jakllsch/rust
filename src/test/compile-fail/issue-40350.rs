@@ -1,4 +1,4 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,19 +8,17 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// no-prefer-dynamic
-// compile-flags: -Z query-dep-graph
+#![feature(rustc_attrs)]
+#![allow(warnings)]
 
-#![crate_type="rlib"]
+enum E {
+    A = {
+        enum F { B }
+        0
+    }
+}
 
-#[cfg(rpass1)]
-pub type X = u32;
+#[rustc_error]
+fn main() {}
+//~^ ERROR compilation successful
 
-#[cfg(rpass2)]
-pub type X = i32;
-
-// this version doesn't actually change anything:
-#[cfg(rpass3)]
-pub type X = i32;
-
-pub type Y = char;
