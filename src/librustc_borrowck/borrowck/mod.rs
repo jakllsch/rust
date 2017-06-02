@@ -39,8 +39,6 @@ use rustc::middle::free_region::RegionRelations;
 use rustc::ty::{self, TyCtxt};
 use rustc::ty::maps::Providers;
 
-use syntax_pos::DUMMY_SP;
-
 use std::fmt;
 use std::rc::Rc;
 use std::hash::{Hash, Hasher};
@@ -286,7 +284,7 @@ const DOWNCAST_PRINTED_OPERATOR: &'static str = " as ";
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InteriorKind {
     InteriorField(mc::FieldName),
-    InteriorElement(mc::ElementKind),
+    InteriorElement,
 }
 
 trait ToInteriorKind { fn cleaned(self) -> InteriorKind; }
@@ -294,7 +292,7 @@ impl ToInteriorKind for mc::InteriorKind {
     fn cleaned(self) -> InteriorKind {
         match self {
             mc::InteriorField(name) => InteriorField(name),
-            mc::InteriorElement(_, elem_kind) => InteriorElement(elem_kind),
+            mc::InteriorElement(_) => InteriorElement,
         }
     }
 }
@@ -428,7 +426,7 @@ pub fn opt_loan_path<'tcx>(cmt: &mc::cmt<'tcx>) -> Option<Rc<LoanPath<'tcx>>> {
             Some(new_lp(LpUpvar(id)))
         }
 
-        Categorization::Deref(ref cmt_base, _, pk) => {
+        Categorization::Deref(ref cmt_base, pk) => {
             opt_loan_path(cmt_base).map(|lp| {
                 new_lp(LpExtend(lp, cmt.mutbl, LpDeref(pk)))
             })
@@ -587,9 +585,15 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                     verb, msg, nl);
                 let need_note = match lp.ty.sty {
                     ty::TypeVariants::TyClosure(id, _) => {
-                        if let Ok(ty::ClosureKind::FnOnce) =
-                           ty::queries::closure_kind::try_get(self.tcx, DUMMY_SP, id) {
-                            err.help("closure was moved because it only implements `FnOnce`");
+                        let node_id = self.tcx.hir.as_local_node_id(id).unwrap();
+                        if let Some(&(ty::ClosureKind::FnOnce, Some((span, name)))) =
+                            self.tables.closure_kinds.get(&node_id)
+                        {
+                            err.span_note(span, &format!(
+                                "closure cannot be invoked more than once because \
+                                it moves the variable `{}` out of its environment",
+                                name
+                            ));
                             false
                         } else {
                             true
@@ -701,7 +705,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
     fn bckerr_to_diag(&self, err: &BckError<'tcx>) -> DiagnosticBuilder<'a> {
         let span = err.span.clone();
 
-        let msg = match err.code {
+        match err.code {
             err_mutbl => {
                 let descr = match err.cmt.note {
                     mc::NoteClosureEnv(_) | mc::NoteUpvarRef(_) => {
@@ -725,10 +729,11 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
 
                 match err.cause {
                     MutabilityViolation => {
-                        format!("cannot assign to {}", descr)
+                        struct_span_err!(self.tcx.sess, span, E0594, "cannot assign to {}", descr)
                     }
                     BorrowViolation(euv::ClosureCapture(_)) => {
-                        format!("closure cannot assign to {}", descr)
+                        struct_span_err!(self.tcx.sess, span, E0595,
+                                         "closure cannot assign to {}", descr)
                     }
                     BorrowViolation(euv::OverloadedOperator) |
                     BorrowViolation(euv::AddrOf) |
@@ -737,7 +742,8 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                     BorrowViolation(euv::AutoUnsafe) |
                     BorrowViolation(euv::ForLoop) |
                     BorrowViolation(euv::MatchDiscriminant) => {
-                        format!("cannot borrow {} as mutable", descr)
+                        struct_span_err!(self.tcx.sess, span, E0596,
+                                         "cannot borrow {} as mutable", descr)
                     }
                     BorrowViolation(euv::ClosureInvocation) => {
                         span_bug!(err.span,
@@ -752,17 +758,16 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                         format!("`{}`", self.loan_path_to_string(&lp))
                     }
                 };
-                format!("{} does not live long enough", msg)
+                struct_span_err!(self.tcx.sess, span, E0597, "{} does not live long enough", msg)
             }
             err_borrowed_pointer_too_short(..) => {
                 let descr = self.cmt_to_path_or_string(&err.cmt);
-                format!("lifetime of {} is too short to guarantee \
-                         its contents can be safely reborrowed",
-                        descr)
+                struct_span_err!(self.tcx.sess, span, E0598,
+                                 "lifetime of {} is too short to guarantee \
+                                  its contents can be safely reborrowed",
+                                 descr)
             }
-        };
-
-        self.struct_span_err(span, &msg)
+        }
     }
 
     pub fn report_aliasability_violation(&self,
@@ -1169,7 +1174,7 @@ before rustc 1.16, this temporary lived longer - see issue #39283 \
                 if kind == ty::ClosureKind::Fn {
                     db.span_help(self.tcx.hir.span(upvar_id.closure_expr_id),
                                  "consider changing this closure to take \
-                                 self by mutable reference");
+                                  self by mutable reference");
                 }
             }
             _ => {
@@ -1227,7 +1232,7 @@ before rustc 1.16, this temporary lived longer - see issue #39283 \
                 }
             }
 
-            LpExtend(ref lp_base, _, LpInterior(_, InteriorElement(..))) => {
+            LpExtend(ref lp_base, _, LpInterior(_, InteriorElement)) => {
                 self.append_autoderefd_loan_path_to_string(&lp_base, out);
                 out.push_str("[..]");
             }
@@ -1313,7 +1318,7 @@ impl<'tcx> fmt::Debug for InteriorKind {
         match *self {
             InteriorField(mc::NamedField(fld)) => write!(f, "{}", fld),
             InteriorField(mc::PositionalField(i)) => write!(f, "#{}", i),
-            InteriorElement(..) => write!(f, "[]"),
+            InteriorElement => write!(f, "[]"),
         }
     }
 }

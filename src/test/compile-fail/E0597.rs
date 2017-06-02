@@ -1,4 +1,4 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,18 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![allow(private_in_public)]
-
-mod foo {
-    pub mod bar {
-        extern crate core;
-    }
-}
-
-mod baz {
-    pub use foo::bar::core;
+struct Foo<'a> {
+    x: Option<&'a u32>,
 }
 
 fn main() {
-    baz::core::cell::Cell::new(0u32);
-}
+    let mut x = Foo { x: None };
+    let y = 0;
+    x.x = Some(&y);
+} //~ `y` does not live long enough [E0597]

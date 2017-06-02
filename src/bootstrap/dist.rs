@@ -489,8 +489,8 @@ pub fn analysis(build: &Build, compiler: &Compiler, target: &str) {
     t!(fs::remove_dir_all(&image));
 }
 
-fn copy_src_dirs(build: &Build, src_dirs: &[&str], dst_dir: &Path) {
-    let filter_fn = move |path: &Path| {
+fn copy_src_dirs(build: &Build, src_dirs: &[&str], exclude_dirs: &[&str], dst_dir: &Path) {
+    fn filter_fn(exclude_dirs: &[&str], dir: &str, path: &Path) -> bool {
         let spath = match path.to_str() {
             Some(path) => path,
             None => return false,
@@ -506,6 +506,11 @@ fn copy_src_dirs(build: &Build, src_dirs: &[&str], dst_dir: &Path) {
             }
         }
 
+        let full_path = Path::new(dir).join(path);
+        if exclude_dirs.iter().any(|excl| full_path == Path::new(excl)) {
+            return false;
+        }
+
         let excludes = [
             "CVS", "RCS", "SCCS", ".git", ".gitignore", ".gitmodules",
             ".gitattributes", ".cvsignore", ".svn", ".arch-ids", "{arch}",
@@ -515,13 +520,13 @@ fn copy_src_dirs(build: &Build, src_dirs: &[&str], dst_dir: &Path) {
         !path.iter()
              .map(|s| s.to_str().unwrap())
              .any(|s| excludes.contains(&s))
-    };
+    }
 
     // Copy the directories using our filter
     for item in src_dirs {
         let dst = &dst_dir.join(item);
         t!(fs::create_dir_all(dst));
-        cp_filtered(&build.src.join(item), dst, &filter_fn);
+        cp_filtered(&build.src.join(item), dst, &|path| filter_fn(exclude_dirs, item, path));
     }
 }
 
@@ -544,6 +549,7 @@ pub fn rust_src(build: &Build) {
         "src/liballoc",
         "src/liballoc_jemalloc",
         "src/liballoc_system",
+        "src/libbacktrace",
         "src/libcollections",
         "src/libcompiler_builtins",
         "src/libcore",
@@ -559,9 +565,18 @@ pub fn rust_src(build: &Build) {
         "src/libstd_unicode",
         "src/libunwind",
         "src/rustc/libc_shim",
+        "src/libtest",
+        "src/libterm",
+        "src/libgetopts",
+        "src/compiler-rt",
+        "src/jemalloc",
+    ];
+    let std_src_dirs_exclude = [
+        "src/compiler-rt/test",
+        "src/jemalloc/test/unit",
     ];
 
-    copy_src_dirs(build, &std_src_dirs[..], &dst_src);
+    copy_src_dirs(build, &std_src_dirs[..], &std_src_dirs_exclude[..], &dst_src);
 
     // Create source tarball in rust-installer format
     let mut cmd = rust_installer(build);
@@ -608,7 +623,7 @@ pub fn plain_source_tarball(build: &Build) {
         "src",
     ];
 
-    copy_src_dirs(build, &src_dirs[..], &plain_dst_src);
+    copy_src_dirs(build, &src_dirs[..], &[], &plain_dst_src);
 
     // Copy the files normally
     for item in &src_files {
@@ -899,6 +914,8 @@ pub fn extended(build: &Build, stage: u32, target: &str) {
         t!(fs::create_dir_all(pkg.join("cargo")));
         t!(fs::create_dir_all(pkg.join("rust-docs")));
         t!(fs::create_dir_all(pkg.join("rust-std")));
+        t!(fs::create_dir_all(pkg.join("rls")));
+        t!(fs::create_dir_all(pkg.join("rust-analysis")));
 
         cp_r(&work.join(&format!("{}-{}", pkgname(build, "rustc"), target)),
              &pkg.join("rustc"));
@@ -908,11 +925,17 @@ pub fn extended(build: &Build, stage: u32, target: &str) {
              &pkg.join("rust-docs"));
         cp_r(&work.join(&format!("{}-{}", pkgname(build, "rust-std"), target)),
              &pkg.join("rust-std"));
+        cp_r(&work.join(&format!("{}-{}", pkgname(build, "rls"), target)),
+             &pkg.join("rls"));
+        cp_r(&work.join(&format!("{}-{}", pkgname(build, "rust-analysis"), target)),
+             &pkg.join("rust-analysis"));
 
         install(&etc.join("pkg/postinstall"), &pkg.join("rustc"), 0o755);
         install(&etc.join("pkg/postinstall"), &pkg.join("cargo"), 0o755);
         install(&etc.join("pkg/postinstall"), &pkg.join("rust-docs"), 0o755);
         install(&etc.join("pkg/postinstall"), &pkg.join("rust-std"), 0o755);
+        install(&etc.join("pkg/postinstall"), &pkg.join("rls"), 0o755);
+        install(&etc.join("pkg/postinstall"), &pkg.join("rust-analysis"), 0o755);
 
         let pkgbuild = |component: &str| {
             let mut cmd = Command::new("pkgbuild");
@@ -926,6 +949,8 @@ pub fn extended(build: &Build, stage: u32, target: &str) {
         pkgbuild("cargo");
         pkgbuild("rust-docs");
         pkgbuild("rust-std");
+        pkgbuild("rls");
+        pkgbuild("rust-analysis");
 
         // create an 'uninstall' package
         install(&etc.join("pkg/postinstall"), &pkg.join("uninstall"), 0o755);
@@ -949,6 +974,8 @@ pub fn extended(build: &Build, stage: u32, target: &str) {
         let _ = fs::remove_dir_all(&exe);
         t!(fs::create_dir_all(exe.join("rustc")));
         t!(fs::create_dir_all(exe.join("cargo")));
+        t!(fs::create_dir_all(exe.join("rls")));
+        t!(fs::create_dir_all(exe.join("rust-analysis")));
         t!(fs::create_dir_all(exe.join("rust-docs")));
         t!(fs::create_dir_all(exe.join("rust-std")));
         cp_r(&work.join(&format!("{}-{}", pkgname(build, "rustc"), target))
@@ -963,11 +990,19 @@ pub fn extended(build: &Build, stage: u32, target: &str) {
         cp_r(&work.join(&format!("{}-{}", pkgname(build, "rust-std"), target))
                   .join(format!("rust-std-{}", target)),
              &exe.join("rust-std"));
+        cp_r(&work.join(&format!("{}-{}", pkgname(build, "rls"), target))
+                  .join("rls"),
+             &exe.join("rls"));
+        cp_r(&work.join(&format!("{}-{}", pkgname(build, "rust-analysis"), target))
+                  .join(format!("rust-analysis-{}", target)),
+             &exe.join("rust-analysis"));
 
         t!(fs::remove_file(exe.join("rustc/manifest.in")));
         t!(fs::remove_file(exe.join("cargo/manifest.in")));
         t!(fs::remove_file(exe.join("rust-docs/manifest.in")));
         t!(fs::remove_file(exe.join("rust-std/manifest.in")));
+        t!(fs::remove_file(exe.join("rls/manifest.in")));
+        t!(fs::remove_file(exe.join("rust-analysis/manifest.in")));
 
         if target.contains("windows-gnu") {
             t!(fs::create_dir_all(exe.join("rust-mingw")));
@@ -1041,6 +1076,26 @@ pub fn extended(build: &Build, stage: u32, target: &str) {
                         .arg("-dr").arg("Std")
                         .arg("-var").arg("var.StdDir")
                         .arg("-out").arg(exe.join("StdGroup.wxs")));
+        build.run(Command::new(&heat)
+                        .current_dir(&exe)
+                        .arg("dir")
+                        .arg("rls")
+                        .args(&heat_flags)
+                        .arg("-cg").arg("RlsGroup")
+                        .arg("-dr").arg("Rls")
+                        .arg("-var").arg("var.RlsDir")
+                        .arg("-out").arg(exe.join("RlsGroup.wxs"))
+                        .arg("-t").arg(etc.join("msi/remove-duplicates.xsl")));
+        build.run(Command::new(&heat)
+                        .current_dir(&exe)
+                        .arg("dir")
+                        .arg("rust-analysis")
+                        .args(&heat_flags)
+                        .arg("-cg").arg("AnalysisGroup")
+                        .arg("-dr").arg("Analysis")
+                        .arg("-var").arg("var.AnalysisDir")
+                        .arg("-out").arg(exe.join("AnalysisGroup.wxs"))
+                        .arg("-t").arg(etc.join("msi/remove-duplicates.xsl")));
         if target.contains("windows-gnu") {
             build.run(Command::new(&heat)
                             .current_dir(&exe)
@@ -1064,6 +1119,8 @@ pub fn extended(build: &Build, stage: u32, target: &str) {
                .arg("-dDocsDir=rust-docs")
                .arg("-dCargoDir=cargo")
                .arg("-dStdDir=rust-std")
+               .arg("-dRlsDir=rls")
+               .arg("-dAnalysisDir=rust-analysis")
                .arg("-arch").arg(&arch)
                .arg("-out").arg(&output)
                .arg(&input);
@@ -1081,6 +1138,8 @@ pub fn extended(build: &Build, stage: u32, target: &str) {
         candle("DocsGroup.wxs".as_ref());
         candle("CargoGroup.wxs".as_ref());
         candle("StdGroup.wxs".as_ref());
+        candle("RlsGroup.wxs".as_ref());
+        candle("AnalysisGroup.wxs".as_ref());
 
         if target.contains("windows-gnu") {
             candle("GccGroup.wxs".as_ref());
@@ -1103,6 +1162,8 @@ pub fn extended(build: &Build, stage: u32, target: &str) {
            .arg("DocsGroup.wixobj")
            .arg("CargoGroup.wixobj")
            .arg("StdGroup.wixobj")
+           .arg("RlsGroup.wixobj")
+           .arg("AnalysisGroup.wixobj")
            .current_dir(&exe);
 
         if target.contains("windows-gnu") {

@@ -58,6 +58,7 @@ use syntax::abi;
 use syntax::ast::{self, Name, NodeId};
 use syntax::attr;
 use syntax::symbol::{Symbol, keywords};
+use syntax_pos::Span;
 
 use hir;
 
@@ -205,8 +206,9 @@ pub struct CommonTypes<'tcx> {
 
 #[derive(RustcEncodable, RustcDecodable)]
 pub struct TypeckTables<'tcx> {
-    /// Resolved definitions for `<T>::X` associated paths.
-    pub type_relative_path_defs: NodeMap<Def>,
+    /// Resolved definitions for `<T>::X` associated paths and
+    /// method calls, including those of overloaded operators.
+    pub type_dependent_defs: NodeMap<Def>,
 
     /// Stores the types for various nodes in the AST.  Note that this table
     /// is not guaranteed to be populated until after typeck.  See
@@ -217,11 +219,9 @@ pub struct TypeckTables<'tcx> {
     /// of this node.  This only applies to nodes that refer to entities
     /// parameterized by type parameters, such as generic fns, types, or
     /// other items.
-    pub item_substs: NodeMap<ty::ItemSubsts<'tcx>>,
+    pub node_substs: NodeMap<&'tcx Substs<'tcx>>,
 
-    pub adjustments: NodeMap<ty::adjustment::Adjustment<'tcx>>,
-
-    pub method_map: ty::MethodMap<'tcx>,
+    pub adjustments: NodeMap<Vec<ty::adjustment::Adjustment<'tcx>>>,
 
     /// Borrows
     pub upvar_capture_map: ty::UpvarCaptureMap<'tcx>,
@@ -229,8 +229,9 @@ pub struct TypeckTables<'tcx> {
     /// Records the type of each closure.
     pub closure_tys: NodeMap<ty::PolyFnSig<'tcx>>,
 
-    /// Records the kind of each closure.
-    pub closure_kinds: NodeMap<ty::ClosureKind>,
+    /// Records the kind of each closure and the span and name of the variable
+    /// that caused the closure to be this kind.
+    pub closure_kinds: NodeMap<(ty::ClosureKind, Option<(Span, ast::Name)>)>,
 
     /// For each fn, records the "liberated" types of its arguments
     /// and return type. Liberated means that all bound regions
@@ -269,11 +270,10 @@ pub struct TypeckTables<'tcx> {
 impl<'tcx> TypeckTables<'tcx> {
     pub fn empty() -> TypeckTables<'tcx> {
         TypeckTables {
-            type_relative_path_defs: NodeMap(),
+            type_dependent_defs: NodeMap(),
             node_types: FxHashMap(),
-            item_substs: NodeMap(),
+            node_substs: NodeMap(),
             adjustments: NodeMap(),
-            method_map: FxHashMap(),
             upvar_capture_map: FxHashMap(),
             closure_tys: NodeMap(),
             closure_kinds: NodeMap(),
@@ -292,7 +292,7 @@ impl<'tcx> TypeckTables<'tcx> {
         match *qpath {
             hir::QPath::Resolved(_, ref path) => path.def,
             hir::QPath::TypeRelative(..) => {
-                self.type_relative_path_defs.get(&id).cloned().unwrap_or(Def::Err)
+                self.type_dependent_defs.get(&id).cloned().unwrap_or(Def::Err)
             }
         }
     }
@@ -311,8 +311,8 @@ impl<'tcx> TypeckTables<'tcx> {
         self.node_types.get(&id).cloned()
     }
 
-    pub fn node_id_item_substs(&self, id: NodeId) -> Option<&'tcx Substs<'tcx>> {
-        self.item_substs.get(&id).map(|ts| ts.substs)
+    pub fn node_substs(&self, id: NodeId) -> &'tcx Substs<'tcx> {
+        self.node_substs.get(&id).cloned().unwrap_or(Substs::empty())
     }
 
     // Returns the type of a pattern as a monotype. Like @expr_ty, this function
@@ -343,24 +343,37 @@ impl<'tcx> TypeckTables<'tcx> {
         self.node_id_to_type_opt(expr.id)
     }
 
+    pub fn expr_adjustments(&self, expr: &hir::Expr)
+                            -> &[ty::adjustment::Adjustment<'tcx>] {
+        self.adjustments.get(&expr.id).map_or(&[], |a| &a[..])
+    }
+
     /// Returns the type of `expr`, considering any `Adjustment`
     /// entry recorded for that expression.
     pub fn expr_ty_adjusted(&self, expr: &hir::Expr) -> Ty<'tcx> {
-        self.adjustments.get(&expr.id)
+        self.expr_adjustments(expr)
+            .last()
             .map_or_else(|| self.expr_ty(expr), |adj| adj.target)
     }
 
     pub fn expr_ty_adjusted_opt(&self, expr: &hir::Expr) -> Option<Ty<'tcx>> {
-        self.adjustments.get(&expr.id)
-            .map(|adj| adj.target).or_else(|| self.expr_ty_opt(expr))
+        self.expr_adjustments(expr)
+            .last()
+            .map(|adj| adj.target)
+            .or_else(|| self.expr_ty_opt(expr))
     }
 
-    pub fn is_method_call(&self, expr_id: NodeId) -> bool {
-        self.method_map.contains_key(&ty::MethodCall::expr(expr_id))
-    }
+    pub fn is_method_call(&self, expr: &hir::Expr) -> bool {
+        // Only paths and method calls/overloaded operators have
+        // entries in type_dependent_defs, ignore the former here.
+        if let hir::ExprPath(_) = expr.node {
+            return false;
+        }
 
-    pub fn is_overloaded_autoderef(&self, expr_id: NodeId, autoderefs: u32) -> bool {
-        self.method_map.contains_key(&ty::MethodCall::autoderef(expr_id, autoderefs))
+        match self.type_dependent_defs.get(&expr.id) {
+            Some(&Def::Method(_)) => true,
+            _ => false
+        }
     }
 
     pub fn upvar_capture(&self, upvar_id: ty::UpvarId) -> Option<ty::UpvarCapture<'tcx>> {
@@ -689,7 +702,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             export_map: resolutions.export_map,
             fulfilled_predicates: RefCell::new(fulfilled_predicates),
             hir: hir,
-            maps: maps::Maps::new(dep_graph, providers),
+            maps: maps::Maps::new(providers),
             mir_passes,
             freevars: RefCell::new(resolutions.freevars),
             maybe_unused_trait_imports: resolutions.maybe_unused_trait_imports,
@@ -1321,7 +1334,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                          item_name: Name)
         -> Ty<'tcx> {
             // take a copy of substs so that we own the vectors inside
-            let inner = ProjectionTy { trait_ref: trait_ref, item_name: item_name };
+            let inner = ProjectionTy::from_ref_and_name(self, trait_ref, item_name);
             self.mk_ty(TyProjection(inner))
         }
 
