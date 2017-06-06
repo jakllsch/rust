@@ -191,10 +191,11 @@
 //! {
 //!     let result = match IntoIterator::into_iter(values) {
 //!         mut iter => loop {
-//!             match iter.next() {
-//!                 Some(x) => { println!("{}", x); },
+//!             let x = match iter.next() {
+//!                 Some(val) => val,
 //!                 None => break,
-//!             }
+//!             };
+//!             let () = { println!("{}", x); };
 //!         },
 //!     };
 //!     result
@@ -313,6 +314,9 @@ pub use self::iterator::Iterator;
 pub use self::range::Step;
 #[unstable(feature = "step_by", reason = "recent addition",
            issue = "27741")]
+#[rustc_deprecated(since = "1.19.0",
+                   reason = "replaced by `iter::StepBy`")]
+#[allow(deprecated)]
 pub use self::range::StepBy as DeprecatedStepBy;
 
 #[stable(feature = "rust1", since = "1.0.0")]

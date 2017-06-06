@@ -63,6 +63,7 @@ pub fn llvm(build: &Build, target: &str) {
         drop(fs::remove_dir_all(&out_dir));
     }
 
+    let _folder = build.fold_output(|| "llvm");
     println!("Building LLVM for {}", target);
     let _time = util::timeit();
     t!(fs::create_dir_all(&out_dir));
@@ -183,7 +184,7 @@ pub fn llvm(build: &Build, target: &str) {
     configure_compilers(&mut cfg);
 
     if env::var_os("SCCACHE_ERROR_LOG").is_some() {
-        cfg.env("RUST_LOG", "sccache=info");
+        cfg.env("RUST_LOG", "sccache=warn");
     }
 
     cfg.define("CMAKE_INSTALL_RPATH", "");
@@ -220,6 +221,7 @@ pub fn test_helpers(build: &Build, target: &str) {
         return
     }
 
+    let _folder = build.fold_output(|| "build_test_helpers");
     println!("Building test helpers");
     t!(fs::create_dir_all(&dst));
     let mut cfg = gcc::Config::new();

@@ -1,4 +1,4 @@
-// Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,9 +8,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[macro_escape] //~ WARNING macro_escape is a deprecated synonym for macro_use
-mod foo {
-}
+use std::io::ErrorKind;
+use std::process::Command;
 
 fn main() {
+    // Make sure it doesn't try to run "hopefullydoesntexist bar.exe".
+    assert_eq!(Command::new("hopefullydoesntexist")
+                   .arg("bar")
+                   .spawn()
+                   .unwrap_err()
+                   .kind(),
+               ErrorKind::NotFound);
 }

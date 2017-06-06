@@ -18,9 +18,10 @@ extern crate build_helper;
 use std::collections::HashSet;
 use std::env;
 use std::fmt;
-use std::fs;
+use std::fs::{self, File};
 use std::path::{PathBuf, Path};
 use std::process::Command;
+use std::io::Read;
 
 use build_helper::output;
 
@@ -58,6 +59,28 @@ impl fmt::Display for TestKind {
     }
 }
 
+fn try_run(build: &Build, cmd: &mut Command) {
+    if build.flags.cmd.no_fail_fast() {
+        if !build.try_run(cmd) {
+            let failures = build.delayed_failures.get();
+            build.delayed_failures.set(failures + 1);
+        }
+    } else {
+        build.run(cmd);
+    }
+}
+
+fn try_run_quiet(build: &Build, cmd: &mut Command) {
+    if build.flags.cmd.no_fail_fast() {
+        if !build.try_run_quiet(cmd) {
+            let failures = build.delayed_failures.get();
+            build.delayed_failures.set(failures + 1);
+        }
+    } else {
+        build.run_quiet(cmd);
+    }
+}
+
 /// Runs the `linkchecker` tool as compiled in `stage` by the `host` compiler.
 ///
 /// This tool in `src/tools` will verify the validity of all our links in the
@@ -67,8 +90,8 @@ pub fn linkcheck(build: &Build, host: &str) {
     let compiler = Compiler::new(0, host);
 
     let _time = util::timeit();
-    build.run(build.tool_cmd(&compiler, "linkchecker")
-                   .arg(build.out.join(host).join("doc")));
+    try_run(build, build.tool_cmd(&compiler, "linkchecker")
+                        .arg(build.out.join(host).join("doc")));
 }
 
 /// Runs the `cargotest` tool as compiled in `stage` by the `host` compiler.
@@ -87,10 +110,10 @@ pub fn cargotest(build: &Build, stage: u32, host: &str) {
     let _time = util::timeit();
     let mut cmd = Command::new(build.tool(&Compiler::new(0, host), "cargotest"));
     build.prepare_tool_cmd(compiler, &mut cmd);
-    build.run(cmd.arg(&build.cargo)
-                 .arg(&out_dir)
-                 .env("RUSTC", build.compiler_path(compiler))
-                 .env("RUSTDOC", build.rustdoc(compiler)))
+    try_run(build, cmd.arg(&build.cargo)
+                      .arg(&out_dir)
+                      .env("RUSTC", build.compiler_path(compiler))
+                      .env("RUSTDOC", build.rustdoc(compiler)));
 }
 
 /// Runs `cargo test` for `cargo` packaged with Rust.
@@ -107,6 +130,9 @@ pub fn cargo(build: &Build, stage: u32, host: &str) {
 
     let mut cargo = build.cargo(compiler, Mode::Tool, host, "test");
     cargo.arg("--manifest-path").arg(build.src.join("src/tools/cargo/Cargo.toml"));
+    if build.flags.cmd.no_fail_fast() {
+        cargo.arg("--no-fail-fast");
+    }
 
     // Don't build tests dynamically, just a pain to work with
     cargo.env("RUSTC_NO_PREFER_DYNAMIC", "1");
@@ -115,7 +141,7 @@ pub fn cargo(build: &Build, stage: u32, host: &str) {
     // available.
     cargo.env("CFG_DISABLE_CROSS_TESTS", "1");
 
-    build.run(cargo.env("PATH", newpath));
+    try_run(build, cargo.env("PATH", newpath));
 }
 
 /// Runs the `tidy` tool as compiled in `stage` by the `host` compiler.
@@ -124,6 +150,7 @@ pub fn cargo(build: &Build, stage: u32, host: &str) {
 /// otherwise just implements a few lint-like checks that are specific to the
 /// compiler itself.
 pub fn tidy(build: &Build, host: &str) {
+    let _folder = build.fold_output(|| "tidy");
     println!("tidy check ({})", host);
     let compiler = Compiler::new(0, host);
     let mut cmd = build.tool_cmd(&compiler, "tidy");
@@ -131,7 +158,10 @@ pub fn tidy(build: &Build, host: &str) {
     if !build.config.vendor {
         cmd.arg("--no-vendor");
     }
-    build.run(&mut cmd);
+    if build.config.quiet_tests {
+        cmd.arg("--quiet");
+    }
+    try_run(build, &mut cmd);
 }
 
 fn testdir(build: &Build, host: &str) -> PathBuf {
@@ -148,6 +178,7 @@ pub fn compiletest(build: &Build,
                    target: &str,
                    mode: &str,
                    suite: &str) {
+    let _folder = build.fold_output(|| format!("test_{}", suite));
     println!("Check compiletest suite={} mode={} ({} -> {})",
              suite, mode, compiler.host, target);
     let mut cmd = Command::new(build.tool(&Compiler::new(0, compiler.host),
@@ -278,8 +309,10 @@ pub fn compiletest(build: &Build,
         cmd.arg("--android-cross-path").arg("");
     }
 
+    build.ci_env.force_coloring_in_ci(&mut cmd);
+
     let _time = util::timeit();
-    build.run(&mut cmd);
+    try_run(build, &mut cmd);
 }
 
 /// Run `rustdoc --test` for all documentation in `src/doc`.
@@ -292,25 +325,17 @@ pub fn docs(build: &Build, compiler: &Compiler) {
     // tests for all files that end in `*.md`
     let mut stack = vec![build.src.join("src/doc")];
     let _time = util::timeit();
+    let _folder = build.fold_output(|| "test_docs");
 
     while let Some(p) = stack.pop() {
         if p.is_dir() {
-            stack.extend(t!(p.read_dir()).map(|p| t!(p).path()));
+            stack.extend(t!(p.read_dir()).map(|p| t!(p).path()).filter(|p| {
+                p.extension().and_then(|s| s.to_str()) == Some("md") &&
+                // The nostarch directory in the book is for no starch, and so isn't guaranteed to
+                // build. We don't care if it doesn't build, so skip it.
+                p.to_str().map_or(true, |p| !p.contains("nostarch"))
+            }));
             continue
-        }
-
-        if p.extension().and_then(|s| s.to_str()) != Some("md") {
-            continue
-        }
-
-        // The nostarch directory in the book is for no starch, and so isn't guaranteed to build.
-        // we don't care if it doesn't build, so skip it.
-        use std::ffi::OsStr;
-        let path: &OsStr = p.as_ref();
-        if let Some(path) = path.to_str() {
-            if path.contains("nostarch") {
-                continue;
-            }
         }
 
         println!("doc tests for: {}", p.display());
@@ -325,6 +350,7 @@ pub fn docs(build: &Build, compiler: &Compiler) {
 /// generate a markdown file from the error indexes of the code base which is
 /// then passed to `rustdoc --test`.
 pub fn error_index(build: &Build, compiler: &Compiler) {
+    let _folder = build.fold_output(|| "test_error_index");
     println!("Testing error-index stage{}", compiler.stage);
 
     let dir = testdir(build, compiler.host);
@@ -342,6 +368,13 @@ pub fn error_index(build: &Build, compiler: &Compiler) {
 }
 
 fn markdown_test(build: &Build, compiler: &Compiler, markdown: &Path) {
+    let mut file = t!(File::open(markdown));
+    let mut contents = String::new();
+    t!(file.read_to_string(&mut contents));
+    if !contents.contains("```") {
+        return;
+    }
+
     let mut cmd = Command::new(build.rustdoc(compiler));
     build.add_rustc_lib_path(compiler, &mut cmd);
     build.add_rust_test_threads(&mut cmd);
@@ -349,13 +382,14 @@ fn markdown_test(build: &Build, compiler: &Compiler, markdown: &Path) {
     cmd.arg(markdown);
     cmd.env("RUSTC_BOOTSTRAP", "1");
 
-    let mut test_args = build.flags.cmd.test_args().join(" ");
-    if build.config.quiet_tests {
-        test_args.push_str(" --quiet");
-    }
+    let test_args = build.flags.cmd.test_args().join(" ");
     cmd.arg("--test-args").arg(test_args);
 
-    build.run(&mut cmd);
+    if build.config.quiet_tests {
+        try_run_quiet(build, &mut cmd);
+    } else {
+        try_run(build, &mut cmd);
+    }
 }
 
 /// Run all unit tests plus documentation tests for an entire crate DAG defined
@@ -384,6 +418,9 @@ pub fn krate(build: &Build,
         }
         _ => panic!("can only test libraries"),
     };
+    let _folder = build.fold_output(|| {
+        format!("{}_stage{}-{}", test_kind.subcommand(), compiler.stage, name)
+    });
     println!("{} {} stage{} ({} -> {})", test_kind, name, compiler.stage,
              compiler.host, target);
 
@@ -406,6 +443,9 @@ pub fn krate(build: &Build,
     cargo.arg("--manifest-path")
          .arg(build.src.join(path).join("Cargo.toml"))
          .arg("--features").arg(features);
+    if test_kind.subcommand() == "test" && build.flags.cmd.no_fail_fast() {
+        cargo.arg("--no-fail-fast");
+    }
 
     match krate {
         Some(krate) => {
@@ -465,7 +505,7 @@ pub fn krate(build: &Build,
         krate_remote(build, &compiler, target, mode);
     } else {
         cargo.args(&build.flags.cmd.test_args());
-        build.run(&mut cargo);
+        try_run(build, &mut cargo);
     }
 }
 
@@ -486,7 +526,7 @@ fn krate_emscripten(build: &Build,
         if build.config.quiet_tests {
             cmd.arg("--quiet");
         }
-        build.run(&mut cmd);
+        try_run(build, &mut cmd);
     }
 }
 
@@ -508,7 +548,7 @@ fn krate_remote(build: &Build,
             cmd.arg("--quiet");
         }
         cmd.args(&build.flags.cmd.test_args());
-        build.run(&mut cmd);
+        try_run(build, &mut cmd);
     }
 }
 
@@ -624,6 +664,9 @@ pub fn bootstrap(build: &Build) {
        .current_dir(build.src.join("src/bootstrap"))
        .env("CARGO_TARGET_DIR", build.out.join("bootstrap"))
        .env("RUSTC", &build.rustc);
+    if build.flags.cmd.no_fail_fast() {
+        cmd.arg("--no-fail-fast");
+    }
     cmd.arg("--").args(&build.flags.cmd.test_args());
-    build.run(&mut cmd);
+    try_run(build, &mut cmd);
 }

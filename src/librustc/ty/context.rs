@@ -18,7 +18,7 @@ use hir::TraitMap;
 use hir::def::{Def, ExportMap};
 use hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
 use hir::map as hir_map;
-use hir::map::DisambiguatedDefPathData;
+use hir::map::{DisambiguatedDefPathData, DefPathHash};
 use middle::free_region::FreeRegionMap;
 use middle::lang_items;
 use middle::resolve_lifetime;
@@ -461,6 +461,10 @@ pub struct GlobalCtxt<'tcx> {
 
     pub hir: hir_map::Map<'tcx>,
 
+    /// A map from DefPathHash -> DefId. Includes DefIds from the local crate
+    /// as well as all upstream crates. Only populated in incremental mode.
+    pub def_path_hash_to_def_id: Option<FxHashMap<DefPathHash, DefId>>,
+
     pub maps: maps::Maps<'tcx>,
 
     pub mir_passes: Rc<Passes>,
@@ -518,9 +522,6 @@ pub struct GlobalCtxt<'tcx> {
 
     /// Data layout specification for the current target.
     pub data_layout: TargetDataLayout,
-
-    /// Cache for layouts computed from types.
-    pub layout_cache: RefCell<FxHashMap<Ty<'tcx>, &'tcx Layout>>,
 
     /// Used to prevent layout from recursing too deeply.
     pub layout_depth: Cell<usize>,
@@ -689,6 +690,40 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         let max_cnum = s.cstore.crates().iter().map(|c| c.as_usize()).max().unwrap_or(0);
         let mut providers = IndexVec::from_elem_n(extern_providers, max_cnum + 1);
         providers[LOCAL_CRATE] = local_providers;
+
+        let def_path_hash_to_def_id = if s.opts.build_dep_graph() {
+            let upstream_def_path_tables: Vec<(CrateNum, Rc<_>)> = s
+                .cstore
+                .crates()
+                .iter()
+                .map(|&cnum| (cnum, s.cstore.def_path_table(cnum)))
+                .collect();
+
+            let def_path_tables = || {
+                upstream_def_path_tables
+                    .iter()
+                    .map(|&(cnum, ref rc)| (cnum, &**rc))
+                    .chain(iter::once((LOCAL_CRATE, hir.definitions().def_path_table())))
+            };
+
+            // Precompute the capacity of the hashmap so we don't have to
+            // re-allocate when populating it.
+            let capacity = def_path_tables().map(|(_, t)| t.size()).sum::<usize>();
+
+            let mut map: FxHashMap<_, _> = FxHashMap::with_capacity_and_hasher(
+                capacity,
+                ::std::default::Default::default()
+            );
+
+            for (cnum, def_path_table) in def_path_tables() {
+                def_path_table.add_def_path_hashes_to(cnum, &mut map);
+            }
+
+            Some(map)
+        } else {
+            None
+        };
+
         tls::enter_global(GlobalCtxt {
             sess: s,
             trans_trait_caches: traits::trans::TransTraitCaches::new(dep_graph.clone()),
@@ -702,6 +737,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             export_map: resolutions.export_map,
             fulfilled_predicates: RefCell::new(fulfilled_predicates),
             hir: hir,
+            def_path_hash_to_def_id: def_path_hash_to_def_id,
             maps: maps::Maps::new(providers),
             mir_passes,
             freevars: RefCell::new(resolutions.freevars),
@@ -718,7 +754,6 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             rvalue_promotable_to_static: RefCell::new(NodeMap()),
             crate_name: Symbol::intern(crate_name),
             data_layout: data_layout,
-            layout_cache: RefCell::new(FxHashMap()),
             layout_interner: RefCell::new(FxHashSet()),
             layout_depth: Cell::new(0),
             derive_macros: RefCell::new(NodeMap()),
@@ -763,6 +798,18 @@ impl<'gcx: 'tcx, 'tcx> GlobalCtxt<'gcx> {
 pub trait Lift<'tcx> {
     type Lifted;
     fn lift_to_tcx<'a, 'gcx>(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> Option<Self::Lifted>;
+}
+
+impl<'a, 'tcx> Lift<'tcx> for ty::ParamEnv<'a> {
+    type Lifted = ty::ParamEnv<'tcx>;
+    fn lift_to_tcx<'b, 'gcx>(&self, tcx: TyCtxt<'b, 'gcx, 'tcx>) -> Option<ty::ParamEnv<'tcx>> {
+        self.caller_bounds.lift_to_tcx(tcx).and_then(|caller_bounds| {
+            Some(ty::ParamEnv {
+                reveal: self.reveal,
+                caller_bounds,
+            })
+        })
+    }
 }
 
 impl<'a, 'tcx> Lift<'tcx> for Ty<'a> {
@@ -836,6 +883,25 @@ impl<'a, 'tcx> Lift<'tcx> for &'a Slice<ExistentialPredicate<'a>> {
     type Lifted = &'tcx Slice<ExistentialPredicate<'tcx>>;
     fn lift_to_tcx<'b, 'gcx>(&self, tcx: TyCtxt<'b, 'gcx, 'tcx>)
         -> Option<&'tcx Slice<ExistentialPredicate<'tcx>>> {
+        if self.is_empty() {
+            return Some(Slice::empty());
+        }
+        if tcx.interners.arena.in_arena(*self as *const _) {
+            return Some(unsafe { mem::transmute(*self) });
+        }
+        // Also try in the global tcx if we're not that.
+        if !tcx.is_global() {
+            self.lift_to_tcx(tcx.global_tcx())
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a, 'tcx> Lift<'tcx> for &'a Slice<Predicate<'a>> {
+    type Lifted = &'tcx Slice<Predicate<'tcx>>;
+    fn lift_to_tcx<'b, 'gcx>(&self, tcx: TyCtxt<'b, 'gcx, 'tcx>)
+        -> Option<&'tcx Slice<Predicate<'tcx>>> {
         if self.is_empty() {
             return Some(Slice::empty());
         }

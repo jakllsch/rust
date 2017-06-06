@@ -19,7 +19,7 @@ use dep_graph::DepNode;
 use hir::{map as hir_map, FreevarMap, TraitMap};
 use hir::def::{Def, CtorKind, ExportMap};
 use hir::def_id::{CrateNum, DefId, DefIndex, CRATE_DEF_INDEX, LOCAL_CRATE};
-use ich::{self, StableHashingContext};
+use ich::StableHashingContext;
 use middle::const_val::ConstVal;
 use middle::lang_items::{FnTraitLangItem, FnMutTraitLangItem, FnOnceTraitLangItem};
 use middle::privacy::AccessLevels;
@@ -158,29 +158,6 @@ pub struct ImplHeader<'tcx> {
     pub predicates: Vec<Predicate<'tcx>>,
 }
 
-impl<'a, 'gcx, 'tcx> ImplHeader<'tcx> {
-    pub fn with_fresh_ty_vars(selcx: &mut traits::SelectionContext<'a, 'gcx, 'tcx>,
-                              impl_def_id: DefId)
-                              -> ImplHeader<'tcx>
-    {
-        let tcx = selcx.tcx();
-        let impl_substs = selcx.infcx().fresh_substs_for_item(DUMMY_SP, impl_def_id);
-
-        let header = ImplHeader {
-            impl_def_id: impl_def_id,
-            self_ty: tcx.type_of(impl_def_id),
-            trait_ref: tcx.impl_trait_ref(impl_def_id),
-            predicates: tcx.predicates_of(impl_def_id).predicates
-        }.subst(tcx, impl_substs);
-
-        let traits::Normalized { value: mut header, obligations } =
-            traits::normalize(selcx, traits::ObligationCause::dummy(), &header);
-
-        header.predicates.extend(obligations.into_iter().map(|o| o.predicate));
-        header
-    }
-}
-
 #[derive(Copy, Clone, Debug)]
 pub struct AssociatedItem {
     pub def_id: DefId,
@@ -219,6 +196,22 @@ impl AssociatedItem {
             AssociatedKind::Type => true,
             // FIXME(canndrew): Be more thorough here, check if any argument is uninhabited.
             AssociatedKind::Method => !self.method_has_self_argument,
+        }
+    }
+
+    pub fn signature<'a, 'tcx>(&self, tcx: &TyCtxt<'a, 'tcx, 'tcx>) -> String {
+        match self.kind {
+            ty::AssociatedKind::Method => {
+                // We skip the binder here because the binder would deanonymize all
+                // late-bound regions, and we don't want method signatures to show up
+                // `as for<'r> fn(&'r MyType)`.  Pretty-printing handles late-bound
+                // regions just fine, showing `fn(&MyType)`.
+                format!("{}", tcx.type_of(self.def_id).fn_sig().skip_binder())
+            }
+            ty::AssociatedKind::Type => format!("type {};", self.name.to_string()),
+            ty::AssociatedKind::Const => {
+                format!("const {}: {:?};", self.name.to_string(), tcx.type_of(self.def_id))
+            }
         }
     }
 }
@@ -1191,6 +1184,11 @@ pub struct ParamEnv<'tcx> {
     /// the set of bounds on the in-scope type parameters, translated
     /// into Obligations, and elaborated and normalized.
     pub caller_bounds: &'tcx Slice<ty::Predicate<'tcx>>,
+
+    /// Typically, this is `Reveal::UserFacing`, but during trans we
+    /// want `Reveal::All` -- note that this is always paired with an
+    /// empty environment. To get that, use `ParamEnv::reveal()`.
+    pub reveal: traits::Reveal,
 }
 
 impl<'tcx> ParamEnv<'tcx> {
@@ -1218,7 +1216,7 @@ impl<'tcx> ParamEnv<'tcx> {
             }
         } else {
             ParamEnvAnd {
-                param_env: ParamEnv::empty(),
+                param_env: ParamEnv::empty(self.reveal),
                 value: value,
             }
         }
@@ -2185,7 +2183,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     }
 
     #[inline]
-    pub fn def_path_hash(self, def_id: DefId) -> ich::Fingerprint {
+    pub fn def_path_hash(self, def_id: DefId) -> hir_map::DefPathHash {
         if def_id.is_local() {
             self.hir.definitions().def_path_hash(def_id.index)
         } else {
@@ -2467,8 +2465,8 @@ fn trait_of_item<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> Option
 
 /// See `ParamEnv` struct def'n for details.
 fn param_env<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                   def_id: DefId)
-                                   -> ParamEnv<'tcx> {
+                       def_id: DefId)
+                       -> ParamEnv<'tcx> {
     // Compute the bounds on Self and the type parameters.
 
     let bounds = tcx.predicates_of(def_id).instantiate_identity(tcx);
@@ -2486,7 +2484,8 @@ fn param_env<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     // are any errors at that point, so after type checking you can be
     // sure that this will succeed without errors anyway.
 
-    let unnormalized_env = ty::ParamEnv::new(tcx.intern_predicates(&predicates));
+    let unnormalized_env = ty::ParamEnv::new(tcx.intern_predicates(&predicates),
+                                             traits::Reveal::UserFacing);
 
     let body_id = tcx.hir.as_local_node_id(def_id).map_or(DUMMY_NODE_ID, |id| {
         tcx.hir.maybe_body_owned_by(id).map_or(id, |body| body.node_id)

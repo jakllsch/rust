@@ -526,7 +526,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                                      lp: &LoanPath<'tcx>,
                                      the_move: &move_data::Move,
                                      moved_lp: &LoanPath<'tcx>,
-                                     _param_env: &ty::ParamEnv<'tcx>) {
+                                     _param_env: ty::ParamEnv<'tcx>) {
         let (verb, verb_participle) = match use_kind {
             MovedInUse => ("use", "used"),
             MovedInCapture => ("capture", "captured"),
@@ -1124,17 +1124,6 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
 
                 if let Some(_) = statement_scope_span(self.tcx, super_scope) {
                     db.note("consider using a `let` binding to increase its lifetime");
-                }
-
-
-
-                match err.cmt.cat {
-                    mc::Categorization::Rvalue(r, or) if r != or => {
-                        db.note("\
-before rustc 1.16, this temporary lived longer - see issue #39283 \
-(https://github.com/rust-lang/rust/issues/39283)");
-                    }
-                    _ => {}
                 }
             }
 

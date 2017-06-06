@@ -79,6 +79,7 @@ extern crate toml;
 #[cfg(unix)]
 extern crate libc;
 
+use std::cell::Cell;
 use std::cmp;
 use std::collections::HashMap;
 use std::env;
@@ -88,9 +89,9 @@ use std::io::Read;
 use std::path::{PathBuf, Path};
 use std::process::Command;
 
-use build_helper::{run_silent, run_suppressed, output, mtime};
+use build_helper::{run_silent, run_suppressed, try_run_silent, try_run_suppressed, output, mtime};
 
-use util::{exe, libdir, add_lib_path};
+use util::{exe, libdir, add_lib_path, OutputFolder, CiEnv};
 
 mod cc;
 mod channel;
@@ -179,6 +180,8 @@ pub struct Build {
     crates: HashMap<String, Crate>,
     is_sudo: bool,
     src_is_git: bool,
+    ci_env: CiEnv,
+    delayed_failures: Cell<usize>,
 }
 
 #[derive(Debug)]
@@ -272,6 +275,8 @@ impl Build {
             lldb_python_dir: None,
             is_sudo: is_sudo,
             src_is_git: src_is_git,
+            ci_env: CiEnv::current(),
+            delayed_failures: Cell::new(0),
         }
     }
 
@@ -507,6 +512,9 @@ impl Build {
         if self.config.vendor || self.is_sudo {
             cargo.arg("--frozen");
         }
+
+        self.ci_env.force_coloring_in_ci(&mut cargo);
+
         return cargo
     }
 
@@ -779,6 +787,22 @@ impl Build {
         run_suppressed(cmd)
     }
 
+    /// Runs a command, printing out nice contextual information if it fails.
+    /// Exits if the command failed to execute at all, otherwise returns its
+    /// `status.success()`.
+    fn try_run(&self, cmd: &mut Command) -> bool {
+        self.verbose(&format!("running: {:?}", cmd));
+        try_run_silent(cmd)
+    }
+
+    /// Runs a command, printing out nice contextual information if it fails.
+    /// Exits if the command failed to execute at all, otherwise returns its
+    /// `status.success()`.
+    fn try_run_quiet(&self, cmd: &mut Command) -> bool {
+        self.verbose(&format!("running: {:?}", cmd));
+        try_run_suppressed(cmd)
+    }
+
     /// Prints a message if this build is configured in verbose mode.
     fn verbose(&self, msg: &str) {
         if self.flags.verbose() || self.config.verbose() {
@@ -1009,6 +1033,19 @@ impl Build {
         match &self.config.channel[..] {
             "stable" | "beta" => false,
             "nightly" | _ => true,
+        }
+    }
+
+    /// Fold the output of the commands after this method into a group. The fold
+    /// ends when the returned object is dropped. Folding can only be used in
+    /// the Travis CI environment.
+    pub fn fold_output<D, F>(&self, name: F) -> Option<OutputFolder>
+        where D: Into<String>, F: FnOnce() -> D
+    {
+        if self.ci_env == CiEnv::Travis {
+            Some(OutputFolder::new(name().into()))
+        } else {
+            None
         }
     }
 }

@@ -8,18 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// aux-build:lint_group_plugin_test.rs
+// run-pass
+// aux-build:lint_plugin_test.rs
 // ignore-stage1
 #![feature(plugin)]
-#![plugin(lint_group_plugin_test)]
+#![plugin(lint_plugin_test)]
 #![allow(dead_code)]
 
 fn lintme() { } //~ WARNING item is named 'lintme'
-fn pleaselintme() { } //~ WARNING item is named 'pleaselintme'
 
-#[allow(lint_me)]
+#[allow(test_lint)]
 pub fn main() {
     fn lintme() { }
-
-    fn pleaselintme() { }
 }
