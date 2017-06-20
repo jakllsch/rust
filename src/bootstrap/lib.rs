@@ -429,29 +429,6 @@ impl Build {
                  .env("RUSTC_SNAPSHOT_LIBDIR", self.rustc_libdir(compiler));
         }
 
-        // There are two invariants we must maintain:
-        // * stable crates cannot depend on unstable crates (general Rust rule),
-        // * crates that end up in the sysroot must be unstable (rustbuild rule).
-        //
-        // In order to do enforce the latter, we pass the env var
-        // `RUSTBUILD_UNSTABLE` down the line for any crates which will end up
-        // in the sysroot. We read this in bootstrap/bin/rustc.rs and if it is
-        // set, then we pass the `rustbuild` feature to rustc when building the
-        // the crate.
-        //
-        // In turn, crates that can be used here should recognise the `rustbuild`
-        // feature and opt-in to `rustc_private`.
-        //
-        // We can't always pass `rustbuild` because crates which are outside of
-        // the compiler, libs, and tests are stable and we don't want to make
-        // their deps unstable (since this would break the first invariant
-        // above).
-        //
-        // FIXME: remove this after next stage0
-        if mode != Mode::Tool && stage == 0 {
-            cargo.env("RUSTBUILD_UNSTABLE", "1");
-        }
-
         // Ignore incremental modes except for stage0, since we're
         // not guaranteeing correctness across builds if the compiler
         // is changing under your feet.`
@@ -594,6 +571,9 @@ impl Build {
         if self.config.backtrace {
             features.push_str(" backtrace");
         }
+        if self.config.profiler {
+            features.push_str(" profiler");
+        }
         return features
     }
 
@@ -675,6 +655,11 @@ impl Build {
     /// Output directory for all documentation for a target
     fn doc_out(&self, target: &str) -> PathBuf {
         self.out.join(target).join("doc")
+    }
+
+    /// Output directory for some generated md crate documentation for a target (temporary)
+    fn md_doc_out(&self, target: &str) -> PathBuf {
+        self.out.join(target).join("md-doc")
     }
 
     /// Output directory for all crate documentation for a target (temporary)

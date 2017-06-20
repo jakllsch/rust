@@ -34,7 +34,7 @@ pub use rustc::middle::cstore::{NativeLibrary, NativeLibraryKind, LinkagePrefere
 pub use rustc::middle::cstore::NativeLibraryKind::*;
 pub use rustc::middle::cstore::{CrateSource, LinkMeta, LibSource};
 
-pub use cstore_impl::provide;
+pub use cstore_impl::{provide, provide_local};
 
 // A map from external crate numbers (as decoded from some crate file) to
 // local crate numbers (as generated during this session). Each external
@@ -255,6 +255,13 @@ impl CStore {
     pub fn do_extern_mod_stmt_cnum(&self, emod_id: ast::NodeId) -> Option<CrateNum> {
         self.extern_mod_crate_map.borrow().get(&emod_id).cloned()
     }
+
+    pub fn read_dep_node(&self, def_id: DefId) {
+        use rustc::middle::cstore::CrateStore;
+        let def_path_hash = self.def_path_hash(def_id);
+        let dep_node = def_path_hash.to_dep_node(::rustc::dep_graph::DepKind::MetaData);
+        self.dep_graph.read(dep_node);
+    }
 }
 
 impl CrateMetadata {
@@ -296,6 +303,11 @@ impl CrateMetadata {
     pub fn is_sanitizer_runtime(&self, dep_graph: &DepGraph) -> bool {
         let attrs = self.get_item_attrs(CRATE_DEF_INDEX, dep_graph);
         attr::contains_name(&attrs, "sanitizer_runtime")
+    }
+
+    pub fn is_profiler_runtime(&self, dep_graph: &DepGraph) -> bool {
+        let attrs = self.get_item_attrs(CRATE_DEF_INDEX, dep_graph);
+        attr::contains_name(&attrs, "profiler_runtime")
     }
 
     pub fn is_no_builtins(&self, dep_graph: &DepGraph) -> bool {

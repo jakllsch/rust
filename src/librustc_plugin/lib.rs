@@ -47,8 +47,8 @@
 //! #![plugin(myplugin)]
 //! ```
 //!
-//! See the [Plugins Chapter](../../book/compiler-plugins.html) of the book
-//! for more examples.
+//! See the [`plugin` feature](../../unstable-book/language-features/plugin.html) of
+//! the Unstable Book for more examples.
 
 #![crate_name = "rustc_plugin"]
 #![crate_type = "dylib"]
@@ -59,10 +59,6 @@
 #![deny(warnings)]
 
 #![feature(rustc_diagnostic_macros)]
-
-#![cfg_attr(stage0, unstable(feature = "rustc_private", issue = "27812"))]
-#![cfg_attr(stage0, feature(rustc_private))]
-#![cfg_attr(stage0, feature(staged_api))]
 
 #[macro_use] extern crate syntax;
 

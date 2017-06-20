@@ -28,11 +28,6 @@
 #![feature(rustc_diagnostic_macros)]
 #![feature(set_stdio)]
 
-#![cfg_attr(stage0, unstable(feature = "rustc_private", issue = "27812"))]
-#![cfg_attr(stage0, feature(rustc_private))]
-#![cfg_attr(stage0, feature(staged_api))]
-#![cfg_attr(stage0, feature(loop_break_value))]
-
 extern crate arena;
 extern crate getopts;
 extern crate graphviz;
@@ -534,15 +529,12 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
 
 fn save_analysis(sess: &Session) -> bool {
     sess.opts.debugging_opts.save_analysis ||
-    sess.opts.debugging_opts.save_analysis_csv ||
     sess.opts.debugging_opts.save_analysis_api
 }
 
 fn save_analysis_format(sess: &Session) -> save::Format {
     if sess.opts.debugging_opts.save_analysis {
         save::Format::Json
-    } else if sess.opts.debugging_opts.save_analysis_csv {
-        save::Format::Csv
     } else if sess.opts.debugging_opts.save_analysis_api {
         save::Format::JsonApi
     } else {
@@ -1101,7 +1093,10 @@ pub fn monitor<F: FnOnce() + Send + 'static>(f: F) {
             }
 
             let xs = ["the compiler unexpectedly panicked. this is a bug.".to_string(),
-                      format!("we would appreciate a bug report: {}", BUG_REPORT_URL)];
+                      format!("we would appreciate a bug report: {}", BUG_REPORT_URL),
+                      format!("rustc {} running on {}",
+                              option_env!("CFG_VERSION").unwrap_or("unknown_version"),
+                              config::host_triple())];
             for note in &xs {
                 handler.emit(&MultiSpan::new(),
                              &note,

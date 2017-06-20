@@ -8,7 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use hir::def_id::DefId;
 use rustc_data_structures::fx::FxHashMap;
 use session::config::OutputType;
 use std::cell::{Ref, RefCell};
@@ -38,6 +37,8 @@ struct DepGraphData {
 
     /// Work-products that we generate in this run.
     work_products: RefCell<FxHashMap<WorkProductId, WorkProduct>>,
+
+    dep_node_debug: RefCell<FxHashMap<DepNode, String>>,
 }
 
 impl DepGraph {
@@ -47,6 +48,7 @@ impl DepGraph {
                 thread: DepGraphThreadData::new(enabled),
                 previous_work_products: RefCell::new(FxHashMap()),
                 work_products: RefCell::new(FxHashMap()),
+                dep_node_debug: RefCell::new(FxHashMap()),
             })
         }
     }
@@ -57,7 +59,7 @@ impl DepGraph {
         self.data.thread.is_fully_enabled()
     }
 
-    pub fn query(&self) -> DepGraphQuery<DefId> {
+    pub fn query(&self) -> DepGraphQuery {
         self.data.thread.query()
     }
 
@@ -65,7 +67,7 @@ impl DepGraph {
         raii::IgnoreTask::new(&self.data.thread)
     }
 
-    pub fn in_task<'graph>(&'graph self, key: DepNode<DefId>) -> Option<raii::DepTask<'graph>> {
+    pub fn in_task<'graph>(&'graph self, key: DepNode) -> Option<raii::DepTask<'graph>> {
         raii::DepTask::new(&self.data.thread, key)
     }
 
@@ -103,14 +105,14 @@ impl DepGraph {
     ///   `arg` parameter.
     ///
     /// [README]: README.md
-    pub fn with_task<C, A, R>(&self, key: DepNode<DefId>, cx: C, arg: A, task: fn(C, A) -> R) -> R
+    pub fn with_task<C, A, R>(&self, key: DepNode, cx: C, arg: A, task: fn(C, A) -> R) -> R
         where C: DepGraphSafe, A: DepGraphSafe
     {
         let _task = self.in_task(key);
         task(cx, arg)
     }
 
-    pub fn read(&self, v: DepNode<DefId>) {
+    pub fn read(&self, v: DepNode) {
         if self.data.thread.is_enqueue_enabled() {
             self.data.thread.enqueue(DepMessage::Read(v));
         }
@@ -152,6 +154,22 @@ impl DepGraph {
     /// used during saving of the dep-graph.
     pub fn previous_work_products(&self) -> Ref<FxHashMap<WorkProductId, WorkProduct>> {
         self.data.previous_work_products.borrow()
+    }
+
+    #[inline(always)]
+    pub(super) fn register_dep_node_debug_str<F>(&self,
+                                                 dep_node: DepNode,
+                                                 debug_str_gen: F)
+        where F: FnOnce() -> String
+    {
+        let mut dep_node_debug = self.data.dep_node_debug.borrow_mut();
+
+        dep_node_debug.entry(dep_node)
+                      .or_insert_with(debug_str_gen);
+    }
+
+    pub(super) fn dep_node_debug_str(&self, dep_node: DepNode) -> Option<String> {
+        self.data.dep_node_debug.borrow().get(&dep_node).cloned()
     }
 }
 
