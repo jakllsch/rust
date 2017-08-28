@@ -106,7 +106,7 @@ pub enum Class {
 }
 
 /// Trait that controls writing the output of syntax highlighting. Users should
-/// implement this trait to customise writing output.
+/// implement this trait to customize writing output.
 ///
 /// The classifier will call into the `Writer` implementation as it finds spans
 /// of text to highlight. Exactly how that text should be highlighted is up to
@@ -164,8 +164,8 @@ impl<U: Write> Writer for U {
 impl<'a> Classifier<'a> {
     pub fn new(lexer: lexer::StringReader<'a>, codemap: &'a CodeMap) -> Classifier<'a> {
         Classifier {
-            lexer: lexer,
-            codemap: codemap,
+            lexer,
+            codemap,
             in_attribute: false,
             in_macro: false,
             in_macro_nonterminal: false,
@@ -300,7 +300,7 @@ impl<'a> Classifier<'a> {
                     "Some" | "None" | "Ok" | "Err" => Class::PreludeVal,
 
                     "$crate" => Class::KeyWord,
-                    _ if tas.tok.is_any_keyword() => Class::KeyWord,
+                    _ if tas.tok.is_reserved_ident() => Class::KeyWord,
 
                     _ => {
                         if self.in_macro_nonterminal {
@@ -319,7 +319,7 @@ impl<'a> Classifier<'a> {
             token::Lifetime(..) => Class::Lifetime,
 
             token::Underscore | token::Eof | token::Interpolated(..) |
-            token::SubstNt(..) | token::Tilde | token::At => Class::None,
+            token::Tilde | token::At => Class::None,
         };
 
         // Anything that didn't return above is the simple case where we the

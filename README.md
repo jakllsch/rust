@@ -39,9 +39,10 @@ Read ["Installation"] from [The Book].
     ```
 
     > ***Note:*** Install locations can be adjusted by copying the config file
-    > from `./src/bootstrap/config.toml.example` to `./config.toml`, and
-    > adjusting the `prefix` option under `[install]`. Various other options are
-    > also supported, and are documented in the config file.
+    > from `./config.toml.example` to `./config.toml`, and
+    > adjusting the `prefix` option under `[install]`. Various other options, such
+    > as enabling debug information, are also supported, and are documented in
+    > the config file.
 
     When complete, `sudo ./x.py install` will place several programs into
     `/usr/local/bin`: `rustc`, the Rust compiler, and `rustdoc`, the
@@ -134,7 +135,7 @@ Windows build triples are:
     - `i686-pc-windows-msvc`
     - `x86_64-pc-windows-msvc`
 
-The build triple can be specified by either specifying `--build=ABI` when
+The build triple can be specified by either specifying `--build=<triple>` when
 invoking `x.py` commands, or by copying the `config.toml` file (as described
 in Building From Source), and modifying the `build` option under the `[build]`
 section.

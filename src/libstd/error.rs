@@ -224,7 +224,7 @@ impl Error for ! {
 
 #[unstable(feature = "allocator_api",
            reason = "the precise API and guarantees it provides may be tweaked.",
-           issue = "27700")]
+           issue = "32838")]
 impl Error for allocator::AllocErr {
     fn description(&self) -> &str {
         allocator::AllocErr::description(self)
@@ -233,7 +233,7 @@ impl Error for allocator::AllocErr {
 
 #[unstable(feature = "allocator_api",
            reason = "the precise API and guarantees it provides may be tweaked.",
-           issue = "27700")]
+           issue = "32838")]
 impl Error for allocator::CannotReallocInPlace {
     fn description(&self) -> &str {
         allocator::CannotReallocInPlace::description(self)
@@ -339,6 +339,14 @@ impl Error for char::CharTryFromError {
         "converted integer out of range for `char`"
     }
 }
+
+#[stable(feature = "char_from_str", since = "1.20.0")]
+impl Error for char::ParseCharError {
+    fn description(&self) -> &str {
+        self.__description()
+    }
+}
+
 
 // copied from any.rs
 impl Error + 'static {
@@ -506,7 +514,7 @@ mod tests {
     #[test]
     fn downcasting() {
         let mut a = A;
-        let mut a = &mut a as &mut (Error + 'static);
+        let a = &mut a as &mut (Error + 'static);
         assert_eq!(a.downcast_ref::<A>(), Some(&A));
         assert_eq!(a.downcast_ref::<B>(), None);
         assert_eq!(a.downcast_mut::<A>(), Some(&mut A));

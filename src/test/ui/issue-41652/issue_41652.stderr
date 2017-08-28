@@ -5,6 +5,7 @@ error[E0599]: no method named `f` found for type `{integer}` in the current scop
    |           ^
    |
    = note: found the following associated functions; to be used as methods, functions must have a `self` parameter
+   = help: try with `{integer}::f`
 note: candidate #1 is defined in the trait `issue_41652_b::Tr`
   --> $DIR/auxiliary/issue_41652_b.rs:14:5
    |
@@ -13,5 +14,5 @@ note: candidate #1 is defined in the trait `issue_41652_b::Tr`
    | |__________________________^
    = help: to disambiguate the method call, write `issue_41652_b::Tr::f(3)` instead
 
-error: aborting due to previous error(s)
+error: aborting due to previous error
 

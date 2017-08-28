@@ -8,13 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use hir::{self, map, Local, Pat, Body};
+use hir::{self, Local, Pat, Body, HirId};
 use hir::intravisit::{self, Visitor, NestedVisitorMap};
 use infer::InferCtxt;
 use infer::type_variable::TypeVariableOrigin;
 use ty::{self, Ty, TyInfer, TyVar};
-
-use syntax::ast::NodeId;
 use syntax_pos::Span;
 
 struct FindLocalByTypeVisitor<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
@@ -26,7 +24,7 @@ struct FindLocalByTypeVisitor<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
 }
 
 impl<'a, 'gcx, 'tcx> FindLocalByTypeVisitor<'a, 'gcx, 'tcx> {
-    fn node_matches_type(&mut self, node_id: NodeId) -> bool {
+    fn node_matches_type(&mut self, node_id: HirId) -> bool {
         let ty_opt = self.infcx.in_progress_tables.and_then(|tables| {
             tables.borrow().node_id_to_type_opt(node_id)
         });
@@ -56,7 +54,7 @@ impl<'a, 'gcx, 'tcx> Visitor<'gcx> for FindLocalByTypeVisitor<'a, 'gcx, 'tcx> {
     }
 
     fn visit_local(&mut self, local: &'gcx Local) {
-        if self.found_local_pattern.is_none() && self.node_matches_type(local.id) {
+        if self.found_local_pattern.is_none() && self.node_matches_type(local.hir_id) {
             self.found_local_pattern = Some(&*local.pat);
         }
         intravisit::walk_local(self, local);
@@ -64,7 +62,7 @@ impl<'a, 'gcx, 'tcx> Visitor<'gcx> for FindLocalByTypeVisitor<'a, 'gcx, 'tcx> {
 
     fn visit_body(&mut self, body: &'gcx Body) {
         for argument in &body.arguments {
-            if self.found_arg_pattern.is_none() && self.node_matches_type(argument.id) {
+            if self.found_arg_pattern.is_none() && self.node_matches_type(argument.hir_id) {
                 self.found_arg_pattern = Some(&*argument.pat);
             }
         }
@@ -88,7 +86,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         }
     }
 
-    pub fn need_type_info(&self, body_id: hir::BodyId, span: Span, ty: Ty<'tcx>) {
+    pub fn need_type_info(&self, body_id: Option<hir::BodyId>, span: Span, ty: Ty<'tcx>) {
         let ty = self.resolve_type_vars_if_possible(&ty);
         let name = self.extract_type_name(&ty);
 
@@ -103,11 +101,9 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             found_arg_pattern: None,
         };
 
-        // #40294: cause.body_id can also be a fn declaration.
-        // Currently, if it's anything other than NodeExpr, we just ignore it
-        match self.tcx.hir.find(body_id.node_id) {
-            Some(map::NodeExpr(expr)) => local_visitor.visit_expr(expr),
-            _ => ()
+        if let Some(body_id) = body_id {
+            let expr = self.tcx.hir.expect_expr(body_id.node_id);
+            local_visitor.visit_expr(expr);
         }
 
         if let Some(pattern) = local_visitor.found_arg_pattern {

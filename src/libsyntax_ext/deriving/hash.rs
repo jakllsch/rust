@@ -30,9 +30,9 @@ pub fn expand_deriving_hash(cx: &mut ExtCtxt,
 
     let arg = Path::new_local(typaram);
     let hash_trait_def = TraitDef {
-        span: span,
+        span,
         attributes: Vec::new(),
-        path: path,
+        path,
         additional_bounds: Vec::new(),
         generics: LifetimeBounds::empty(),
         is_unsafe: false,
@@ -81,7 +81,7 @@ fn hash_substructure(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure) 
     let mut stmts = Vec::new();
 
     let fields = match *substr.fields {
-        Struct(_, ref fs) => fs,
+        Struct(_, ref fs) | EnumMatching(_, 1, .., ref fs) => fs,
         EnumMatching(.., ref fs) => {
             let variant_value = deriving::call_intrinsic(cx,
                                                          trait_span,

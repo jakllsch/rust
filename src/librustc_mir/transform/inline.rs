@@ -87,11 +87,11 @@ impl<'a, 'tcx> Inliner<'a, 'tcx> {
                 let terminator = bb_data.terminator();
                 if let TerminatorKind::Call {
                     func: Operand::Constant(ref f), .. } = terminator.kind {
-                    if let ty::TyFnDef(callee_def_id, substs, _) = f.ty.sty {
+                    if let ty::TyFnDef(callee_def_id, substs) = f.ty.sty {
                         callsites.push_back(CallSite {
                             callee: callee_def_id,
-                            substs: substs,
-                            bb: bb,
+                            substs,
+                            bb,
                             location: terminator.source_info
                         });
                     }
@@ -115,8 +115,13 @@ impl<'a, 'tcx> Inliner<'a, 'tcx> {
                     Ok(ref callee_mir) if self.should_inline(callsite, callee_mir) => {
                         callee_mir.subst(self.tcx, callsite.substs)
                     }
+                    Ok(_) => continue,
 
-                    _ => continue,
+                    Err(mut bug) => {
+                        // FIXME(#43542) shouldn't have to cancel an error
+                        bug.cancel();
+                        continue
+                    }
                 };
 
                 let start = caller_mir.basic_blocks().len();
@@ -131,13 +136,13 @@ impl<'a, 'tcx> Inliner<'a, 'tcx> {
                     let terminator = bb_data.terminator();
                     if let TerminatorKind::Call {
                         func: Operand::Constant(ref f), .. } = terminator.kind {
-                        if let ty::TyFnDef(callee_def_id, substs, _) = f.ty.sty {
+                        if let ty::TyFnDef(callee_def_id, substs) = f.ty.sty {
                             // Don't inline the same function multiple times.
                             if callsite.callee != callee_def_id {
                                 callsites.push_back(CallSite {
                                     callee: callee_def_id,
-                                    substs: substs,
-                                    bb: bb,
+                                    substs,
+                                    bb,
                                     location: terminator.source_info
                                 });
                             }
@@ -250,7 +255,7 @@ impl<'a, 'tcx> Inliner<'a, 'tcx> {
                     work_list.push(target);
                     // If the location doesn't actually need dropping, treat it like
                     // a regular goto.
-                    let ty = location.ty(&callee_mir, tcx).subst(tcx, callsite.substs);
+                    let ty = location.ty(callee_mir, tcx).subst(tcx, callsite.substs);
                     let ty = ty.to_ty(tcx);
                     if ty.needs_drop(tcx, param_env) {
                         cost += CALL_PENALTY;
@@ -270,8 +275,9 @@ impl<'a, 'tcx> Inliner<'a, 'tcx> {
                 }
 
                 TerminatorKind::Call {func: Operand::Constant(ref f), .. } => {
-                    if let ty::TyFnDef(.., f) = f.ty.sty {
+                    if let ty::TyFnDef(def_id, _) = f.ty.sty {
                         // Don't give intrinsics the extra penalty for calls
+                        let f = tcx.fn_sig(def_id);
                         if f.abi() == Abi::RustIntrinsic || f.abi() == Abi::PlatformIntrinsic {
                             cost += INSTR_COST;
                         } else {
@@ -432,12 +438,12 @@ impl<'a, 'tcx> Inliner<'a, 'tcx> {
                 let mut integrator = Integrator {
                     block_idx: bb_len,
                     args: &args,
-                    local_map: local_map,
-                    scope_map: scope_map,
-                    promoted_map: promoted_map,
+                    local_map,
+                    scope_map,
+                    promoted_map,
                     _callsite: callsite,
                     destination: dest,
-                    return_block: return_block,
+                    return_block,
                     cleanup_block: cleanup,
                     in_cleanup_block: false
                 };
@@ -460,7 +466,7 @@ impl<'a, 'tcx> Inliner<'a, 'tcx> {
             kind => {
                 caller_mir[callsite.bb].terminator = Some(Terminator {
                     source_info: terminator.source_info,
-                    kind: kind
+                    kind,
                 });
                 false
             }

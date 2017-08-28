@@ -19,7 +19,7 @@
 
 use fmt;
 use ffi::OsString;
-use io::{self, SeekFrom, Seek, Read, Write};
+use io::{self, SeekFrom, Seek, Read, Initializer, Write};
 use path::{Path, PathBuf};
 use sys::fs as fs_imp;
 use sys_common::{AsInnerMut, FromInner, AsInner, IntoInner};
@@ -28,7 +28,7 @@ use time::SystemTime;
 /// A reference to an open file on the filesystem.
 ///
 /// An instance of a `File` can be read and/or written depending on what options
-/// it was opened with. Files also implement `Seek` to alter the logical cursor
+/// it was opened with. Files also implement [`Seek`] to alter the logical cursor
 /// that the file contains internally.
 ///
 /// Files are automatically closed when they go out of scope.
@@ -48,7 +48,7 @@ use time::SystemTime;
 /// # }
 /// ```
 ///
-/// Read the contents of a file into a `String`:
+/// Read the contents of a file into a [`String`]:
 ///
 /// ```no_run
 /// use std::fs::File;
@@ -81,6 +81,8 @@ use time::SystemTime;
 /// # }
 /// ```
 ///
+/// [`Seek`]: ../io/trait.Seek.html
+/// [`String`]: ../string/struct.String.html
 /// [`Read`]: ../io/trait.Read.html
 /// [`BufReader<R>`]: ../io/struct.BufReader.html
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -104,19 +106,19 @@ pub struct Metadata(fs_imp::FileAttr);
 /// Iterator over the entries in a directory.
 ///
 /// This iterator is returned from the [`read_dir`] function of this module and
-/// will yield instances of `io::Result<DirEntry>`. Through a [`DirEntry`]
+/// will yield instances of [`io::Result`]`<`[`DirEntry`]`>`. Through a [`DirEntry`]
 /// information like the entry's path and possibly other metadata can be
 /// learned.
 ///
-/// [`read_dir`]: fn.read_dir.html
-/// [`DirEntry`]: struct.DirEntry.html
-///
 /// # Errors
 ///
-/// This [`io::Result`] will be an `Err` if there's some sort of intermittent
+/// This [`io::Result`] will be an [`Err`] if there's some sort of intermittent
 /// IO error during iteration.
 ///
+/// [`read_dir`]: fn.read_dir.html
+/// [`DirEntry`]: struct.DirEntry.html
 /// [`io::Result`]: ../io/type.Result.html
+/// [`Err`]: ../result/enum.Result.html#variant.Err
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(Debug)]
 pub struct ReadDir(fs_imp::ReadDir);
@@ -446,8 +448,10 @@ impl Read for File {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.inner.read(buf)
     }
-    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        self.inner.read_to_end(buf)
+
+    #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        Initializer::nop()
     }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -468,8 +472,10 @@ impl<'a> Read for &'a File {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.inner.read(buf)
     }
-    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        self.inner.read_to_end(buf)
+
+    #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        Initializer::nop()
     }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -649,15 +655,29 @@ impl OpenOptions {
     /// # Errors
     ///
     /// This function will return an error under a number of different
-    /// circumstances, to include but not limited to:
+    /// circumstances. Some of these error conditions are listed here, together
+    /// with their [`ErrorKind`]. The mapping to [`ErrorKind`]s is not part of
+    /// the compatibility contract of the function, especially the `Other` kind
+    /// might change to more specific kinds in the future.
     ///
-    /// * Opening a file that does not exist without setting `create` or
-    ///   `create_new`.
-    /// * Attempting to open a file with access that the user lacks
-    ///   permissions for
-    /// * Filesystem-level errors (full disk, etc)
-    /// * Invalid combinations of open options (truncate without write access,
-    ///   no access mode set, etc)
+    /// * [`NotFound`]: The specified file does not exist and neither `create`
+    ///   or `create_new` is set.
+    /// * [`NotFound`]: One of the directory components of the file path does
+    ///   not exist.
+    /// * [`PermissionDenied`]: The user lacks permission to get the specified
+    ///   access rights for the file.
+    /// * [`PermissionDenied`]: The user lacks permission to open one of the
+    ///   directory components of the specified path.
+    /// * [`AlreadyExists`]: `create_new` was specified and the file already
+    ///   exists.
+    /// * [`InvalidInput`]: Invalid combinations of open options (truncate
+    ///   without write access, no access mode set, etc.).
+    /// * [`Other`]: One of the directory components of the specified file path
+    ///   was not, in fact, a directory.
+    /// * [`Other`]: Filesystem-level errors: full disk, write permission
+    ///   requested on a read-only file system, exceeded disk quota, too many
+    ///   open files, too long filename, too many symbolic links in the
+    ///   specified path (Unix-like systems only), etc.
     ///
     /// # Examples
     ///
@@ -666,6 +686,13 @@ impl OpenOptions {
     ///
     /// let file = OpenOptions::new().open("foo.txt");
     /// ```
+    ///
+    /// [`ErrorKind`]: ../io/enum.ErrorKind.html
+    /// [`AlreadyExists`]: ../io/enum.ErrorKind.html#variant.AlreadyExists
+    /// [`InvalidInput`]: ../io/enum.ErrorKind.html#variant.InvalidInput
+    /// [`NotFound`]: ../io/enum.ErrorKind.html#variant.NotFound
+    /// [`Other`]: ../io/enum.ErrorKind.html#variant.Other
+    /// [`PermissionDenied`]: ../io/enum.ErrorKind.html#variant.PermissionDenied
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn open<P: AsRef<Path>>(&self, path: P) -> io::Result<File> {
         self._open(path.as_ref())
@@ -889,7 +916,7 @@ impl AsInner<fs_imp::FileAttr> for Metadata {
 }
 
 impl Permissions {
-    /// Returns whether these permissions describe a readonly file.
+    /// Returns whether these permissions describe a readonly (unwritable) file.
     ///
     /// # Examples
     ///
@@ -907,7 +934,11 @@ impl Permissions {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn readonly(&self) -> bool { self.0.readonly() }
 
-    /// Modifies the readonly flag for this set of permissions.
+    /// Modifies the readonly flag for this set of permissions. If the
+    /// `readonly` argument is `true`, using the resulting `Permission` will
+    /// update file permissions to forbid writing. Conversely, if it's `false`,
+    /// using the resulting `Permission` will update file permissions to allow
+    /// writing.
     ///
     /// This operation does **not** modify the filesystem. To modify the
     /// filesystem use the `fs::set_permissions` function.
@@ -2321,17 +2352,17 @@ mod tests {
 
     #[test]
     fn recursive_mkdir_slash() {
-        check!(fs::create_dir_all(&Path::new("/")));
+        check!(fs::create_dir_all(Path::new("/")));
     }
 
     #[test]
     fn recursive_mkdir_dot() {
-        check!(fs::create_dir_all(&Path::new(".")));
+        check!(fs::create_dir_all(Path::new(".")));
     }
 
     #[test]
     fn recursive_mkdir_empty() {
-        check!(fs::create_dir_all(&Path::new("")));
+        check!(fs::create_dir_all(Path::new("")));
     }
 
     #[test]

@@ -30,7 +30,6 @@
 #![crate_type="rlib"]
 #![feature(associated_type_defaults)]
 #![feature(intrinsics)]
-#![feature(associated_consts)]
 
 
 // Change trait visibility --------------------------------------------------------
@@ -449,7 +448,7 @@ trait TraitAddLifetimeParameterToMethod {
 trait TraitAddLifetimeParameterToMethod {
     #[rustc_dirty(label="Hir", cfg="cfail2")]
     #[rustc_clean(label="Hir", cfg="cfail3")]
-    #[rustc_metadata_clean(cfg="cfail2")] // Unused lifetimes don't seem to show up in type?
+    #[rustc_metadata_dirty(cfg="cfail2")]
     #[rustc_metadata_clean(cfg="cfail3")]
     fn method<'a>();
 }

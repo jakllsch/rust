@@ -273,6 +273,7 @@ pub const FILE_END: DWORD = 2;
 
 pub const WAIT_OBJECT_0: DWORD = 0x00000000;
 pub const WAIT_TIMEOUT: DWORD = 258;
+pub const WAIT_FAILED: DWORD = 0xFFFFFFFF;
 
 #[cfg(target_env = "msvc")]
 pub const MAX_SYM_NAME: usize = 2000;
@@ -298,8 +299,10 @@ pub const PIPE_TYPE_BYTE: DWORD = 0x00000000;
 pub const PIPE_REJECT_REMOTE_CLIENTS: DWORD = 0x00000008;
 pub const PIPE_READMODE_BYTE: DWORD = 0x00000000;
 
+pub const FD_SETSIZE: usize = 64;
+
 #[repr(C)]
-#[cfg(target_arch = "x86")]
+#[cfg(not(target_pointer_width = "64"))]
 pub struct WSADATA {
     pub wVersion: WORD,
     pub wHighVersion: WORD,
@@ -310,7 +313,7 @@ pub struct WSADATA {
     pub lpVendorInfo: *mut u8,
 }
 #[repr(C)]
-#[cfg(target_arch = "x86_64")]
+#[cfg(target_pointer_width = "64")]
 pub struct WSADATA {
     pub wVersion: WORD,
     pub wHighVersion: WORD,
@@ -766,6 +769,14 @@ pub struct FLOATING_SAVE_AREA {
     _Dummy: [u8; 512] // FIXME: Fill this out
 }
 
+// FIXME(#43348): This structure is used for backtrace only, and a fake
+// definition is provided here only to allow rustdoc to pass type-check. This
+// will not appear in the final documentation. This should be also defined for
+// other architectures supported by Windows such as ARM, and for historical
+// interest, maybe MIPS and PowerPC as well.
+#[cfg(all(dox, not(any(target_arch = "x86_64", target_arch = "x86"))))]
+pub enum CONTEXT {}
+
 #[repr(C)]
 pub struct SOCKADDR_STORAGE_LH {
     pub ss_family: ADDRESS_FAMILY,
@@ -836,6 +847,26 @@ pub struct CONSOLE_READCONSOLE_CONTROL {
     pub dwControlKeyState: ULONG,
 }
 pub type PCONSOLE_READCONSOLE_CONTROL = *mut CONSOLE_READCONSOLE_CONTROL;
+
+#[repr(C)]
+#[derive(Copy)]
+pub struct fd_set {
+    pub fd_count: c_uint,
+    pub fd_array: [SOCKET; FD_SETSIZE],
+}
+
+impl Clone for fd_set {
+    fn clone(&self) -> fd_set {
+        *self
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct timeval {
+    pub tv_sec: c_long,
+    pub tv_usec: c_long,
+}
 
 extern "system" {
     pub fn WSAStartup(wVersionRequested: WORD,
@@ -1125,6 +1156,11 @@ extern "system" {
                                lpOverlapped: LPOVERLAPPED,
                                lpNumberOfBytesTransferred: LPDWORD,
                                bWait: BOOL) -> BOOL;
+    pub fn select(nfds: c_int,
+                  readfds: *mut fd_set,
+                  writefds: *mut fd_set,
+                  exceptfds: *mut fd_set,
+                  timeout: *const timeval) -> c_int;
 }
 
 // Functions that aren't available on Windows XP, but we still use them and just

@@ -4,10 +4,10 @@ error[E0281]: type mismatch: `[closure@$DIR/E0281.rs:14:9: 14:24]` implements th
 14 |     foo(|y: String| { });
    |     ^^^ --------------- implements `std::ops::Fn<(std::string::String,)>`
    |     |
-   |     requires `std::ops::Fn<(usize,)>`
    |     expected usize, found struct `std::string::String`
+   |     requires `std::ops::Fn<(usize,)>`
    |
    = note: required by `foo`
 
-error: aborting due to previous error(s)
+error: aborting due to previous error
 

@@ -18,7 +18,10 @@ pub fn target() -> Result<Target, String> {
                           vec!["-s".to_string(),
                                "WASM=1".to_string(),
                                "-s".to_string(),
-                               "ERROR_ON_UNDEFINED_SYMBOLS=1".to_string()]);
+                               "ASSERTIONS=1".to_string(),
+                               "-s".to_string(),
+                               "ERROR_ON_UNDEFINED_SYMBOLS=1".to_string(),
+                               "-g3".to_string()]);
 
     let opts = TargetOptions {
         linker: cmd("emcc"),
@@ -30,11 +33,12 @@ pub fn target() -> Result<Target, String> {
         // possibly interpret the wasm, and a .wasm file
         exe_suffix: ".js".to_string(),
         linker_is_gnu: true,
+        link_env: vec![("EMCC_WASM_BACKEND".to_string(), "1".to_string())],
         allow_asm: false,
         obj_is_bitcode: true,
         is_like_emscripten: true,
         max_atomic_width: Some(32),
-        post_link_args: post_link_args,
+        post_link_args,
         target_family: Some("unix".to_string()),
         .. Default::default()
     };

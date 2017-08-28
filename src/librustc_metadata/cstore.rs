@@ -32,7 +32,7 @@ use syntax_pos;
 
 pub use rustc::middle::cstore::{NativeLibrary, NativeLibraryKind, LinkagePreference};
 pub use rustc::middle::cstore::NativeLibraryKind::*;
-pub use rustc::middle::cstore::{CrateSource, LinkMeta, LibSource};
+pub use rustc::middle::cstore::{CrateSource, LibSource};
 
 pub use cstore_impl::{provide, provide_local};
 
@@ -114,7 +114,7 @@ impl CStore {
             statically_included_foreign_items: RefCell::new(FxHashSet()),
             dllimport_foreign_items: RefCell::new(FxHashSet()),
             visible_parent_map: RefCell::new(FxHashMap()),
-            metadata_loader: metadata_loader,
+            metadata_loader,
         }
     }
 
@@ -140,14 +140,6 @@ impl CStore {
         for (&k, v) in self.metas.borrow().iter() {
             i(k, v);
         }
-    }
-
-    pub fn reset(&self) {
-        self.metas.borrow_mut().clear();
-        self.extern_mod_crate_map.borrow_mut().clear();
-        self.used_libraries.borrow_mut().clear();
-        self.used_link_args.borrow_mut().clear();
-        self.statically_included_foreign_items.borrow_mut().clear();
     }
 
     pub fn crate_dependencies_in_rpo(&self, krate: CrateNum) -> Vec<CrateNum> {
@@ -275,14 +267,25 @@ impl CrateMetadata {
         self.root.disambiguator
     }
 
-    pub fn is_allocator(&self, dep_graph: &DepGraph) -> bool {
-        let attrs = self.get_item_attrs(CRATE_DEF_INDEX, dep_graph);
-        attr::contains_name(&attrs, "allocator")
-    }
-
     pub fn needs_allocator(&self, dep_graph: &DepGraph) -> bool {
         let attrs = self.get_item_attrs(CRATE_DEF_INDEX, dep_graph);
         attr::contains_name(&attrs, "needs_allocator")
+    }
+
+    pub fn has_global_allocator(&self, dep_graph: &DepGraph) -> bool {
+        let dep_node = self.metadata_dep_node(GlobalMetaDataKind::Krate);
+        self.root
+            .has_global_allocator
+            .get(dep_graph, dep_node)
+            .clone()
+    }
+
+    pub fn has_default_lib_allocator(&self, dep_graph: &DepGraph) -> bool {
+        let dep_node = self.metadata_dep_node(GlobalMetaDataKind::Krate);
+        self.root
+            .has_default_lib_allocator
+            .get(dep_graph, dep_node)
+            .clone()
     }
 
     pub fn is_panic_runtime(&self, dep_graph: &DepGraph) -> bool {

@@ -42,8 +42,10 @@
 //! Recursive structures must be boxed, because if the definition of `Cons`
 //! looked like this:
 //!
-//! ```rust,ignore
+//! ```compile_fail,E0072
+//! # enum List<T> {
 //! Cons(T, List<T>),
+//! # }
 //! ```
 //!
 //! It wouldn't work. This is because the size of a `List` depends on how many
@@ -53,7 +55,7 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use heap;
+use heap::{Heap, Layout, Alloc};
 use raw_vec::RawVec;
 
 use core::any::Any;
@@ -133,8 +135,7 @@ pub struct Box<T: ?Sized>(Unique<T>);
 #[allow(missing_debug_implementations)]
 pub struct IntermediateBox<T: ?Sized> {
     ptr: *mut u8,
-    size: usize,
-    align: usize,
+    layout: Layout,
     marker: marker::PhantomData<*mut T>,
 }
 
@@ -154,23 +155,21 @@ unsafe fn finalize<T>(b: IntermediateBox<T>) -> Box<T> {
 }
 
 fn make_place<T>() -> IntermediateBox<T> {
-    let size = mem::size_of::<T>();
-    let align = mem::align_of::<T>();
+    let layout = Layout::new::<T>();
 
-    let p = if size == 0 {
+    let p = if layout.size() == 0 {
         mem::align_of::<T>() as *mut u8
     } else {
-        let p = unsafe { heap::allocate(size, align) };
-        if p.is_null() {
-            panic!("Box make_place allocation failure.");
+        unsafe {
+            Heap.alloc(layout.clone()).unwrap_or_else(|err| {
+                Heap.oom(err)
+            })
         }
-        p
     };
 
     IntermediateBox {
         ptr: p,
-        size: size,
-        align: align,
+        layout,
         marker: marker::PhantomData,
     }
 }
@@ -219,8 +218,10 @@ impl<T> Placer<T> for ExchangeHeapSingleton {
            issue = "27779")]
 impl<T: ?Sized> Drop for IntermediateBox<T> {
     fn drop(&mut self) {
-        if self.size > 0 {
-            unsafe { heap::deallocate(self.ptr, self.size, self.align) }
+        if self.layout.size() > 0 {
+            unsafe {
+                Heap.dealloc(self.ptr, self.layout.clone())
+            }
         }
     }
 }
@@ -294,6 +295,37 @@ impl<T: ?Sized> Box<T> {
     #[stable(feature = "box_raw", since = "1.4.0")]
     #[inline]
     pub fn into_raw(b: Box<T>) -> *mut T {
+        unsafe { mem::transmute(b) }
+    }
+
+    /// Consumes the `Box`, returning the wrapped pointer as `Unique<T>`.
+    ///
+    /// After calling this function, the caller is responsible for the
+    /// memory previously managed by the `Box`. In particular, the
+    /// caller should properly destroy `T` and release the memory. The
+    /// proper way to do so is to convert the raw pointer back into a
+    /// `Box` with the [`Box::from_raw`] function.
+    ///
+    /// Note: this is an associated function, which means that you have
+    /// to call it as `Box::into_unique(b)` instead of `b.into_unique()`. This
+    /// is so that there is no conflict with a method on the inner type.
+    ///
+    /// [`Box::from_raw`]: struct.Box.html#method.from_raw
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(unique)]
+    ///
+    /// fn main() {
+    ///     let x = Box::new(5);
+    ///     let ptr = Box::into_unique(x);
+    /// }
+    /// ```
+    #[unstable(feature = "unique", reason = "needs an RFC to flesh out design",
+               issue = "27730")]
+    #[inline]
+    pub fn into_unique(b: Box<T>) -> Unique<T> {
         unsafe { mem::transmute(b) }
     }
 }
@@ -601,7 +633,7 @@ impl<I: FusedIterator + ?Sized> FusedIterator for Box<I> {}
 /// that `FnBox` may be deprecated in the future if `Box<FnOnce()>`
 /// closures become directly usable.)
 ///
-/// ### Example
+/// # Examples
 ///
 /// Here is a snippet of code which creates a hashmap full of boxed
 /// once closures and then removes them one by one, calling each
@@ -725,14 +757,14 @@ impl<T: Clone> Clone for Box<[T]> {
     }
 }
 
-#[stable(feature = "rust1", since = "1.0.0")]
+#[stable(feature = "box_borrow", since = "1.1.0")]
 impl<T: ?Sized> borrow::Borrow<T> for Box<T> {
     fn borrow(&self) -> &T {
         &**self
     }
 }
 
-#[stable(feature = "rust1", since = "1.0.0")]
+#[stable(feature = "box_borrow", since = "1.1.0")]
 impl<T: ?Sized> borrow::BorrowMut<T> for Box<T> {
     fn borrow_mut(&mut self) -> &mut T {
         &mut **self

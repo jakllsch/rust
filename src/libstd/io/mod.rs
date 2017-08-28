@@ -22,7 +22,7 @@
 //! you'll see a few different types of I/O throughout the documentation in
 //! this module: [`File`]s, [`TcpStream`]s, and sometimes even [`Vec<T>`]s. For
 //! example, [`Read`] adds a [`read`][`Read::read`] method, which we can use on
-//! `File`s:
+//! [`File`]s:
 //!
 //! ```
 //! use std::io;
@@ -146,9 +146,9 @@
 //! # }
 //! ```
 //!
-//! Note that you cannot use the `?` operator in functions that do not return
-//! a `Result<T, E>` (e.g. `main`). Instead, you can call `.unwrap()` or `match`
-//! on the return value to catch any possible errors:
+//! Note that you cannot use the [`?` operator] in functions that do not return
+//! a [`Result<T, E>`][`Result`] (e.g. `main`). Instead, you can call [`.unwrap()`]
+//! or `match` on the return value to catch any possible errors:
 //!
 //! ```
 //! use std::io;
@@ -265,6 +265,8 @@
 //! [`io::Result`]: type.Result.html
 //! [`?` operator]: ../../book/first-edition/syntax-index.html
 //! [`Read::read`]: trait.Read.html#tymethod.read
+//! [`Result`]: ../result/enum.Result.html
+//! [`.unwrap()`]: ../result/enum.Result.html#method.unwrap
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
@@ -275,6 +277,7 @@ use fmt;
 use result;
 use str;
 use memchr;
+use ptr;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::buffered::{BufReader, BufWriter, LineWriter};
@@ -292,7 +295,7 @@ pub use self::stdio::{stdin, stdout, stderr, Stdin, Stdout, Stderr};
 pub use self::stdio::{StdoutLock, StderrLock, StdinLock};
 #[unstable(feature = "print_internals", issue = "0")]
 pub use self::stdio::{_print, _eprint};
-#[unstable(feature = "libstd_io_internals", issue = "0")]
+#[unstable(feature = "libstd_io_internals", issue = "42788")]
 #[doc(no_inline, hidden)]
 pub use self::stdio::{set_panic, set_print};
 
@@ -306,6 +309,14 @@ mod util;
 mod stdio;
 
 const DEFAULT_BUF_SIZE: usize = ::sys_common::io::DEFAULT_BUF_SIZE;
+
+struct Guard<'a> { buf: &'a mut Vec<u8>, len: usize }
+
+impl<'a> Drop for Guard<'a> {
+    fn drop(&mut self) {
+        unsafe { self.buf.set_len(self.len); }
+    }
+}
 
 // A few methods below (read_to_string, read_line) will append data into a
 // `String` buffer, but we need to be pretty careful when doing this. The
@@ -328,23 +339,16 @@ const DEFAULT_BUF_SIZE: usize = ::sys_common::io::DEFAULT_BUF_SIZE;
 fn append_to_string<F>(buf: &mut String, f: F) -> Result<usize>
     where F: FnOnce(&mut Vec<u8>) -> Result<usize>
 {
-    struct Guard<'a> { s: &'a mut Vec<u8>, len: usize }
-        impl<'a> Drop for Guard<'a> {
-        fn drop(&mut self) {
-            unsafe { self.s.set_len(self.len); }
-        }
-    }
-
     unsafe {
-        let mut g = Guard { len: buf.len(), s: buf.as_mut_vec() };
-        let ret = f(g.s);
-        if str::from_utf8(&g.s[g.len..]).is_err() {
+        let mut g = Guard { len: buf.len(), buf: buf.as_mut_vec() };
+        let ret = f(g.buf);
+        if str::from_utf8(&g.buf[g.len..]).is_err() {
             ret.and_then(|_| {
                 Err(Error::new(ErrorKind::InvalidData,
                                "stream did not contain valid UTF-8"))
             })
         } else {
-            g.len = g.s.len();
+            g.len = g.buf.len();
             ret
         }
     }
@@ -356,25 +360,32 @@ fn append_to_string<F>(buf: &mut String, f: F) -> Result<usize>
 // of data to return. Simply tacking on an extra DEFAULT_BUF_SIZE space every
 // time is 4,500 times (!) slower than this if the reader has a very small
 // amount of data to return.
+//
+// Because we're extending the buffer with uninitialized data for trusted
+// readers, we need to make sure to truncate that if any of this panics.
 fn read_to_end<R: Read + ?Sized>(r: &mut R, buf: &mut Vec<u8>) -> Result<usize> {
     let start_len = buf.len();
-    let mut len = start_len;
+    let mut g = Guard { len: buf.len(), buf: buf };
     let mut new_write_size = 16;
     let ret;
     loop {
-        if len == buf.len() {
+        if g.len == g.buf.len() {
             if new_write_size < DEFAULT_BUF_SIZE {
                 new_write_size *= 2;
             }
-            buf.resize(len + new_write_size, 0);
+            unsafe {
+                g.buf.reserve(new_write_size);
+                g.buf.set_len(g.len + new_write_size);
+                r.initializer().initialize(&mut g.buf[g.len..]);
+            }
         }
 
-        match r.read(&mut buf[len..]) {
+        match r.read(&mut g.buf[g.len..]) {
             Ok(0) => {
-                ret = Ok(len - start_len);
+                ret = Ok(g.len - start_len);
                 break;
             }
-            Ok(n) => len += n,
+            Ok(n) => g.len += n,
             Err(ref e) if e.kind() == ErrorKind::Interrupted => {}
             Err(e) => {
                 ret = Err(e);
@@ -383,7 +394,6 @@ fn read_to_end<R: Read + ?Sized>(r: &mut R, buf: &mut Vec<u8>) -> Result<usize> 
         }
     }
 
-    buf.truncate(len);
     ret
 }
 
@@ -391,28 +401,29 @@ fn read_to_end<R: Read + ?Sized>(r: &mut R, buf: &mut Vec<u8>) -> Result<usize> 
 ///
 /// Implementors of the `Read` trait are called 'readers'.
 ///
-/// Readers are defined by one required method, `read()`. Each call to `read`
+/// Readers are defined by one required method, [`read()`]. Each call to [`read()`]
 /// will attempt to pull bytes from this source into a provided buffer. A
-/// number of other methods are implemented in terms of `read()`, giving
+/// number of other methods are implemented in terms of [`read()`], giving
 /// implementors a number of ways to read bytes while only needing to implement
 /// a single method.
 ///
 /// Readers are intended to be composable with one another. Many implementors
-/// throughout `std::io` take and provide types which implement the `Read`
+/// throughout [`std::io`] take and provide types which implement the `Read`
 /// trait.
 ///
-/// Please note that each call to `read` may involve a system call, and
-/// therefore, using something that implements [`BufRead`][bufread], such as
-/// [`BufReader`][bufreader], will be more efficient.
-///
-/// [bufread]: trait.BufRead.html
-/// [bufreader]: struct.BufReader.html
+/// Please note that each call to [`read()`] may involve a system call, and
+/// therefore, using something that implements [`BufRead`], such as
+/// [`BufReader`], will be more efficient.
 ///
 /// # Examples
 ///
-/// [`File`][file]s implement `Read`:
+/// [`File`]s implement `Read`:
 ///
-/// [file]: ../fs/struct.File.html
+/// [`read()`]: trait.Read.html#tymethod.read
+/// [`std::io`]: ../../std/io/index.html
+/// [`File`]: ../fs/struct.File.html
+/// [`BufRead`]: trait.BufRead.html
+/// [`BufReader`]: struct.BufReader.html
 ///
 /// ```
 /// use std::io;
@@ -445,9 +456,9 @@ pub trait Read {
     ///
     /// This function does not provide any guarantees about whether it blocks
     /// waiting for data, but if an object needs to block for a read but cannot
-    /// it will typically signal this via an `Err` return value.
+    /// it will typically signal this via an [`Err`] return value.
     ///
-    /// If the return value of this method is `Ok(n)`, then it must be
+    /// If the return value of this method is [`Ok(n)`], then it must be
     /// guaranteed that `0 <= n <= buf.len()`. A nonzero `n` value indicates
     /// that the buffer `buf` has been filled in with `n` bytes of data from this
     /// source. If `n` is `0`, then it can indicate one of two scenarios:
@@ -468,14 +479,17 @@ pub trait Read {
     /// variant will be returned. If an error is returned then it must be
     /// guaranteed that no bytes were read.
     ///
-    /// An error of the `ErrorKind::Interrupted` kind is non-fatal and the read
+    /// An error of the [`ErrorKind::Interrupted`] kind is non-fatal and the read
     /// operation should be retried if there is nothing else to do.
     ///
     /// # Examples
     ///
-    /// [`File`][file]s implement `Read`:
+    /// [`File`]s implement `Read`:
     ///
-    /// [file]: ../fs/struct.File.html
+    /// [`Err`]: ../../std/result/enum.Result.html#variant.Err
+    /// [`Ok(n)`]: ../../std/result/enum.Result.html#variant.Ok
+    /// [`ErrorKind::Interrupted`]: ../../std/io/enum.ErrorKind.html#variant.Interrupted
+    /// [`File`]: ../fs/struct.File.html
     ///
     /// ```
     /// use std::io;
@@ -494,19 +508,47 @@ pub trait Read {
     #[stable(feature = "rust1", since = "1.0.0")]
     fn read(&mut self, buf: &mut [u8]) -> Result<usize>;
 
+    /// Determines if this `Read`er can work with buffers of uninitialized
+    /// memory.
+    ///
+    /// The default implementation returns an initializer which will zero
+    /// buffers.
+    ///
+    /// If a `Read`er guarantees that it can work properly with uninitialized
+    /// memory, it should call [`Initializer::nop()`]. See the documentation for
+    /// [`Initializer`] for details.
+    ///
+    /// The behavior of this method must be independent of the state of the
+    /// `Read`er - the method only takes `&self` so that it can be used through
+    /// trait objects.
+    ///
+    /// # Safety
+    ///
+    /// This method is unsafe because a `Read`er could otherwise return a
+    /// non-zeroing `Initializer` from another `Read` type without an `unsafe`
+    /// block.
+    ///
+    /// [`Initializer::nop()`]: ../../std/io/struct.Initializer.html#method.nop
+    /// [`Initializer`]: ../../std/io/struct.Initializer.html
+    #[unstable(feature = "read_initializer", issue = "42788")]
+    #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        Initializer::zeroing()
+    }
+
     /// Read all bytes until EOF in this source, placing them into `buf`.
     ///
     /// All bytes read from this source will be appended to the specified buffer
-    /// `buf`. This function will continuously call `read` to append more data to
-    /// `buf` until `read` returns either `Ok(0)` or an error of
-    /// non-`ErrorKind::Interrupted` kind.
+    /// `buf`. This function will continuously call [`read()`] to append more data to
+    /// `buf` until [`read()`] returns either [`Ok(0)`] or an error of
+    /// non-[`ErrorKind::Interrupted`] kind.
     ///
     /// If successful, this function will return the total number of bytes read.
     ///
     /// # Errors
     ///
     /// If this function encounters an error of the kind
-    /// `ErrorKind::Interrupted` then the error is ignored and the operation
+    /// [`ErrorKind::Interrupted`] then the error is ignored and the operation
     /// will continue.
     ///
     /// If any other read error is encountered then this function immediately
@@ -515,9 +557,12 @@ pub trait Read {
     ///
     /// # Examples
     ///
-    /// [`File`][file]s implement `Read`:
+    /// [`File`]s implement `Read`:
     ///
-    /// [file]: ../fs/struct.File.html
+    /// [`read()`]: trait.Read.html#tymethod.read
+    /// [`Ok(0)`]: ../../std/result/enum.Result.html#variant.Ok
+    /// [`ErrorKind::Interrupted`]: ../../std/io/enum.ErrorKind.html#variant.Interrupted
+    /// [`File`]: ../fs/struct.File.html
     ///
     /// ```
     /// use std::io;
@@ -598,11 +643,11 @@ pub trait Read {
     /// # Errors
     ///
     /// If this function encounters an error of the kind
-    /// `ErrorKind::Interrupted` then the error is ignored and the operation
+    /// [`ErrorKind::Interrupted`] then the error is ignored and the operation
     /// will continue.
     ///
     /// If this function encounters an "end of file" before completely filling
-    /// the buffer, it returns an error of the kind `ErrorKind::UnexpectedEof`.
+    /// the buffer, it returns an error of the kind [`ErrorKind::UnexpectedEof`].
     /// The contents of `buf` are unspecified in this case.
     ///
     /// If any other read error is encountered then this function immediately
@@ -614,9 +659,11 @@ pub trait Read {
     ///
     /// # Examples
     ///
-    /// [`File`][file]s implement `Read`:
+    /// [`File`]s implement `Read`:
     ///
-    /// [file]: ../fs/struct.File.html
+    /// [`File`]: ../fs/struct.File.html
+    /// [`ErrorKind::Interrupted`]: ../../std/io/enum.ErrorKind.html#variant.Interrupted
+    /// [`ErrorKind::UnexpectedEof`]: ../../std/io/enum.ErrorKind.html#variant.UnexpectedEof
     ///
     /// ```
     /// use std::io;
@@ -687,11 +734,11 @@ pub trait Read {
     #[stable(feature = "rust1", since = "1.0.0")]
     fn by_ref(&mut self) -> &mut Self where Self: Sized { self }
 
-    /// Transforms this `Read` instance to an `Iterator` over its bytes.
+    /// Transforms this `Read` instance to an [`Iterator`] over its bytes.
     ///
-    /// The returned type implements `Iterator` where the `Item` is `Result<u8,
-    /// R::Err>`.  The yielded item is `Ok` if a byte was successfully read and
-    /// `Err` otherwise for I/O errors. EOF is mapped to returning `None` from
+    /// The returned type implements [`Iterator`] where the `Item` is [`Result`]`<`[`u8`]`,
+    /// R::Err>`. The yielded item is [`Ok`] if a byte was successfully read and
+    /// [`Err`] otherwise for I/O errors. EOF is mapped to returning [`None`] from
     /// this iterator.
     ///
     /// # Examples
@@ -699,6 +746,12 @@ pub trait Read {
     /// [`File`][file]s implement `Read`:
     ///
     /// [file]: ../fs/struct.File.html
+    /// [`Iterator`]: ../../std/iter/trait.Iterator.html
+    /// [`Result`]: ../../std/result/enum.Result.html
+    /// [`u8`]: ../../std/primitive.u8.html
+    /// [`Ok`]: ../../std/result/enum.Result.html#variant.Ok
+    /// [`Err`]: ../../std/result/enum.Result.html#variant.Err
+    /// [`None`]: ../../std/option/enum.Option.html#variant.None
     ///
     /// ```
     /// use std::io;
@@ -719,12 +772,12 @@ pub trait Read {
         Bytes { inner: self }
     }
 
-    /// Transforms this `Read` instance to an `Iterator` over `char`s.
+    /// Transforms this `Read` instance to an [`Iterator`] over [`char`]s.
     ///
     /// This adaptor will attempt to interpret this reader as a UTF-8 encoded
-    /// sequence of characters. The returned iterator will return `None` once
+    /// sequence of characters. The returned iterator will return [`None`] once
     /// EOF is reached for this reader. Otherwise each element yielded will be a
-    /// `Result<char, E>` where `E` may contain information about what I/O error
+    /// [`Result`]`<`[`char`]`, E>` where `E` may contain information about what I/O error
     /// occurred or where decoding failed.
     ///
     /// Currently this adaptor will discard intermediate data read, and should
@@ -732,9 +785,13 @@ pub trait Read {
     ///
     /// # Examples
     ///
-    /// [`File`][file]s implement `Read`:
+    /// [`File`]s implement `Read`:
     ///
-    /// [file]: ../fs/struct.File.html
+    /// [`File`]: ../fs/struct.File.html
+    /// [`Iterator`]: ../../std/iter/trait.Iterator.html
+    /// [`Result`]: ../../std/result/enum.Result.html
+    /// [`char`]: ../../std/primitive.char.html
+    /// [`None`]: ../../std/option/enum.Option.html#variant.None
     ///
     /// ```
     /// #![feature(io)]
@@ -797,15 +854,17 @@ pub trait Read {
     /// Creates an adaptor which will read at most `limit` bytes from it.
     ///
     /// This function returns a new instance of `Read` which will read at most
-    /// `limit` bytes, after which it will always return EOF (`Ok(0)`). Any
+    /// `limit` bytes, after which it will always return EOF ([`Ok(0)`]). Any
     /// read errors will not count towards the number of bytes read and future
-    /// calls to `read` may succeed.
+    /// calls to [`read()`] may succeed.
     ///
     /// # Examples
     ///
-    /// [`File`][file]s implement `Read`:
+    /// [`File`]s implement `Read`:
     ///
-    /// [file]: ../fs/struct.File.html
+    /// [`File`]: ../fs/struct.File.html
+    /// [`Ok(0)`]: ../../std/result/enum.Result.html#variant.Ok
+    /// [`read()`]: trait.Read.html#tymethod.read
     ///
     /// ```
     /// use std::io;
@@ -826,6 +885,50 @@ pub trait Read {
     #[stable(feature = "rust1", since = "1.0.0")]
     fn take(self, limit: u64) -> Take<Self> where Self: Sized {
         Take { inner: self, limit: limit }
+    }
+}
+
+/// A type used to conditionally initialize buffers passed to `Read` methods.
+#[unstable(feature = "read_initializer", issue = "42788")]
+#[derive(Debug)]
+pub struct Initializer(bool);
+
+impl Initializer {
+    /// Returns a new `Initializer` which will zero out buffers.
+    #[unstable(feature = "read_initializer", issue = "42788")]
+    #[inline]
+    pub fn zeroing() -> Initializer {
+        Initializer(true)
+    }
+
+    /// Returns a new `Initializer` which will not zero out buffers.
+    ///
+    /// # Safety
+    ///
+    /// This may only be called by `Read`ers which guarantee that they will not
+    /// read from buffers passed to `Read` methods, and that the return value of
+    /// the method accurately reflects the number of bytes that have been
+    /// written to the head of the buffer.
+    #[unstable(feature = "read_initializer", issue = "42788")]
+    #[inline]
+    pub unsafe fn nop() -> Initializer {
+        Initializer(false)
+    }
+
+    /// Indicates if a buffer should be initialized.
+    #[unstable(feature = "read_initializer", issue = "42788")]
+    #[inline]
+    pub fn should_initialize(&self) -> bool {
+        self.0
+    }
+
+    /// Initializes a buffer if necessary.
+    #[unstable(feature = "read_initializer", issue = "42788")]
+    #[inline]
+    pub fn initialize(&self, buf: &mut [u8]) {
+        if self.should_initialize() {
+            unsafe { ptr::write_bytes(buf.as_mut_ptr(), 0, buf.len()) }
+        }
     }
 }
 
@@ -1512,8 +1615,6 @@ impl<T, U> Chain<T, U> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(more_io_inner_methods)]
-    ///
     /// # use std::io;
     /// use std::io::prelude::*;
     /// use std::fs::File;
@@ -1527,7 +1628,7 @@ impl<T, U> Chain<T, U> {
     /// # Ok(())
     /// # }
     /// ```
-    #[unstable(feature = "more_io_inner_methods", issue="41519")]
+    #[stable(feature = "more_io_inner_methods", since = "1.20.0")]
     pub fn into_inner(self) -> (T, U) {
         (self.first, self.second)
     }
@@ -1537,8 +1638,6 @@ impl<T, U> Chain<T, U> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(more_io_inner_methods)]
-    ///
     /// # use std::io;
     /// use std::io::prelude::*;
     /// use std::fs::File;
@@ -1552,7 +1651,7 @@ impl<T, U> Chain<T, U> {
     /// # Ok(())
     /// # }
     /// ```
-    #[unstable(feature = "more_io_inner_methods", issue="41519")]
+    #[stable(feature = "more_io_inner_methods", since = "1.20.0")]
     pub fn get_ref(&self) -> (&T, &U) {
         (&self.first, &self.second)
     }
@@ -1566,8 +1665,6 @@ impl<T, U> Chain<T, U> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(more_io_inner_methods)]
-    ///
     /// # use std::io;
     /// use std::io::prelude::*;
     /// use std::fs::File;
@@ -1581,7 +1678,7 @@ impl<T, U> Chain<T, U> {
     /// # Ok(())
     /// # }
     /// ```
-    #[unstable(feature = "more_io_inner_methods", issue="41519")]
+    #[stable(feature = "more_io_inner_methods", since = "1.20.0")]
     pub fn get_mut(&mut self) -> (&mut T, &mut U) {
         (&mut self.first, &mut self.second)
     }
@@ -1607,6 +1704,15 @@ impl<T: Read, U: Read> Read for Chain<T, U> {
             }
         }
         self.second.read(buf)
+    }
+
+    unsafe fn initializer(&self) -> Initializer {
+        let initializer = self.first.initializer();
+        if initializer.should_initialize() {
+            initializer
+        } else {
+            self.second.initializer()
+        }
     }
 }
 
@@ -1675,6 +1781,35 @@ impl<T> Take<T> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn limit(&self) -> u64 { self.limit }
 
+    /// Sets the number of bytes that can be read before this instance will
+    /// return EOF. This is the same as constructing a new `Take` instance, so
+    /// the amount of bytes read and the previous limit value don't matter when
+    /// calling this method.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(take_set_limit)]
+    /// use std::io;
+    /// use std::io::prelude::*;
+    /// use std::fs::File;
+    ///
+    /// # fn foo() -> io::Result<()> {
+    /// let f = File::open("foo.txt")?;
+    ///
+    /// // read at most five bytes
+    /// let mut handle = f.take(5);
+    /// handle.set_limit(10);
+    ///
+    /// assert_eq!(handle.limit(), 10);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[unstable(feature = "take_set_limit", issue = "42781")]
+    pub fn set_limit(&mut self, limit: u64) {
+        self.limit = limit;
+    }
+
     /// Consumes the `Take`, returning the wrapped reader.
     ///
     /// # Examples
@@ -1705,8 +1840,6 @@ impl<T> Take<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(more_io_inner_methods)]
-    ///
     /// use std::io;
     /// use std::io::prelude::*;
     /// use std::fs::File;
@@ -1722,7 +1855,7 @@ impl<T> Take<T> {
     /// # Ok(())
     /// # }
     /// ```
-    #[unstable(feature = "more_io_inner_methods", issue="41519")]
+    #[stable(feature = "more_io_inner_methods", since = "1.20.0")]
     pub fn get_ref(&self) -> &T {
         &self.inner
     }
@@ -1736,8 +1869,6 @@ impl<T> Take<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(more_io_inner_methods)]
-    ///
     /// use std::io;
     /// use std::io::prelude::*;
     /// use std::fs::File;
@@ -1753,7 +1884,7 @@ impl<T> Take<T> {
     /// # Ok(())
     /// # }
     /// ```
-    #[unstable(feature = "more_io_inner_methods", issue="41519")]
+    #[stable(feature = "more_io_inner_methods", since = "1.20.0")]
     pub fn get_mut(&mut self) -> &mut T {
         &mut self.inner
     }
@@ -1771,6 +1902,10 @@ impl<T: Read> Read for Take<T> {
         let n = self.inner.read(&mut buf[..max])?;
         self.limit -= n as u64;
         Ok(n)
+    }
+
+    unsafe fn initializer(&self) -> Initializer {
+        self.inner.initializer()
     }
 }
 

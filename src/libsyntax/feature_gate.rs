@@ -38,12 +38,19 @@ use symbol::Symbol;
 use std::ascii::AsciiExt;
 use std::env;
 
-macro_rules! setter {
-    ($field: ident) => {{
-        fn f(features: &mut Features) -> &mut bool {
-            &mut features.$field
+macro_rules! set {
+    (proc_macro) => {{
+        fn f(features: &mut Features, span: Span) {
+            features.declared_lib_features.push((Symbol::intern("proc_macro"), span));
+            features.proc_macro = true;
         }
-        f as fn(&mut Features) -> &mut bool
+        f as fn(&mut Features, Span)
+    }};
+    ($field: ident) => {{
+        fn f(features: &mut Features, _: Span) {
+            features.$field = true;
+        }
+        f as fn(&mut Features, Span)
     }}
 }
 
@@ -51,10 +58,9 @@ macro_rules! declare_features {
     ($((active, $feature: ident, $ver: expr, $issue: expr),)+) => {
         /// Represents active features that are currently being implemented or
         /// currently being considered for addition/removal.
-        const ACTIVE_FEATURES: &'static [(&'static str, &'static str,
-                                          Option<u32>, fn(&mut Features) -> &mut bool)] = &[
-            $((stringify!($feature), $ver, $issue, setter!($feature))),+
-        ];
+        const ACTIVE_FEATURES:
+                &'static [(&'static str, &'static str, Option<u32>, fn(&mut Features, Span))] =
+            &[$((stringify!($feature), $ver, $issue, set!($feature))),+];
 
         /// A set of features to be used by later passes.
         pub struct Features {
@@ -106,8 +112,8 @@ macro_rules! declare_features {
 // was set. This is most important for knowing when a particular feature became
 // stable (active).
 //
-// NB: The featureck.py script parses this information directly out of the source
-// so take care when modifying it.
+// NB: tools/tidy/src/features.rs parses this information directly out of the
+// source, so take care when modifying it.
 
 declare_features! (
     (active, asm, "1.0.0", Some(29722)),
@@ -136,7 +142,6 @@ declare_features! (
     (active, placement_in_syntax, "1.0.0", Some(27779)),
     (active, unboxed_closures, "1.0.0", Some(29625)),
 
-    (active, allocator, "1.0.0", Some(27389)),
     (active, fundamental, "1.0.0", Some(29635)),
     (active, main, "1.0.0", Some(29634)),
     (active, needs_allocator, "1.4.0", Some(27389)),
@@ -189,12 +194,16 @@ declare_features! (
     // rustc internal
     (active, allow_internal_unstable, "1.0.0", None),
 
+    // Allows the use of #[allow_internal_unsafe]. This is an
+    // attribute on macro_rules! and can't use the attribute handling
+    // below (it has to be checked before expansion possibly makes
+    // macros disappear).
+    //
+    // rustc internal
+    (active, allow_internal_unsafe, "1.0.0", None),
+
     // #23121. Array patterns have some hazards yet.
     (active, slice_patterns, "1.0.0", Some(23121)),
-
-    // Allows the definition of associated constants in `trait` or `impl`
-    // blocks.
-    (active, associated_consts, "1.0.0", Some(29646)),
 
     // Allows the definition of `const fn` functions.
     (active, const_fn, "1.2.0", Some(24111)),
@@ -336,9 +345,6 @@ declare_features! (
     // Allows `repr(align(u16))` struct attribute (RFC 1358)
     (active, repr_align, "1.17.0", Some(33626)),
 
-    // See rust-lang/rfcs#1414. Allows code like `let x: &'static u32 = &42` to work.
-    (active, rvalue_static_promotion, "1.15.1", Some(38865)),
-
     // Used to preserve symbols (see llvm.used)
     (active, used, "1.18.0", Some(40289)),
 
@@ -353,6 +359,22 @@ declare_features! (
 
     // rustc internal
     (active, abi_thiscall, "1.19.0", None),
+
+    // Allows a test to fail without failing the whole suite
+    (active, allow_fail, "1.19.0", Some(42219)),
+
+    // Allows unsized tuple coercion.
+    (active, unsized_tuple_coercion, "1.20.0", Some(42877)),
+
+    // global allocators and their internals
+    (active, global_allocator, "1.20.0", None),
+    (active, allocator_internals, "1.20.0", None),
+
+    // #[doc(cfg(...))]
+    (active, doc_cfg, "1.21.0", Some(43781)),
+
+    // allow `#[must_use]` on functions (RFC 1940)
+    (active, fn_must_use, "1.21.0", Some(43302)),
 );
 
 declare_features! (
@@ -372,6 +394,7 @@ declare_features! (
     // rustc internal
     (removed, unmarked_api, "1.0.0", None),
     (removed, pushpop_unsafe, "1.2.0", None),
+    (removed, allocator, "1.0.0", None),
 );
 
 declare_features! (
@@ -429,6 +452,13 @@ declare_features! (
     (accepted, closure_to_fn_coercion, "1.19.0", Some(39817)),
     // Allows attributes on struct literal fields.
     (accepted, struct_field_attributes, "1.20.0", Some(38814)),
+    // Allows the definition of associated constants in `trait` or `impl`
+    // blocks.
+    (accepted, associated_consts, "1.20.0", Some(29646)),
+    // Usage of the `compile_error!` macro
+    (accepted, compile_error, "1.20.0", Some(40872)),
+    // See rust-lang/rfcs#1414. Allows code like `let x: &'static u32 = &42` to work.
+    (accepted, rvalue_static_promotion, "1.21.0", Some(38865)),
 );
 
 // If you change this, please modify src/doc/unstable-book as well. You must
@@ -535,7 +565,12 @@ pub const BUILTIN_ATTRIBUTES: &'static [(&'static str, AttributeType, AttributeG
     ("ignore", Normal, Ungated),
     ("no_implicit_prelude", Normal, Ungated),
     ("reexport_test_harness_main", Normal, Ungated),
-    ("link_args", Normal, Ungated),
+    ("link_args", Normal, Gated(Stability::Unstable,
+                                "link_args",
+                                "the `link_args` attribute is experimental and not \
+                                 portable across platforms, it is recommended to \
+                                 use `#[link(name = \"foo\")] instead",
+                                cfg_fn!(link_args))),
     ("macro_escape", Normal, Ungated),
 
     // RFC #1445.
@@ -578,16 +613,22 @@ pub const BUILTIN_ATTRIBUTES: &'static [(&'static str, AttributeType, AttributeG
                                              "the `#[rustc_on_unimplemented]` attribute \
                                               is an experimental feature",
                                              cfg_fn!(on_unimplemented))),
-    ("allocator", Whitelisted, Gated(Stability::Unstable,
-                                     "allocator",
-                                     "the `#[allocator]` attribute is an experimental feature",
-                                     cfg_fn!(allocator))),
+    ("global_allocator", Normal, Gated(Stability::Unstable,
+                                       "global_allocator",
+                                       "the `#[global_allocator]` attribute is \
+                                        an experimental feature",
+                                       cfg_fn!(global_allocator))),
+    ("default_lib_allocator", Whitelisted, Gated(Stability::Unstable,
+                                            "allocator_internals",
+                                            "the `#[default_lib_allocator]` \
+                                             attribute is an experimental feature",
+                                            cfg_fn!(allocator_internals))),
     ("needs_allocator", Normal, Gated(Stability::Unstable,
-                                      "needs_allocator",
+                                      "allocator_internals",
                                       "the `#[needs_allocator]` \
                                        attribute is an experimental \
                                        feature",
-                                      cfg_fn!(needs_allocator))),
+                                      cfg_fn!(allocator_internals))),
     ("panic_runtime", Whitelisted, Gated(Stability::Unstable,
                                          "panic_runtime",
                                          "the `#[panic_runtime]` attribute is \
@@ -707,6 +748,11 @@ pub const BUILTIN_ATTRIBUTES: &'static [(&'static str, AttributeType, AttributeG
                                               EXPLAIN_ALLOW_INTERNAL_UNSTABLE,
                                               cfg_fn!(allow_internal_unstable))),
 
+    ("allow_internal_unsafe", Normal, Gated(Stability::Unstable,
+                                            "allow_internal_unsafe",
+                                            EXPLAIN_ALLOW_INTERNAL_UNSAFE,
+                                            cfg_fn!(allow_internal_unsafe))),
+
     ("fundamental", Whitelisted, Gated(Stability::Unstable,
                                        "fundamental",
                                        "the `#[fundamental]` attribute \
@@ -811,6 +857,11 @@ pub const BUILTIN_ATTRIBUTES: &'static [(&'static str, AttributeType, AttributeG
                                              "used internally by rustc",
                                              cfg_fn!(rustc_attrs))),
 
+    ("allow_fail", Normal, Gated(Stability::Unstable,
+                                 "allow_fail",
+                                 "allow_fail attribute is currently unstable",
+                                 cfg_fn!(allow_fail))),
+
     // Crate level attributes
     ("crate_name", CrateLevel, Ungated),
     ("crate_type", CrateLevel, Ungated),
@@ -867,20 +918,27 @@ struct Context<'a> {
 }
 
 macro_rules! gate_feature_fn {
-    ($cx: expr, $has_feature: expr, $span: expr, $name: expr, $explain: expr) => {{
-        let (cx, has_feature, span, name, explain) = ($cx, $has_feature, $span, $name, $explain);
+    ($cx: expr, $has_feature: expr, $span: expr, $name: expr, $explain: expr, $level: expr) => {{
+        let (cx, has_feature, span,
+             name, explain, level) = ($cx, $has_feature, $span, $name, $explain, $level);
         let has_feature: bool = has_feature(&$cx.features);
         debug!("gate_feature(feature = {:?}, span = {:?}); has? {}", name, span, has_feature);
         if !has_feature && !span.allows_unstable() {
-            emit_feature_err(cx.parse_sess, name, span, GateIssue::Language, explain);
+            leveled_feature_err(cx.parse_sess, name, span, GateIssue::Language, explain, level)
+                .emit();
         }
     }}
 }
 
 macro_rules! gate_feature {
     ($cx: expr, $feature: ident, $span: expr, $explain: expr) => {
-        gate_feature_fn!($cx, |x:&Features| x.$feature, $span, stringify!($feature), $explain)
-    }
+        gate_feature_fn!($cx, |x:&Features| x.$feature, $span,
+                         stringify!($feature), $explain, GateStrength::Hard)
+    };
+    ($cx: expr, $feature: ident, $span: expr, $explain: expr, $level: expr) => {
+        gate_feature_fn!($cx, |x:&Features| x.$feature, $span,
+                         stringify!($feature), $explain, $level)
+    };
 }
 
 impl<'a> Context<'a> {
@@ -890,7 +948,7 @@ impl<'a> Context<'a> {
         for &(n, ty, ref gateage) in BUILTIN_ATTRIBUTES {
             if name == n {
                 if let Gated(_, name, desc, ref has_feature) = *gateage {
-                    gate_feature_fn!(self, has_feature, attr.span, name, desc);
+                    gate_feature_fn!(self, has_feature, attr.span, name, desc, GateStrength::Hard);
                 }
                 debug!("check_attribute: {:?} is builtin, {:?}, {:?}", attr.path, ty, gateage);
                 return;
@@ -960,13 +1018,26 @@ pub enum GateIssue {
     Library(Option<u32>)
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum GateStrength {
+    /// A hard error. (Most feature gates should use this.)
+    Hard,
+    /// Only a warning. (Use this only as backwards-compatibility demands.)
+    Soft,
+}
+
 pub fn emit_feature_err(sess: &ParseSess, feature: &str, span: Span, issue: GateIssue,
                         explain: &str) {
     feature_err(sess, feature, span, issue, explain).emit();
 }
 
 pub fn feature_err<'a>(sess: &'a ParseSess, feature: &str, span: Span, issue: GateIssue,
-                   explain: &str) -> DiagnosticBuilder<'a> {
+                       explain: &str) -> DiagnosticBuilder<'a> {
+    leveled_feature_err(sess, feature, span, issue, explain, GateStrength::Hard)
+}
+
+fn leveled_feature_err<'a>(sess: &'a ParseSess, feature: &str, span: Span, issue: GateIssue,
+                           explain: &str, level: GateStrength) -> DiagnosticBuilder<'a> {
     let diag = &sess.span_diagnostic;
 
     let issue = match issue {
@@ -974,10 +1045,15 @@ pub fn feature_err<'a>(sess: &'a ParseSess, feature: &str, span: Span, issue: Ga
         GateIssue::Library(lib) => lib,
     };
 
-    let mut err = if let Some(n) = issue {
-        diag.struct_span_err(span, &format!("{} (see issue #{})", explain, n))
+    let explanation = if let Some(n) = issue {
+        format!("{} (see issue #{})", explain, n)
     } else {
-        diag.struct_span_err(span, explain)
+        explain.to_owned()
+    };
+
+    let mut err = match level {
+        GateStrength::Hard => diag.struct_span_err(span, &explanation),
+        GateStrength::Soft => diag.struct_span_warn(span, &explanation),
     };
 
     // #23973: do not suggest `#![feature(...)]` if we are in beta/stable
@@ -987,7 +1063,15 @@ pub fn feature_err<'a>(sess: &'a ParseSess, feature: &str, span: Span, issue: Ga
                           feature));
     }
 
+    // If we're on stable and only emitting a "soft" warning, add a note to
+    // clarify that the feature isn't "on" (rather than being on but
+    // warning-worthy).
+    if !sess.unstable_features.is_nightly_build() && level == GateStrength::Soft {
+        err.help("a nightly build of the compiler is required to enable this feature");
+    }
+
     err
+
 }
 
 const EXPLAIN_BOX_SYNTAX: &'static str =
@@ -1012,6 +1096,8 @@ pub const EXPLAIN_TRACE_MACROS: &'static str =
     "`trace_macros` is not stable enough for use and is subject to change";
 pub const EXPLAIN_ALLOW_INTERNAL_UNSTABLE: &'static str =
     "allow_internal_unstable side-steps feature gating and stability checks";
+pub const EXPLAIN_ALLOW_INTERNAL_UNSAFE: &'static str =
+    "allow_internal_unsafe side-steps the unsafe_code lint";
 
 pub const EXPLAIN_CUSTOM_DERIVE: &'static str =
     "`#[derive]` for custom traits is deprecated and will be removed in the future.";
@@ -1029,6 +1115,9 @@ pub const EXPLAIN_VIS_MATCHER: &'static str =
 pub const EXPLAIN_PLACEMENT_IN: &'static str =
     "placement-in expression syntax is experimental and subject to change.";
 
+pub const EXPLAIN_UNSIZED_TUPLE_COERCION: &'static str =
+    "Unsized tuple coercion is not stable enough for use and is subject to change";
+
 struct PostExpansionVisitor<'a> {
     context: &'a Context<'a>,
 }
@@ -1038,6 +1127,12 @@ macro_rules! gate_feature_post {
         let (cx, span) = ($cx, $span);
         if !span.allows_unstable() {
             gate_feature!(cx.context, $feature, span, $explain)
+        }
+    }};
+    ($cx: expr, $feature: ident, $span: expr, $explain: expr, $level: expr) => {{
+        let (cx, span) = ($cx, $span);
+        if !span.allows_unstable() {
+            gate_feature!(cx.context, $feature, span, $explain, $level)
         }
     }}
 }
@@ -1121,6 +1216,16 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
             self.context.check_attribute(attr, false);
         }
 
+        if attr.check_name("doc") {
+            if let Some(content) = attr.meta_item_list() {
+                if content.len() == 1 && content[0].check_name("cfg") {
+                    gate_feature_post!(&self, doc_cfg, attr.span,
+                        "#[doc(cfg(...))] is experimental"
+                    );
+                }
+            }
+        }
+
         if self.context.features.proc_macro && attr::is_known(attr) {
             return
         }
@@ -1151,12 +1256,6 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
             }
 
             ast::ItemKind::ForeignMod(ref foreign_module) => {
-                if attr::contains_name(&i.attrs[..], "link_args") {
-                    gate_feature_post!(&self, link_args, i.span,
-                                      "the `link_args` attribute is not portable \
-                                       across platforms, it is recommended to \
-                                       use `#[link(name = \"foo\")]` instead")
-                }
                 self.check_abi(foreign_module.abi, i.span);
             }
 
@@ -1176,6 +1275,11 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                                        "declaration of a nonstandard #[main] \
                                         function may change over time, for now \
                                         a top-level `fn main()` is required");
+                }
+                if attr::contains_name(&i.attrs[..], "must_use") {
+                    gate_feature_post!(&self, fn_must_use, i.span,
+                                       "`#[must_use]` on functions is experimental",
+                                       GateStrength::Soft);
                 }
             }
 
@@ -1214,7 +1318,7 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                                     and possibly buggy");
             }
 
-            ast::ItemKind::Impl(_, polarity, defaultness, _, _, _, _) => {
+            ast::ItemKind::Impl(_, polarity, defaultness, _, _, _, ref impl_items) => {
                 if polarity == ast::ImplPolarity::Negative {
                     gate_feature_post!(&self, optin_builtin_traits,
                                        i.span,
@@ -1226,6 +1330,16 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                     gate_feature_post!(&self, specialization,
                                        i.span,
                                        "specialization is unstable");
+                }
+
+                for impl_item in impl_items {
+                    if let ast::ImplItemKind::Method(..) = impl_item.node {
+                        if attr::contains_name(&impl_item.attrs[..], "must_use") {
+                            gate_feature_post!(&self, fn_must_use, impl_item.span,
+                                               "`#[must_use]` on methods is experimental",
+                                               GateStrength::Soft);
+                        }
+                    }
                 }
             }
 
@@ -1371,11 +1485,6 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
 
     fn visit_trait_item(&mut self, ti: &'a ast::TraitItem) {
         match ti.node {
-            ast::TraitItemKind::Const(..) => {
-                gate_feature_post!(&self, associated_consts,
-                                  ti.span,
-                                  "associated constants are experimental")
-            }
             ast::TraitItemKind::Method(ref sig, ref block) => {
                 if block.is_none() {
                     self.check_abi(sig.abi, ti.span);
@@ -1401,11 +1510,6 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
         }
 
         match ii.node {
-            ast::ImplItemKind::Const(..) => {
-                gate_feature_post!(&self, associated_consts,
-                                  ii.span,
-                                  "associated constants are experimental")
-            }
             ast::ImplItemKind::Method(ref sig, _) => {
                 if sig.constness.node == ast::Constness::Const {
                     gate_feature_post!(&self, const_fn, ii.span, "const fn is unstable");
@@ -1460,9 +1564,9 @@ pub fn get_features(span_handler: &Handler, krate_attrs: &[ast::Attribute]) -> F
                         continue
                     };
 
-                    if let Some(&(_, _, _, setter)) = ACTIVE_FEATURES.iter()
+                    if let Some(&(_, _, _, set)) = ACTIVE_FEATURES.iter()
                         .find(|& &(n, _, _, _)| name == n) {
-                        *(setter(&mut features)) = true;
+                        set(&mut features, mi.span);
                         feature_checker.collect(&features, mi.span);
                     }
                     else if let Some(&(_, _, _)) = REMOVED_FEATURES.iter()
@@ -1496,7 +1600,7 @@ struct MutexFeatureChecker {
 
 impl MutexFeatureChecker {
     // If this method turns out to be a hotspot due to branching,
-    // the branching can be eliminated by modifying `setter!()` to set these spans
+    // the branching can be eliminated by modifying `set!()` to set these spans
     // only for the features that need to be checked for mutual exclusion.
     fn collect(&mut self, features: &Features, span: Span) {
         if features.proc_macro {
@@ -1528,9 +1632,9 @@ pub fn check_crate(krate: &ast::Crate,
                    unstable: UnstableFeatures) {
     maybe_stage_features(&sess.span_diagnostic, krate, unstable);
     let ctx = Context {
-        features: features,
+        features,
         parse_sess: sess,
-        plugin_attributes: plugin_attributes,
+        plugin_attributes,
     };
     visit::walk_crate(&mut PostExpansionVisitor { context: &ctx }, krate);
 }
@@ -1582,7 +1686,7 @@ fn maybe_stage_features(span_handler: &Handler, krate: &ast::Crate,
             if attr.check_name("feature") {
                 let release_channel = option_env!("CFG_RELEASE_CHANNEL").unwrap_or("(unknown)");
                 span_err!(span_handler, attr.span, E0554,
-                          "#[feature] may not be used on the {} release channel",
+                          "#![feature] may not be used on the {} release channel",
                           release_channel);
             }
         }

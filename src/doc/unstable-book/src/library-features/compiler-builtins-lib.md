@@ -22,7 +22,7 @@ $PWD/src/main.rs:11: undefined reference to `__aeabi_uldivmod'
 That means that you need to link to this crate.
 
 When you link to this crate, make sure it only appears once in your crate
-dependency graph. Also, it doesn't matter where in the dependency graph, you
+dependency graph. Also, it doesn't matter where in the dependency graph you
 place the `compiler_builtins` crate.
 
 <!-- NOTE(ignore) doctests don't support `no_std` binaries -->

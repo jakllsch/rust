@@ -269,7 +269,7 @@ struct IrMaps<'a, 'tcx: 'a> {
 impl<'a, 'tcx> IrMaps<'a, 'tcx> {
     fn new(tcx: TyCtxt<'a, 'tcx, 'tcx>) -> IrMaps<'a, 'tcx> {
         IrMaps {
-            tcx: tcx,
+            tcx,
             num_live_nodes: 0,
             num_vars: 0,
             live_node_map: NodeMap(),
@@ -385,7 +385,7 @@ fn visit_local<'a, 'tcx>(ir: &mut IrMaps<'a, 'tcx>, local: &'tcx hir::Local) {
         ir.add_live_node_for_node(p_id, VarDefNode(sp));
         ir.add_variable(Local(LocalInfo {
           id: p_id,
-          name: name
+          name,
         }));
     });
     intravisit::walk_local(ir, local);
@@ -400,7 +400,7 @@ fn visit_arm<'a, 'tcx>(ir: &mut IrMaps<'a, 'tcx>, arm: &'tcx hir::Arm) {
             ir.add_live_node_for_node(p_id, VarDefNode(sp));
             ir.add_variable(Local(LocalInfo {
                 id: p_id,
-                name: name
+                name,
             }));
         })
     }
@@ -534,8 +534,8 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
         let num_vars = ir.num_vars;
 
         Liveness {
-            ir: ir,
-            tables: tables,
+            ir,
+            tables,
             s: specials,
             successors: vec![invalid_node(); num_live_nodes],
             users: vec![invalid_users(); num_live_nodes * num_vars],
@@ -1482,12 +1482,16 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
                 };
 
                 if is_assigned {
-                    self.ir.tcx.sess.add_lint(lint::builtin::UNUSED_VARIABLES, id, sp,
-                        format!("variable `{}` is assigned to, but never used",
-                                name));
+                    self.ir.tcx.lint_node_note(lint::builtin::UNUSED_VARIABLES, id, sp,
+                        &format!("variable `{}` is assigned to, but never used",
+                                 name),
+                        &format!("to disable this warning, consider using `_{}` instead",
+                                 name));
                 } else if name != "self" {
-                    self.ir.tcx.sess.add_lint(lint::builtin::UNUSED_VARIABLES, id, sp,
-                        format!("unused variable: `{}`", name));
+                    self.ir.tcx.lint_node_note(lint::builtin::UNUSED_VARIABLES, id, sp,
+                        &format!("unused variable: `{}`", name),
+                        &format!("to disable this warning, consider using `_{}` instead",
+                                 name));
                 }
             }
             true
@@ -1509,11 +1513,11 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
     fn report_dead_assign(&self, id: NodeId, sp: Span, var: Variable, is_argument: bool) {
         if let Some(name) = self.should_warn(var) {
             if is_argument {
-                self.ir.tcx.sess.add_lint(lint::builtin::UNUSED_ASSIGNMENTS, id, sp,
-                    format!("value passed to `{}` is never read", name));
+                self.ir.tcx.lint_node(lint::builtin::UNUSED_ASSIGNMENTS, id, sp,
+                    &format!("value passed to `{}` is never read", name));
             } else {
-                self.ir.tcx.sess.add_lint(lint::builtin::UNUSED_ASSIGNMENTS, id, sp,
-                    format!("value assigned to `{}` is never read", name));
+                self.ir.tcx.lint_node(lint::builtin::UNUSED_ASSIGNMENTS, id, sp,
+                    &format!("value assigned to `{}` is never read", name));
             }
         }
     }

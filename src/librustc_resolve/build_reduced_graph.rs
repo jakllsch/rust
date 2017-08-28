@@ -35,6 +35,7 @@ use syntax::attr;
 use syntax::ast::{self, Block, ForeignItem, ForeignItemKind, Item, ItemKind};
 use syntax::ast::{Mutability, StmtKind, TraitItem, TraitItemKind};
 use syntax::ast::{Variant, ViewPathGlob, ViewPathList, ViewPathSimple};
+use syntax::codemap::respan;
 use syntax::ext::base::SyntaxExtension;
 use syntax::ext::base::Determinacy::Undetermined;
 use syntax::ext::hygiene::Mark;
@@ -119,7 +120,7 @@ impl<'a> Resolver<'a> {
                                  .unwrap()
                                  .1
                                  .iter()
-                                 .map(|seg| seg.identifier)
+                                 .map(|seg| respan(seg.span, seg.identifier))
                                  .collect()
                     }
 
@@ -127,14 +128,16 @@ impl<'a> Resolver<'a> {
                     ViewPathList(ref module_ident_path, _) => {
                         module_ident_path.segments
                                          .iter()
-                                         .map(|seg| seg.identifier)
+                                         .map(|seg| respan(seg.span, seg.identifier))
                                          .collect()
                     }
                 };
 
                 // This can be removed once warning cycle #36888 is complete.
-                if module_path.len() >= 2 && module_path[0].name == keywords::CrateRoot.name() &&
-                   token::Ident(module_path[1]).is_path_segment_keyword() {
+                if module_path.len() >= 2 &&
+                    module_path[0].node.name == keywords::CrateRoot.name() &&
+                    token::Ident(module_path[1].node).is_path_segment_keyword()
+                {
                     module_path.remove(0);
                 }
 
@@ -149,14 +152,15 @@ impl<'a> Resolver<'a> {
                             resolve_error(self,
                                           view_path.span,
                                           ResolutionError::SelfImportsOnlyAllowedWithin);
-                        } else if source_name == "$crate" && full_path.segments.len() == 1 {
+                        } else if source_name == keywords::DollarCrate.name() &&
+                                  full_path.segments.len() == 1 {
                             let crate_root = self.resolve_crate_root(source.ctxt);
                             let crate_name = match crate_root.kind {
                                 ModuleKind::Def(_, name) => name,
                                 ModuleKind::Block(..) => unreachable!(),
                             };
                             source.name = crate_name;
-                            if binding.name == "$crate" {
+                            if binding.name == keywords::DollarCrate.name() {
                                 binding.name = crate_name;
                             }
 
@@ -168,7 +172,7 @@ impl<'a> Resolver<'a> {
 
                         let subclass = SingleImport {
                             target: binding,
-                            source: source,
+                            source,
                             result: self.per_ns(|_, _| Cell::new(Err(Undetermined))),
                             type_ns_only: false,
                         };
@@ -201,10 +205,13 @@ impl<'a> Resolver<'a> {
                             let (module_path, ident, rename, type_ns_only) = {
                                 if node.name.name != keywords::SelfValue.name() {
                                     let rename = node.rename.unwrap_or(node.name);
-                                    (module_path.clone(), node.name, rename, false)
+                                    (module_path.clone(),
+                                     respan(source_item.span, node.name),
+                                     rename,
+                                     false)
                                 } else {
                                     let ident = *module_path.last().unwrap();
-                                    if ident.name == keywords::CrateRoot.name() {
+                                    if ident.node.name == keywords::CrateRoot.name() {
                                         resolve_error(
                                             self,
                                             source_item.span,
@@ -214,15 +221,15 @@ impl<'a> Resolver<'a> {
                                         continue;
                                     }
                                     let module_path = module_path.split_last().unwrap().1;
-                                    let rename = node.rename.unwrap_or(ident);
+                                    let rename = node.rename.unwrap_or(ident.node);
                                     (module_path.to_vec(), ident, rename, true)
                                 }
                             };
                             let subclass = SingleImport {
                                 target: rename,
-                                source: ident,
+                                source: ident.node,
                                 result: self.per_ns(|_, _| Cell::new(Err(Undetermined))),
-                                type_ns_only: type_ns_only,
+                                type_ns_only,
                             };
                             let id = source_item.node.id;
                             self.add_import_directive(
@@ -232,7 +239,7 @@ impl<'a> Resolver<'a> {
                     }
                     ViewPathGlob(_) => {
                         let subclass = GlobImport {
-                            is_prelude: is_prelude,
+                            is_prelude,
                             max_vis: Cell::new(ty::Visibility::Invisible),
                         };
                         self.add_import_directive(
@@ -255,13 +262,13 @@ impl<'a> Resolver<'a> {
                     (module, ty::Visibility::Public, sp, expansion).to_name_binding(self.arenas);
                 let directive = self.arenas.alloc_import_directive(ImportDirective {
                     id: item.id,
-                    parent: parent,
+                    parent,
                     imported_module: Cell::new(Some(module)),
                     subclass: ImportDirectiveSubclass::ExternCrate,
                     span: item.span,
                     module_path: Vec::new(),
                     vis: Cell::new(vis),
-                    expansion: expansion,
+                    expansion,
                     used: Cell::new(used),
                 });
                 self.potentially_unused_imports.push(directive);
@@ -523,7 +530,10 @@ impl<'a> Resolver<'a> {
         };
 
         let kind = ModuleKind::Def(Def::Mod(def_id), name);
-        self.arenas.alloc_module(ModuleData::new(parent, kind, def_id, Mark::root(), DUMMY_SP))
+        let module =
+            self.arenas.alloc_module(ModuleData::new(parent, kind, def_id, Mark::root(), DUMMY_SP));
+        self.extern_module_map.insert((def_id, macros_only), module);
+        module
     }
 
     pub fn macro_def_scope(&mut self, expansion: Mark) -> Module<'a> {
@@ -608,10 +618,10 @@ impl<'a> Resolver<'a> {
             parent: graph_root,
             imported_module: Cell::new(Some(module)),
             subclass: ImportDirectiveSubclass::MacroUse,
-            span: span,
+            span,
             module_path: Vec::new(),
             vis: Cell::new(ty::Visibility::Restricted(DefId::local(CRATE_DEF_INDEX))),
-            expansion: expansion,
+            expansion,
             used: Cell::new(false),
         });
 

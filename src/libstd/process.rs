@@ -60,7 +60,7 @@ use io::prelude::*;
 use ffi::OsStr;
 use fmt;
 use fs;
-use io;
+use io::{self, Initializer};
 use path::Path;
 use str;
 use sys::pipe::{read2, AnonPipe};
@@ -126,7 +126,7 @@ impl AsInner<imp::Process> for Child {
 impl FromInner<(imp::Process, imp::StdioPipes)> for Child {
     fn from_inner((handle, io): (imp::Process, imp::StdioPipes)) -> Child {
         Child {
-            handle: handle,
+            handle,
             stdin: io.stdin.map(ChildStdin::from_inner),
             stdout: io.stdout.map(ChildStdout::from_inner),
             stderr: io.stderr.map(ChildStderr::from_inner),
@@ -208,8 +208,9 @@ impl Read for ChildStdout {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.inner.read(buf)
     }
-    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        self.inner.read_to_end(buf)
+    #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        Initializer::nop()
     }
 }
 
@@ -250,8 +251,9 @@ impl Read for ChildStderr {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.inner.read(buf)
     }
-    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        self.inner.read_to_end(buf)
+    #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        Initializer::nop()
     }
 }
 
@@ -347,15 +349,19 @@ impl Command {
     ///
     /// Only one argument can be passed per use. So instead of:
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # std::process::Command::new("sh")
     /// .arg("-C /path/to/repo")
+    /// # ;
     /// ```
     ///
     /// usage would be:
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # std::process::Command::new("sh")
     /// .arg("-C")
     /// .arg("/path/to/repo")
+    /// # ;
     /// ```
     ///
     /// To pass multiple arguments see [`args`].
@@ -441,8 +447,6 @@ impl Command {
     /// Basic usage:
     ///
     /// ```no_run
-    /// #![feature(command_envs)]
-    ///
     /// use std::process::{Command, Stdio};
     /// use std::env;
     /// use std::collections::HashMap;
@@ -460,7 +464,7 @@ impl Command {
     ///         .spawn()
     ///         .expect("printenv failed to start");
     /// ```
-    #[unstable(feature = "command_envs", issue = "38526")]
+    #[stable(feature = "command_envs", since = "1.19.0")]
     pub fn envs<I, K, V>(&mut self, vars: I) -> &mut Command
         where I: IntoIterator<Item=(K, V)>, K: AsRef<OsStr>, V: AsRef<OsStr>
     {
@@ -795,8 +799,8 @@ impl From<fs::File> for Stdio {
 pub struct ExitStatus(imp::ExitStatus);
 
 impl ExitStatus {
-    /// Was termination successful? Signal termination not considered a success,
-    /// and success is defined as a zero exit status.
+    /// Was termination successful? Signal termination is not considered a
+    /// success, and success is defined as a zero exit status.
     ///
     /// # Examples
     ///
@@ -1031,9 +1035,9 @@ impl Child {
 
         let status = self.wait()?;
         Ok(Output {
-            status: status,
-            stdout: stdout,
-            stderr: stderr,
+            status,
+            stdout,
+            stderr,
         })
     }
 }
@@ -1413,8 +1417,19 @@ mod tests {
         let output = String::from_utf8(result.stdout).unwrap();
 
         for (ref k, ref v) in env::vars() {
-            // don't check android RANDOM variables
-            if cfg!(target_os = "android") && *k == "RANDOM" {
+            // Don't check android RANDOM variable which seems to change
+            // whenever the shell runs, and our `env_cmd` is indeed running a
+            // shell which means it'll get a different RANDOM than we probably
+            // have.
+            //
+            // Also skip env vars with `-` in the name on android because, well,
+            // I'm not sure. It appears though that the `set` command above does
+            // not print env vars with `-` in the name, so we just skip them
+            // here as we won't find them in the output. Note that most env vars
+            // use `_` instead of `-`, but our build system sets a few env vars
+            // with `-` in the name.
+            if cfg!(target_os = "android") &&
+               (*k == "RANDOM" || k.contains("-")) {
                 continue
             }
 

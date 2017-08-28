@@ -54,7 +54,7 @@ impl<'a, 'gcx, 'tcx> CheckWfFcxBuilder<'a, 'gcx, 'tcx> {
             let fcx = FnCtxt::new(&inh, param_env, id);
             let wf_tys = f(&fcx, &mut CheckTypeWellFormedVisitor {
                 tcx: fcx.tcx.global_tcx(),
-                code: code
+                code,
             });
             fcx.select_all_obligations_or_error();
             fcx.regionck_item(id, span, &wf_tys);
@@ -66,7 +66,7 @@ impl<'a, 'gcx> CheckTypeWellFormedVisitor<'a, 'gcx> {
     pub fn new(tcx: TyCtxt<'a, 'gcx, 'gcx>)
                -> CheckTypeWellFormedVisitor<'a, 'gcx> {
         CheckTypeWellFormedVisitor {
-            tcx: tcx,
+            tcx,
             code: ObligationCauseCode::MiscObligation
         }
     }
@@ -89,23 +89,23 @@ impl<'a, 'gcx> CheckTypeWellFormedVisitor<'a, 'gcx> {
                tcx.item_path_str(tcx.hir.local_def_id(item.id)));
 
         match item.node {
-            /// Right now we check that every default trait implementation
-            /// has an implementation of itself. Basically, a case like:
-            ///
-            /// `impl Trait for T {}`
-            ///
-            /// has a requirement of `T: Trait` which was required for default
-            /// method implementations. Although this could be improved now that
-            /// there's a better infrastructure in place for this, it's being left
-            /// for a follow-up work.
-            ///
-            /// Since there's such a requirement, we need to check *just* positive
-            /// implementations, otherwise things like:
-            ///
-            /// impl !Send for T {}
-            ///
-            /// won't be allowed unless there's an *explicit* implementation of `Send`
-            /// for `T`
+            // Right now we check that every default trait implementation
+            // has an implementation of itself. Basically, a case like:
+            //
+            // `impl Trait for T {}`
+            //
+            // has a requirement of `T: Trait` which was required for default
+            // method implementations. Although this could be improved now that
+            // there's a better infrastructure in place for this, it's being left
+            // for a follow-up work.
+            //
+            // Since there's such a requirement, we need to check *just* positive
+            // implementations, otherwise things like:
+            //
+            // impl !Send for T {}
+            //
+            // won't be allowed unless there's an *explicit* implementation of `Send`
+            // for `T`
             hir::ItemImpl(_, hir::ImplPolarity::Positive, _, _,
                           ref trait_ref, ref self_ty, _) => {
                 self.check_impl(item, self_ty, trait_ref);
@@ -177,12 +177,11 @@ impl<'a, 'gcx> CheckTypeWellFormedVisitor<'a, 'gcx> {
                 }
                 ty::AssociatedKind::Method => {
                     reject_shadowing_type_parameters(fcx.tcx, item.def_id);
-                    let method_ty = fcx.tcx.type_of(item.def_id);
-                    let method_ty = fcx.normalize_associated_types_in(span, &method_ty);
+                    let sig = fcx.tcx.fn_sig(item.def_id);
+                    let sig = fcx.normalize_associated_types_in(span, &sig);
                     let predicates = fcx.tcx.predicates_of(item.def_id)
                         .instantiate_identity(fcx.tcx);
                     let predicates = fcx.normalize_associated_types_in(span, &predicates);
-                    let sig = method_ty.fn_sig();
                     this.check_fn_or_method(fcx, span, sig, &predicates,
                                             item.def_id, &mut implied_bounds);
                     let sig_if_method = sig_if_method.expect("bad signature for method");
@@ -212,8 +211,8 @@ impl<'a, 'gcx> CheckTypeWellFormedVisitor<'a, 'gcx> {
         CheckWfFcxBuilder {
             inherited: Inherited::build(self.tcx, def_id),
             code: self.code.clone(),
-            id: id,
-            span: span,
+            id,
+            span,
             param_env: self.tcx.param_env(def_id),
         }
     }
@@ -234,7 +233,10 @@ impl<'a, 'gcx> CheckTypeWellFormedVisitor<'a, 'gcx> {
                         fcx.tcx.require_lang_item(lang_items::SizedTraitLangItem),
                         traits::ObligationCause::new(field.span,
                                                      fcx.body_id,
-                                                     traits::FieldSized));
+                                                     traits::FieldSized(match item.node.adt_kind() {
+                                                        Some(i) => i,
+                                                        None => bug!(),
+                                                     })));
                 }
 
                 // All field types must be well-formed.
@@ -256,7 +258,7 @@ impl<'a, 'gcx> CheckTypeWellFormedVisitor<'a, 'gcx> {
         // We want to ensure:
         //
         // 1) that there are no items contained within
-        // the trait defintion
+        // the trait definition
         //
         // 2) that the definition doesn't violate the no-super trait rule
         // for auto traits.
@@ -331,9 +333,8 @@ impl<'a, 'gcx> CheckTypeWellFormedVisitor<'a, 'gcx> {
     fn check_item_fn(&mut self, item: &hir::Item) {
         self.for_item(item).with_fcx(|fcx, this| {
             let def_id = fcx.tcx.hir.local_def_id(item.id);
-            let ty = fcx.tcx.type_of(def_id);
-            let item_ty = fcx.normalize_associated_types_in(item.span, &ty);
-            let sig = item_ty.fn_sig();
+            let sig = fcx.tcx.fn_sig(def_id);
+            let sig = fcx.normalize_associated_types_in(item.span, &sig);
 
             let predicates = fcx.tcx.predicates_of(def_id).instantiate_identity(fcx.tcx);
             let predicates = fcx.normalize_associated_types_in(item.span, &predicates);
@@ -461,9 +462,9 @@ impl<'a, 'gcx> CheckTypeWellFormedVisitor<'a, 'gcx> {
 
         let span = method_sig.decl.inputs[0].span;
 
-        let method_ty = fcx.tcx.type_of(method.def_id);
-        let fty = fcx.normalize_associated_types_in(span, &method_ty);
-        let sig = fcx.liberate_late_bound_regions(method.def_id, &fty.fn_sig());
+        let sig = fcx.tcx.fn_sig(method.def_id);
+        let sig = fcx.normalize_associated_types_in(span, &sig);
+        let sig = fcx.liberate_late_bound_regions(method.def_id, &sig);
 
         debug!("check_method_receiver: sig={:?}", sig);
 
@@ -473,7 +474,7 @@ impl<'a, 'gcx> CheckTypeWellFormedVisitor<'a, 'gcx> {
             ExplicitSelf::ByReference(region, mutbl) => {
                 fcx.tcx.mk_ref(region, ty::TypeAndMut {
                     ty: self_ty,
-                    mutbl: mutbl
+                    mutbl,
                 })
             }
             ExplicitSelf::ByBox => fcx.tcx.mk_box(self_ty)
@@ -510,7 +511,8 @@ impl<'a, 'gcx> CheckTypeWellFormedVisitor<'a, 'gcx> {
                      .map(|(index, _)| Parameter(index as u32))
                      .collect();
 
-        identify_constrained_type_params(ty_predicates.predicates.as_slice(),
+        identify_constrained_type_params(self.tcx,
+                                         ty_predicates.predicates.as_slice(),
                                          None,
                                          &mut constrained_parameters);
 

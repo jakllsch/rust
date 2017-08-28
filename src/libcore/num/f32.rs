@@ -10,8 +10,7 @@
 
 //! Operations and constants for 32-bits floats (`f32` type)
 
-// FIXME: MIN_VALUE and MAX_VALUE literals are parsed as -inf and inf #14353
-#![allow(overflowing_literals)]
+#![cfg_attr(stage0, allow(overflowing_literals))]
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
@@ -205,18 +204,25 @@ impl Float for f32 {
         }
     }
 
-    /// Returns `true` if `self` is positive, including `+0.0` and
-    /// `Float::infinity()`.
+    /// Returns `true` if and only if `self` has a positive sign, including `+0.0`, `NaN`s with
+    /// positive sign bit and positive infinity.
     #[inline]
     fn is_sign_positive(self) -> bool {
-        self > 0.0 || (1.0 / self) == INFINITY
+        !self.is_sign_negative()
     }
 
-    /// Returns `true` if `self` is negative, including `-0.0` and
-    /// `Float::neg_infinity()`.
+    /// Returns `true` if and only if `self` has a negative sign, including `-0.0`, `NaN`s with
+    /// negative sign bit and negative infinity.
     #[inline]
     fn is_sign_negative(self) -> bool {
-        self < 0.0 || (1.0 / self) == NEG_INFINITY
+        // IEEE754 says: isSignMinus(x) is true if and only if x has negative sign. isSignMinus
+        // applies to zeros and NaNs as well.
+        #[repr(C)]
+        union F32Bytes {
+            f: f32,
+            b: u32
+        }
+        unsafe { F32Bytes { f: self }.b & 0x8000_0000 != 0 }
     }
 
     /// Returns the reciprocal (multiplicative inverse) of the number.

@@ -191,10 +191,12 @@
 //! {
 //!     let result = match IntoIterator::into_iter(values) {
 //!         mut iter => loop {
-//!             let x = match iter.next() {
-//!                 Some(val) => val,
+//!             let next;
+//!             match iter.next() {
+//!                 Some(val) => next = val,
 //!                 None => break,
 //!             };
+//!             let x = next;
 //!             let () = { println!("{}", x); };
 //!         },
 //!     };
@@ -209,7 +211,7 @@
 //! There's one more subtle bit here: the standard library contains an
 //! interesting implementation of [`IntoIterator`]:
 //!
-//! ```ignore
+//! ```ignore (only-for-syntax-highlight)
 //! impl<I: Iterator> IntoIterator for I
 //! ```
 //!
@@ -312,12 +314,6 @@ pub use self::iterator::Iterator;
            reason = "likely to be replaced by finer-grained traits",
            issue = "42168")]
 pub use self::range::Step;
-#[unstable(feature = "step_by", reason = "recent addition",
-           issue = "27741")]
-#[rustc_deprecated(since = "1.19.0",
-                   reason = "replaced by `iter::StepBy`")]
-#[allow(deprecated)]
-pub use self::range::StepBy as DeprecatedStepBy;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::sources::{Repeat, repeat};
@@ -363,10 +359,18 @@ impl<I> Iterator for Rev<I> where I: DoubleEndedIterator {
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) { self.iter.size_hint() }
 
+    #[inline]
     fn find<P>(&mut self, predicate: P) -> Option<Self::Item>
         where P: FnMut(&Self::Item) -> bool
     {
         self.iter.rfind(predicate)
+    }
+
+    #[inline]
+    fn rposition<P>(&mut self, predicate: P) -> Option<usize> where
+        P: FnMut(Self::Item) -> bool
+    {
+        self.iter.position(predicate)
     }
 }
 
@@ -836,8 +840,8 @@ impl<A, B> ZipImpl<A, B> for Zip<A, B>
     type Item = (A::Item, B::Item);
     default fn new(a: A, b: B) -> Self {
         Zip {
-            a: a,
-            b: b,
+            a,
+            b,
             index: 0, // unused
             len: 0, // unused
         }
@@ -899,10 +903,10 @@ impl<A, B> ZipImpl<A, B> for Zip<A, B>
     fn new(a: A, b: B) -> Self {
         let len = cmp::min(a.len(), b.len());
         Zip {
-            a: a,
-            b: b,
+            a,
+            b,
             index: 0,
-            len: len,
+            len,
         }
     }
 
@@ -1031,7 +1035,7 @@ unsafe impl<A, B> TrustedLen for Zip<A, B>
 /// Now consider this twist where we add a call to `rev`. This version will
 /// print `('c', 1), ('b', 2), ('a', 3)`. Note that the letters are reversed,
 /// but the values of the counter still go in order. This is because `map()` is
-/// still being called lazilly on each item, but we are popping items off the
+/// still being called lazily on each item, but we are popping items off the
 /// back of the vector now, instead of shifting them from the front.
 ///
 /// ```rust

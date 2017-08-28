@@ -598,7 +598,6 @@ extern "C" {
     // Operations on scalar constants
     pub fn LLVMConstInt(IntTy: TypeRef, N: c_ulonglong, SignExtend: Bool) -> ValueRef;
     pub fn LLVMConstIntOfArbitraryPrecision(IntTy: TypeRef, Wn: c_uint, Ws: *const u64) -> ValueRef;
-    pub fn LLVMConstReal(RealTy: TypeRef, N: f64) -> ValueRef;
     pub fn LLVMConstIntGetZExtValue(ConstantVal: ValueRef) -> c_ulonglong;
     pub fn LLVMConstIntGetSExtValue(ConstantVal: ValueRef) -> c_longlong;
     pub fn LLVMRustConstInt128Get(ConstantVal: ValueRef, SExt: bool,
@@ -698,6 +697,7 @@ extern "C" {
     pub fn LLVMIsGlobalConstant(GlobalVar: ValueRef) -> Bool;
     pub fn LLVMSetGlobalConstant(GlobalVar: ValueRef, IsConstant: Bool);
     pub fn LLVMRustGetNamedValue(M: ModuleRef, Name: *const c_char) -> ValueRef;
+    pub fn LLVMSetTailCall(CallInst: ValueRef, IsTailCall: Bool);
 
     // Operations on functions
     pub fn LLVMAddFunction(M: ModuleRef, Name: *const c_char, FunctionTy: TypeRef) -> ValueRef;
@@ -1597,7 +1597,13 @@ extern "C" {
                                    Output: *const c_char,
                                    FileType: FileType)
                                    -> LLVMRustResult;
-    pub fn LLVMRustPrintModule(PM: PassManagerRef, M: ModuleRef, Output: *const c_char);
+    pub fn LLVMRustPrintModule(PM: PassManagerRef,
+                               M: ModuleRef,
+                               Output: *const c_char,
+                               Demangle: extern fn(*const c_char,
+                                                   size_t,
+                                                   *mut c_char,
+                                                   size_t) -> size_t);
     pub fn LLVMRustSetLLVMOptions(Argc: c_int, Argv: *const *const c_char);
     pub fn LLVMRustPrintPasses();
     pub fn LLVMRustSetNormalizedTarget(M: ModuleRef, triple: *const c_char);
@@ -1626,7 +1632,9 @@ extern "C" {
     pub fn LLVMRustUnpackOptimizationDiagnostic(DI: DiagnosticInfoRef,
                                                 pass_name_out: RustStringRef,
                                                 function_out: *mut ValueRef,
-                                                debugloc_out: *mut DebugLocRef,
+                                                loc_line_out: *mut c_uint,
+                                                loc_column_out: *mut c_uint,
+                                                loc_filename_out: RustStringRef,
                                                 message_out: RustStringRef);
     pub fn LLVMRustUnpackInlineAsmDiagnostic(DI: DiagnosticInfoRef,
                                              cookie_out: *mut c_uint,

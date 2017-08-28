@@ -8,16 +8,18 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+extern crate rustc_trans_utils;
+
 use super::archive::{ArchiveBuilder, ArchiveConfig};
 use super::linker::Linker;
 use super::rpath::RPathConfig;
 use super::rpath;
 use metadata::METADATA_FILENAME;
-use rustc::session::config::{self, NoDebugInfo, OutputFilenames, Input, OutputType};
+use rustc::session::config::{self, NoDebugInfo, OutputFilenames, OutputType};
 use rustc::session::filesearch;
 use rustc::session::search_paths::PathKind;
 use rustc::session::Session;
-use rustc::middle::cstore::{self, LinkMeta, NativeLibrary, LibSource, LinkagePreference,
+use rustc::middle::cstore::{LinkMeta, NativeLibrary, LibSource, LinkagePreference,
                             NativeLibraryKind};
 use rustc::middle::dependency_format::Linkage;
 use CrateTranslation;
@@ -27,7 +29,7 @@ use rustc::dep_graph::{DepKind, DepNode};
 use rustc::hir::def_id::CrateNum;
 use rustc::hir::svh::Svh;
 use rustc_back::tempdir::TempDir;
-use rustc_back::PanicStrategy;
+use rustc_back::{PanicStrategy, RelroLevel};
 use rustc_incremental::IncrementalHashesMap;
 use context::get_reloc_model;
 use llvm;
@@ -42,10 +44,9 @@ use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str;
-use flate;
-use syntax::ast;
+use flate2::Compression;
+use flate2::write::DeflateEncoder;
 use syntax::attr;
-use syntax_pos::Span;
 
 /// The LLVM module name containing crate-metadata. This includes a `.` on
 /// purpose, so it cannot clash with the name of a user-defined module.
@@ -53,6 +54,10 @@ pub const METADATA_MODULE_NAME: &'static str = "crate.metadata";
 /// The name of the crate-metadata object file the compiler generates. Must
 /// match up with `METADATA_MODULE_NAME`.
 pub const METADATA_OBJ_NAME: &'static str = "crate.metadata.o";
+
+// same as for metadata above, but for allocator shim
+pub const ALLOCATOR_MODULE_NAME: &'static str = "crate.allocator";
+pub const ALLOCATOR_OBJ_NAME: &'static str = "crate.allocator.o";
 
 // RLIB LLVM-BYTECODE OBJECT LAYOUT
 // Version 1
@@ -83,55 +88,8 @@ pub const RLIB_BYTECODE_OBJECT_V1_DATASIZE_OFFSET: usize =
 pub const RLIB_BYTECODE_OBJECT_V1_DATA_OFFSET: usize =
     RLIB_BYTECODE_OBJECT_V1_DATASIZE_OFFSET + 8;
 
-
-pub fn find_crate_name(sess: Option<&Session>,
-                       attrs: &[ast::Attribute],
-                       input: &Input) -> String {
-    let validate = |s: String, span: Option<Span>| {
-        cstore::validate_crate_name(sess, &s, span);
-        s
-    };
-
-    // Look in attributes 100% of the time to make sure the attribute is marked
-    // as used. After doing this, however, we still prioritize a crate name from
-    // the command line over one found in the #[crate_name] attribute. If we
-    // find both we ensure that they're the same later on as well.
-    let attr_crate_name = attrs.iter().find(|at| at.check_name("crate_name"))
-                               .and_then(|at| at.value_str().map(|s| (at, s)));
-
-    if let Some(sess) = sess {
-        if let Some(ref s) = sess.opts.crate_name {
-            if let Some((attr, name)) = attr_crate_name {
-                if name != &**s {
-                    let msg = format!("--crate-name and #[crate_name] are \
-                                       required to match, but `{}` != `{}`",
-                                      s, name);
-                    sess.span_err(attr.span, &msg);
-                }
-            }
-            return validate(s.clone(), None);
-        }
-    }
-
-    if let Some((attr, s)) = attr_crate_name {
-        return validate(s.to_string(), Some(attr.span));
-    }
-    if let Input::File(ref path) = *input {
-        if let Some(s) = path.file_stem().and_then(|s| s.to_str()) {
-            if s.starts_with("-") {
-                let msg = format!("crate names cannot start with a `-`, but \
-                                   `{}` has a leading hyphen", s);
-                if let Some(sess) = sess {
-                    sess.err(&msg);
-                }
-            } else {
-                return validate(s.replace("-", "_"), None);
-            }
-        }
-    }
-
-    "rust_out".to_string()
-}
+pub use self::rustc_trans_utils::link::{find_crate_name, filename_for_input,
+                                        default_output_for_target, invalid_output_for_target};
 
 pub fn build_link_meta(incremental_hashes_map: &IncrementalHashesMap) -> LinkMeta {
     let krate_dep_node = &DepNode::new_no_params(DepKind::Krate);
@@ -178,12 +136,6 @@ pub fn msvc_link_exe_cmd(sess: &Session) -> (Command, Vec<(OsString, OsString)>)
 #[cfg(not(windows))]
 pub fn msvc_link_exe_cmd(_sess: &Session) -> (Command, Vec<(OsString, OsString)>) {
     (Command::new("link.exe"), vec![])
-}
-
-pub fn get_ar_prog(sess: &Session) -> String {
-    sess.opts.cg.ar.clone().unwrap_or_else(|| {
-        sess.target.target.options.ar.clone()
-    })
 }
 
 fn command_path(sess: &Session) -> OsString {
@@ -239,40 +191,12 @@ pub fn link_binary(sess: &Session,
             }
         }
         remove(sess, &outputs.with_extension(METADATA_OBJ_NAME));
+        if trans.allocator_module.is_some() {
+            remove(sess, &outputs.with_extension(ALLOCATOR_OBJ_NAME));
+        }
     }
 
     out_filenames
-}
-
-
-/// Returns default crate type for target
-///
-/// Default crate type is used when crate type isn't provided neither
-/// through cmd line arguments nor through crate attributes
-///
-/// It is CrateTypeExecutable for all platforms but iOS as there is no
-/// way to run iOS binaries anyway without jailbreaking and
-/// interaction with Rust code through static library is the only
-/// option for now
-pub fn default_output_for_target(sess: &Session) -> config::CrateType {
-    if !sess.target.target.options.executables {
-        config::CrateTypeStaticlib
-    } else {
-        config::CrateTypeExecutable
-    }
-}
-
-/// Checks if target supports crate_type as output
-pub fn invalid_output_for_target(sess: &Session,
-                                 crate_type: config::CrateType) -> bool {
-    match (sess.target.target.options.dynamic_linking,
-           sess.target.target.options.executables, crate_type) {
-        (false, _, config::CrateTypeCdylib) |
-        (false, _, config::CrateTypeProcMacro) |
-        (false, _, config::CrateTypeDylib) => true,
-        (_, false, config::CrateTypeExecutable) => true,
-        _ => false
-    }
 }
 
 fn is_writeable(p: &Path) -> bool {
@@ -291,71 +215,57 @@ fn filename_for_metadata(sess: &Session, crate_name: &str, outputs: &OutputFilen
     out_filename
 }
 
-pub fn filename_for_input(sess: &Session,
-                          crate_type: config::CrateType,
-                          crate_name: &str,
-                          outputs: &OutputFilenames) -> PathBuf {
-    let libname = format!("{}{}", crate_name, sess.opts.cg.extra_filename);
-
-    match crate_type {
-        config::CrateTypeRlib => {
-            outputs.out_directory.join(&format!("lib{}.rlib", libname))
-        }
-        config::CrateTypeCdylib |
-        config::CrateTypeProcMacro |
-        config::CrateTypeDylib => {
-            let (prefix, suffix) = (&sess.target.target.options.dll_prefix,
-                                    &sess.target.target.options.dll_suffix);
-            outputs.out_directory.join(&format!("{}{}{}", prefix, libname,
-                                                suffix))
-        }
-        config::CrateTypeStaticlib => {
-            let (prefix, suffix) = (&sess.target.target.options.staticlib_prefix,
-                                    &sess.target.target.options.staticlib_suffix);
-            outputs.out_directory.join(&format!("{}{}{}", prefix, libname,
-                                                suffix))
-        }
-        config::CrateTypeExecutable => {
-            let suffix = &sess.target.target.options.exe_suffix;
-            let out_filename = outputs.path(OutputType::Exe);
-            if suffix.is_empty() {
-                out_filename.to_path_buf()
-            } else {
-                out_filename.with_extension(&suffix[1..])
-            }
-        }
-    }
-}
-
 pub fn each_linked_rlib(sess: &Session,
-                        f: &mut FnMut(CrateNum, &Path)) {
+                        f: &mut FnMut(CrateNum, &Path)) -> Result<(), String> {
     let crates = sess.cstore.used_crates(LinkagePreference::RequireStatic).into_iter();
     let fmts = sess.dependency_formats.borrow();
     let fmts = fmts.get(&config::CrateTypeExecutable)
                    .or_else(|| fmts.get(&config::CrateTypeStaticlib))
                    .or_else(|| fmts.get(&config::CrateTypeCdylib))
                    .or_else(|| fmts.get(&config::CrateTypeProcMacro));
-    let fmts = fmts.unwrap_or_else(|| {
-        bug!("could not find formats for rlibs");
-    });
+    let fmts = match fmts {
+        Some(f) => f,
+        None => return Err(format!("could not find formats for rlibs"))
+    };
     for (cnum, path) in crates {
-        match fmts[cnum.as_usize() - 1] {
-            Linkage::NotLinked | Linkage::IncludedFromDylib => continue,
-            _ => {}
+        match fmts.get(cnum.as_usize() - 1) {
+            Some(&Linkage::NotLinked) |
+            Some(&Linkage::IncludedFromDylib) => continue,
+            Some(_) => {}
+            None => return Err(format!("could not find formats for rlibs"))
         }
         let name = sess.cstore.crate_name(cnum).clone();
         let path = match path {
             LibSource::Some(p) => p,
             LibSource::MetadataOnly => {
-                sess.fatal(&format!("could not find rlib for: `{}`, found rmeta (metadata) file",
-                                    name));
+                return Err(format!("could not find rlib for: `{}`, found rmeta (metadata) file",
+                                   name))
             }
             LibSource::None => {
-                sess.fatal(&format!("could not find rlib for: `{}`", name));
+                return Err(format!("could not find rlib for: `{}`", name))
             }
         };
         f(cnum, &path);
     }
+    Ok(())
+}
+
+/// Returns a boolean indicating whether the specified crate should be ignored
+/// during LTO.
+///
+/// Crates ignored during LTO are not lumped together in the "massive object
+/// file" that we create and are linked in their normal rlib states. See
+/// comments below for what crates do not participate in LTO.
+///
+/// It's unusual for a crate to not participate in LTO. Typically only
+/// compiler-specific and unstable crates have a reason to not participate in
+/// LTO.
+pub fn ignored_for_lto(sess: &Session, cnum: CrateNum) -> bool {
+    // `#![no_builtins]` crates don't participate in LTO because the state
+    // of builtins gets messed up (our crate isn't tagged with no builtins).
+    // Similarly `#![compiler_builtins]` doesn't participate because we want
+    // those builtins!
+    sess.cstore.is_no_builtins(cnum) || sess.cstore.is_compiler_builtins(cnum)
 }
 
 fn out_filename(sess: &Session,
@@ -412,11 +322,21 @@ fn link_binary_output(sess: &Session,
         let out_filename = out_filename(sess, crate_type, outputs, crate_name);
         match crate_type {
             config::CrateTypeRlib => {
-                link_rlib(sess, Some(trans), &objects, &out_filename,
+                link_rlib(sess,
+                          trans,
+                          RlibFlavor::Normal,
+                          &objects,
+                          outputs,
+                          &out_filename,
                           tmpdir.path()).build();
             }
             config::CrateTypeStaticlib => {
-                link_staticlib(sess, &objects, &out_filename, tmpdir.path());
+                link_staticlib(sess,
+                               trans,
+                               outputs,
+                               &objects,
+                               &out_filename,
+                               tmpdir.path());
             }
             _ => {
                 link_natively(sess, crate_type, &objects, &out_filename, trans,
@@ -424,6 +344,10 @@ fn link_binary_output(sess: &Session,
             }
         }
         out_filenames.push(out_filename);
+    }
+
+    if sess.opts.cg.save_temps {
+        let _ = tmpdir.into_path();
     }
 
     out_filenames
@@ -449,12 +373,10 @@ fn archive_config<'a>(sess: &'a Session,
                       output: &Path,
                       input: Option<&Path>) -> ArchiveConfig<'a> {
     ArchiveConfig {
-        sess: sess,
+        sess,
         dst: output.to_path_buf(),
         src: input.map(|p| p.to_path_buf()),
         lib_search_paths: archive_search_paths(sess),
-        ar_prog: get_ar_prog(sess),
-        command_path: command_path(sess),
     }
 }
 
@@ -468,6 +390,11 @@ fn emit_metadata<'a>(sess: &'a Session, trans: &CrateTranslation, out_filename: 
     }
 }
 
+enum RlibFlavor {
+    Normal,
+    StaticlibBase,
+}
+
 // Create an 'rlib'
 //
 // An rlib in its current incarnation is essentially a renamed .a file. The
@@ -475,8 +402,10 @@ fn emit_metadata<'a>(sess: &'a Session, trans: &CrateTranslation, out_filename: 
 // all of the object files from native libraries. This is done by unzipping
 // native libraries and inserting all of the contents into this archive.
 fn link_rlib<'a>(sess: &'a Session,
-                 trans: Option<&CrateTranslation>, // None == no metadata/bytecode
+                 trans: &CrateTranslation,
+                 flavor: RlibFlavor,
                  objects: &[PathBuf],
+                 outputs: &OutputFilenames,
                  out_filename: &Path,
                  tmpdir: &Path) -> ArchiveBuilder<'a> {
     info!("preparing rlib from {:?} to {:?}", objects, out_filename);
@@ -537,8 +466,8 @@ fn link_rlib<'a>(sess: &'a Session,
     //
     // Basically, all this means is that this code should not move above the
     // code above.
-    match trans {
-        Some(trans) => {
+    match flavor {
+        RlibFlavor::Normal => {
             // Instead of putting the metadata in an object file section, rlibs
             // contain the metadata in a separate file. We use a temp directory
             // here so concurrent builds in the same directory don't try to use
@@ -570,7 +499,9 @@ fn link_rlib<'a>(sess: &'a Session,
                                                  e))
                 }
 
-                let bc_data_deflated = flate::deflate_bytes(&bc_data);
+                let mut bc_data_deflated = Vec::new();
+                DeflateEncoder::new(&mut bc_data_deflated, Compression::Fast)
+                    .write_all(&bc_data).unwrap();
 
                 let mut bc_file_deflated = match fs::File::create(&bc_deflated_filename) {
                     Ok(file) => file,
@@ -609,7 +540,11 @@ fn link_rlib<'a>(sess: &'a Session,
             }
         }
 
-        None => {}
+        RlibFlavor::StaticlibBase => {
+            if trans.allocator_module.is_some() {
+                ab.add_file(&outputs.with_extension(ALLOCATOR_OBJ_NAME));
+            }
+        }
     }
 
     ab
@@ -661,12 +596,22 @@ fn write_rlib_bytecode_object_v1(writer: &mut Write,
 // There's no need to include metadata in a static archive, so ensure to not
 // link in the metadata object file (and also don't prepare the archive with a
 // metadata file).
-fn link_staticlib(sess: &Session, objects: &[PathBuf], out_filename: &Path,
+fn link_staticlib(sess: &Session,
+                  trans: &CrateTranslation,
+                  outputs: &OutputFilenames,
+                  objects: &[PathBuf],
+                  out_filename: &Path,
                   tempdir: &Path) {
-    let mut ab = link_rlib(sess, None, objects, out_filename, tempdir);
+    let mut ab = link_rlib(sess,
+                           trans,
+                           RlibFlavor::StaticlibBase,
+                           objects,
+                           outputs,
+                           out_filename,
+                           tempdir);
     let mut all_native_libs = vec![];
 
-    each_linked_rlib(sess, &mut |cnum, path| {
+    let res = each_linked_rlib(sess, &mut |cnum, path| {
         let name = sess.cstore.crate_name(cnum);
         let native_libs = sess.cstore.native_libraries(cnum);
 
@@ -687,10 +632,16 @@ fn link_staticlib(sess: &Session, objects: &[PathBuf], out_filename: &Path,
         let skip_object_files = native_libs.iter().any(|lib| {
             lib.kind == NativeLibraryKind::NativeStatic && !relevant_lib(sess, lib)
         });
-        ab.add_rlib(path, &name.as_str(), sess.lto(), skip_object_files).unwrap();
+        ab.add_rlib(path,
+                    &name.as_str(),
+                    sess.lto() && !ignored_for_lto(sess, cnum),
+                    skip_object_files).unwrap();
 
         all_native_libs.extend(sess.cstore.native_libraries(cnum));
     });
+    if let Err(e) = res {
+        sess.fatal(&e);
+    }
 
     ab.update_symbols();
     ab.build();
@@ -774,6 +725,9 @@ fn link_natively(sess: &Session,
     }
     if let Some(args) = sess.target.target.options.post_link_args.get(&flavor) {
         cmd.args(args);
+    }
+    for &(ref k, ref v) in &sess.target.target.options.link_env {
+        cmd.env(k, v);
     }
 
     if sess.opts.debugging_opts.print_link_args {
@@ -927,6 +881,10 @@ fn link_args(cmd: &mut Linker,
         cmd.add_object(&outputs.with_extension(METADATA_OBJ_NAME));
     }
 
+    if trans.allocator_module.is_some() {
+        cmd.add_object(&outputs.with_extension(ALLOCATOR_OBJ_NAME));
+    }
+
     // Try to strip as much out of the generated object by removing unused
     // sections if possible. See more comments in linker.rs
     if !sess.opts.cg.link_dead_code {
@@ -944,9 +902,23 @@ fn link_args(cmd: &mut Linker,
         let mut args = args.iter().chain(more_args.iter()).chain(used_link_args.iter());
 
         if get_reloc_model(sess) == llvm::RelocMode::PIC
-            && !args.any(|x| *x == "-static") {
+            && !sess.crt_static() && !args.any(|x| *x == "-static") {
             cmd.position_independent_executable();
         }
+    }
+
+    let relro_level = match sess.opts.debugging_opts.relro_level {
+        Some(level) => level,
+        None => t.options.relro_level,
+    };
+    match relro_level {
+        RelroLevel::Full => {
+            cmd.full_relro();
+        },
+        RelroLevel::Partial => {
+            cmd.partial_relro();
+        },
+        RelroLevel::Off => {},
     }
 
     // Pass optimization flags down to the linker.
@@ -994,10 +966,12 @@ fn link_args(cmd: &mut Linker,
     add_upstream_rust_crates(cmd, sess, crate_type, tmpdir);
     add_upstream_native_libraries(cmd, sess, crate_type);
 
-    // # Telling the linker what we're doing
-
+    // Tell the linker what we're doing.
     if crate_type != config::CrateTypeExecutable {
         cmd.build_dylib(out_filename);
+    }
+    if crate_type == config::CrateTypeExecutable && sess.crt_static() {
+        cmd.build_static_executable();
     }
 
     // FIXME (#2397): At some point we want to rpath our guesses as to
@@ -1230,7 +1204,9 @@ fn add_upstream_rust_crates(cmd: &mut Linker,
             lib.kind == NativeLibraryKind::NativeStatic && !relevant_lib(sess, lib)
         });
 
-        if !sess.lto() && crate_type != config::CrateTypeDylib && !skip_native {
+        if (!sess.lto() || ignored_for_lto(sess, cnum)) &&
+           crate_type != config::CrateTypeDylib &&
+           !skip_native {
             cmd.link_rlib(&fix_windows_verbatim_for_gcc(cratepath));
             return
         }

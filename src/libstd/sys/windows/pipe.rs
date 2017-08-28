@@ -164,10 +164,6 @@ impl AnonPipe {
         self.inner.read(buf)
     }
 
-    pub fn read_to_end(&self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        self.inner.read_to_end(buf)
-    }
-
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
         self.inner.write(buf)
     }
@@ -243,10 +239,10 @@ impl<'a> AsyncPipe<'a> {
         };
         overlapped.hEvent = event.raw();
         Ok(AsyncPipe {
-            pipe: pipe,
-            overlapped: overlapped,
-            event: event,
-            dst: dst,
+            pipe,
+            overlapped,
+            event,
+            dst,
             state: State::NotReading,
         })
     }

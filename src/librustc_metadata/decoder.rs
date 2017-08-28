@@ -69,7 +69,7 @@ pub trait Metadata<'a, 'tcx>: Copy {
             opaque: opaque::Decoder::new(self.raw_bytes(), pos),
             cdata: self.cdata(),
             sess: self.sess().or(tcx.map(|tcx| tcx.sess)),
-            tcx: tcx,
+            tcx,
             last_filemap_index: 0,
             lazy_state: LazyState::NoNode,
         }
@@ -468,11 +468,11 @@ impl<'a, 'tcx> CrateMetadata {
     fn local_def_id(&self, index: DefIndex) -> DefId {
         DefId {
             krate: self.cnum,
-            index: index,
+            index,
         }
     }
 
-    fn item_name(&self, item_index: DefIndex) -> ast::Name {
+    pub fn item_name(&self, item_index: DefIndex) -> ast::Name {
         self.def_key(item_index)
             .disambiguated_data
             .data
@@ -703,7 +703,7 @@ impl<'a, 'tcx> CrateMetadata {
                         for child_index in child.children.decode((self, sess)) {
                             if let Some(def) = self.get_def(child_index) {
                                 callback(def::Export {
-                                    def: def,
+                                    def,
                                     ident: Ident::with_empty_ctxt(self.item_name(child_index)),
                                     span: self.entry(child_index).span.decode((self, sess)),
                                 });
@@ -835,8 +835,8 @@ impl<'a, 'tcx> CrateMetadata {
         };
 
         ty::AssociatedItem {
-            name: name,
-            kind: kind,
+            name,
+            kind,
             vis: item.visibility.decode(self),
             defaultness: container.defaultness(),
             def_id: self.local_def_id(id),
@@ -892,7 +892,7 @@ impl<'a, 'tcx> CrateMetadata {
         if def_key.disambiguated_data.data == DefPathData::StructCtor {
             item = self.entry(def_key.parent.unwrap());
         }
-        let result = Rc::__from_array(self.get_attributes(&item).into_boxed_slice());
+        let result: Rc<[ast::Attribute]> = Rc::from(self.get_attributes(&item));
         let vec_ = &mut self.attribute_cache.borrow_mut()[node_as];
         if vec_.len() < node_index + 1 {
             vec_.resize(node_index + 1, None);
@@ -1084,14 +1084,20 @@ impl<'a, 'tcx> CrateMetadata {
         }
     }
 
-    pub fn closure_ty(&self,
-                      closure_id: DefIndex,
-                      tcx: TyCtxt<'a, 'tcx, 'tcx>)
-                      -> ty::PolyFnSig<'tcx> {
-        match self.entry(closure_id).kind {
-            EntryKind::Closure(data) => data.decode(self).ty.decode((self, tcx)),
+    pub fn fn_sig(&self,
+                  id: DefIndex,
+                  tcx: TyCtxt<'a, 'tcx, 'tcx>)
+                  -> ty::PolyFnSig<'tcx> {
+        let sig = match self.entry(id).kind {
+            EntryKind::Fn(data) |
+            EntryKind::ForeignFn(data) => data.decode(self).sig,
+            EntryKind::Method(data) => data.decode(self).fn_data.sig,
+            EntryKind::Variant(data) |
+            EntryKind::Struct(data, _) => data.decode(self).ctor_sig.unwrap(),
+            EntryKind::Closure(data) => data.decode(self).sig,
             _ => bug!(),
-        }
+        };
+        sig.decode((self, tcx))
     }
 
     #[inline]

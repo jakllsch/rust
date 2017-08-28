@@ -22,7 +22,7 @@ use util::nodemap::FxHashSet;
 
 use syntax_pos::Span;
 
-/// check_drop_impl confirms that the Drop implementation identfied by
+/// check_drop_impl confirms that the Drop implementation identified by
 /// `drop_impl_did` is not any more specialized than the type it is
 /// attached to (Issue #8142).
 ///
@@ -110,7 +110,7 @@ fn ensure_drop_params_and_item_params_correspond<'a, 'tcx>(
 
         if let Err(ref errors) = fulfillment_cx.select_all_or_error(&infcx) {
             // this could be reached when we get lazy normalization
-            infcx.report_fulfillment_errors(errors);
+            infcx.report_fulfillment_errors(errors, None);
             return Err(ErrorReported);
         }
 

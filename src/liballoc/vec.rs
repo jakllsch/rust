@@ -156,7 +156,7 @@ use Bound::{Excluded, Included, Unbounded};
 /// However be careful: if you try to access an index which isn't in the `Vec`,
 /// your software will panic! You cannot do this:
 ///
-/// ```ignore
+/// ```should_panic
 /// let v = vec![0, 2, 4, 6];
 /// println!("{}", v[6]); // it will panic!
 /// ```
@@ -222,7 +222,7 @@ use Bound::{Excluded, Included, Unbounded};
 /// on an empty Vec, it will not allocate memory. Similarly, if you store zero-sized
 /// types inside a `Vec`, it will not allocate space for them. *Note that in this case
 /// the `Vec` may not report a [`capacity`] of 0*. `Vec` will allocate if and only
-/// if [`mem::size_of::<T>`]` * capacity() > 0`. In general, `Vec`'s allocation
+/// if [`mem::size_of::<T>`]`() * capacity() > 0`. In general, `Vec`'s allocation
 /// details are subtle enough that it is strongly recommended that you only
 /// free memory allocated by a `Vec` by creating a new `Vec` and dropping it.
 ///
@@ -374,7 +374,7 @@ impl<T> Vec<T> {
     /// * `capacity` needs to be the capacity that the pointer was allocated with.
     ///
     /// Violating these may cause problems like corrupting the allocator's
-    /// internal datastructures. For example it is **not** safe
+    /// internal data structures. For example it is **not** safe
     /// to build a `Vec<u8>` from a pointer to a C `char` array and a `size_t`.
     ///
     /// The ownership of `ptr` is effectively transferred to the
@@ -823,7 +823,8 @@ impl<T> Vec<T> {
         }
     }
 
-    /// Removes consecutive elements in the vector that resolve to the same key.
+    /// Removes all but the first of consecutive elements in the vector that resolve to the same
+    /// key.
     ///
     /// If the vector is sorted, this removes all duplicates.
     ///
@@ -842,11 +843,13 @@ impl<T> Vec<T> {
         self.dedup_by(|a, b| key(a) == key(b))
     }
 
-    /// Removes consecutive elements in the vector according to a predicate.
+    /// Removes all but the first of consecutive elements in the vector satisfying a given equality
+    /// relation.
     ///
     /// The `same_bucket` function is passed references to two elements from the vector, and
-    /// returns `true` if the elements compare equal, or `false` if they do not. Only the first
-    /// of adjacent equal items is kept.
+    /// returns `true` if the elements compare equal, or `false` if they do not. The elements are
+    /// passed in opposite order from their order in the vector, so if `same_bucket(a, b)` returns
+    /// `true`, `a` is removed.
     ///
     /// If the vector is sorted, this removes all duplicates.
     ///
@@ -1123,7 +1126,7 @@ impl<T> Vec<T> {
                 tail_start: end,
                 tail_len: len - end,
                 iter: range_slice.iter(),
-                vec: Shared::new(self as *mut _),
+                vec: Shared::from(self),
             }
         }
     }
@@ -1724,10 +1727,10 @@ impl<T> IntoIterator for Vec<T> {
             let cap = self.buf.cap();
             mem::forget(self);
             IntoIter {
-                buf: Shared::new(begin),
-                cap: cap,
+                buf: Shared::new_unchecked(begin),
+                cap,
                 ptr: begin,
-                end: end,
+                end,
             }
         }
     }
@@ -1748,7 +1751,7 @@ impl<'a, T> IntoIterator for &'a mut Vec<T> {
     type Item = &'a mut T;
     type IntoIter = slice::IterMut<'a, T>;
 
-    fn into_iter(mut self) -> slice::IterMut<'a, T> {
+    fn into_iter(self) -> slice::IterMut<'a, T> {
         self.iter_mut()
     }
 }
@@ -1957,8 +1960,73 @@ impl<T> Vec<T> {
         }
     }
 
+    /// Creates an iterator which uses a closure to determine if an element should be removed.
+    ///
+    /// If the closure returns true, then the element is removed and yielded.
+    /// If the closure returns false, it will try again, and call the closure
+    /// on the next element, seeing if it passes the test.
+    ///
+    /// Using this method is equivalent to the following code:
+    ///
+    /// ```
+    /// # let some_predicate = |x: &mut i32| { *x == 2 };
+    /// # let mut vec = vec![1, 2, 3, 4, 5];
+    /// let mut i = 0;
+    /// while i != vec.len() {
+    ///     if some_predicate(&mut vec[i]) {
+    ///         let val = vec.remove(i);
+    ///         // your code here
+    ///     }
+    ///     i += 1;
+    /// }
+    /// ```
+    ///
+    /// But `drain_filter` is easier to use. `drain_filter` is also more efficient,
+    /// because it can backshift the elements of the array in bulk.
+    ///
+    /// Note that `drain_filter` also lets you mutate every element in the filter closure,
+    /// regardless of whether you choose to keep or remove it.
+    ///
+    ///
+    /// # Examples
+    ///
+    /// Splitting an array into evens and odds, reusing the original allocation:
+    ///
+    /// ```
+    /// #![feature(drain_filter)]
+    /// let mut numbers = vec![1, 2, 3, 4, 5, 6, 8, 9, 11, 13, 14, 15];
+    ///
+    /// let evens = numbers.drain_filter(|x| *x % 2 == 0).collect::<Vec<_>>();
+    /// let odds = numbers;
+    ///
+    /// assert_eq!(evens, vec![2, 4, 6, 8, 14]);
+    /// assert_eq!(odds, vec![1, 3, 5, 9, 11, 13, 15]);
+    /// ```
+    #[unstable(feature = "drain_filter", reason = "recently added", issue = "43244")]
+    pub fn drain_filter<F>(&mut self, filter: F) -> DrainFilter<T, F>
+        where F: FnMut(&mut T) -> bool,
+    {
+        let old_len = self.len();
+
+        // Guard against us getting leaked (leak amplification)
+        unsafe { self.set_len(0); }
+
+        DrainFilter {
+            vec: self,
+            idx: 0,
+            del: 0,
+            old_len,
+            pred: filter,
+        }
+    }
 }
 
+/// Extend implementation that copies elements out of references before pushing them onto the Vec.
+///
+/// This implementation is specialized for slice iterators, where it uses [`copy_from_slice`] to
+/// append the entire slice at once.
+///
+/// [`copy_from_slice`]: ../../std/primitive.slice.html#method.copy_from_slice
 #[stable(feature = "extend_ref", since = "1.2.0")]
 impl<'a, T: 'a + Copy> Extend<&'a T> for Vec<T> {
     fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
@@ -2124,10 +2192,12 @@ impl<T> From<Box<[T]>> for Vec<T> {
     }
 }
 
-#[stable(feature = "box_from_vec", since = "1.18.0")]
-impl<T> Into<Box<[T]>> for Vec<T> {
-    fn into(self) -> Box<[T]> {
-        self.into_boxed_slice()
+// note: test pulls in libstd, which causes errors here
+#[cfg(not(test))]
+#[stable(feature = "box_from_vec", since = "1.20.0")]
+impl<T> From<Vec<T>> for Box<[T]> {
+    fn from(v: Vec<T>) -> Box<[T]> {
+        v.into_boxed_slice()
     }
 }
 
@@ -2589,5 +2659,59 @@ impl<'a, T> Drain<'a, T> {
         let dst = vec.as_mut_ptr().offset(new_tail_start as isize);
         ptr::copy(src, dst, self.tail_len);
         self.tail_start = new_tail_start;
+    }
+}
+
+/// An iterator produced by calling `drain_filter` on Vec.
+#[unstable(feature = "drain_filter", reason = "recently added", issue = "43244")]
+#[derive(Debug)]
+pub struct DrainFilter<'a, T: 'a, F>
+    where F: FnMut(&mut T) -> bool,
+{
+    vec: &'a mut Vec<T>,
+    idx: usize,
+    del: usize,
+    old_len: usize,
+    pred: F,
+}
+
+#[unstable(feature = "drain_filter", reason = "recently added", issue = "43244")]
+impl<'a, T, F> Iterator for DrainFilter<'a, T, F>
+    where F: FnMut(&mut T) -> bool,
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        unsafe {
+            while self.idx != self.old_len {
+                let i = self.idx;
+                self.idx += 1;
+                let v = slice::from_raw_parts_mut(self.vec.as_mut_ptr(), self.old_len);
+                if (self.pred)(&mut v[i]) {
+                    self.del += 1;
+                    return Some(ptr::read(&v[i]));
+                } else if self.del > 0 {
+                    v.swap(i - self.del, i);
+                }
+            }
+            None
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(self.old_len - self.idx))
+    }
+}
+
+#[unstable(feature = "drain_filter", reason = "recently added", issue = "43244")]
+impl<'a, T, F> Drop for DrainFilter<'a, T, F>
+    where F: FnMut(&mut T) -> bool,
+{
+    fn drop(&mut self) {
+        for _ in self.by_ref() { }
+
+        unsafe {
+            self.vec.set_len(self.old_len - self.del);
+        }
     }
 }

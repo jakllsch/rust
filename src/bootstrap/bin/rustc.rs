@@ -75,16 +75,11 @@ fn main() {
         Err(_) => 0,
     };
 
-    // Build scripts always use the snapshot compiler which is guaranteed to be
-    // able to produce an executable, whereas intermediate compilers may not
-    // have the standard library built yet and may not be able to produce an
-    // executable. Otherwise we just use the standard compiler we're
-    // bootstrapping with.
-    //
-    // Also note that cargo will detect the version of the compiler to trigger
-    // a rebuild when the compiler changes. If this happens, we want to make
-    // sure to use the actual compiler instead of the snapshot compiler becase
-    // that's the one that's actually changing.
+    // Use a different compiler for build scripts, since there may not yet be a
+    // libstd for the real compiler to use. However, if Cargo is attempting to
+    // determine the version of the compiler, the real compiler needs to be
+    // used. Currently, these two states are differentiated based on whether
+    // --target and -vV is/isn't passed.
     let (rustc, libdir) = if target.is_none() && version.is_none() {
         ("RUSTC_SNAPSHOT", "RUSTC_SNAPSHOT_LIBDIR")
     } else {
@@ -142,6 +137,11 @@ fn main() {
             }
         }
 
+        let crate_name = args.windows(2)
+            .find(|a| &*a[0] == "--crate-name")
+            .unwrap();
+        let crate_name = &*crate_name[1];
+
         // If we're compiling specifically the `panic_abort` crate then we pass
         // the `-C panic=abort` option. Note that we do not do this for any
         // other crate intentionally as this is the only crate for now that we
@@ -150,9 +150,12 @@ fn main() {
         // This... is a bit of a hack how we detect this. Ideally this
         // information should be encoded in the crate I guess? Would likely
         // require an RFC amendment to RFC 1513, however.
-        let is_panic_abort = args.windows(2)
-            .any(|a| &*a[0] == "--crate-name" && &*a[1] == "panic_abort");
-        if is_panic_abort {
+        //
+        // `compiler_builtins` are unconditionally compiled with panic=abort to
+        // workaround undefined references to `rust_eh_unwind_resume` generated
+        // otherwise, see issue https://github.com/rust-lang/rust/issues/43095.
+        if crate_name == "panic_abort" ||
+           crate_name == "compiler_builtins" && stage != "0" {
             cmd.arg("-C").arg("panic=abort");
         }
 
@@ -167,14 +170,25 @@ fn main() {
             Ok(s) => if s == "true" { "y" } else { "n" },
             Err(..) => "n",
         };
-        cmd.arg("-C").arg(format!("debug-assertions={}", debug_assertions));
+
+        // The compiler builtins are pretty sensitive to symbols referenced in
+        // libcore and such, so we never compile them with debug assertions.
+        if crate_name == "compiler_builtins" {
+            cmd.arg("-C").arg("debug-assertions=no");
+        } else {
+            cmd.arg("-C").arg(format!("debug-assertions={}", debug_assertions));
+        }
+
         if let Ok(s) = env::var("RUSTC_CODEGEN_UNITS") {
             cmd.arg("-C").arg(format!("codegen-units={}", s));
         }
 
         // Emit save-analysis info.
         if env::var("RUSTC_SAVE_ANALYSIS") == Ok("api".to_string()) {
-            cmd.arg("-Zsave-analysis-api");
+            cmd.arg("-Zsave-analysis");
+            cmd.env("RUST_SAVE_ANALYSIS_CONFIG",
+                    "{\"output_file\": null,\"full_docs\": false,\"pub_only\": true,\
+                     \"distro_crate\": true,\"signatures\": false,\"borrow_data\": false}");
         }
 
         // Dealing with rpath here is a little special, so let's go into some
@@ -223,9 +237,13 @@ fn main() {
             }
         }
 
-        if target.contains("pc-windows-msvc") {
-            cmd.arg("-Z").arg("unstable-options");
-            cmd.arg("-C").arg("target-feature=+crt-static");
+        if let Ok(s) = env::var("RUSTC_CRT_STATIC") {
+            if s == "true" {
+                cmd.arg("-C").arg("target-feature=+crt-static");
+            }
+            if s == "false" {
+                cmd.arg("-C").arg("target-feature=-crt-static");
+            }
         }
 
         // Force all crates compiled by this compiler to (a) be unstable and (b)
@@ -234,6 +252,15 @@ fn main() {
         if env::var_os("RUSTC_FORCE_UNSTABLE").is_some() {
             cmd.arg("-Z").arg("force-unstable-if-unmarked");
         }
+    }
+
+    let color = match env::var("RUSTC_COLOR") {
+        Ok(s) => usize::from_str(&s).expect("RUSTC_COLOR should be an integer"),
+        Err(_) => 0,
+    };
+
+    if color != 0 {
+        cmd.arg("--color=always");
     }
 
     if verbose > 1 {

@@ -156,10 +156,10 @@ impl<'a, 'tcx> LanguageItemCollector<'a, 'tcx> {
         $( item_refs.insert($name, $variant as usize); )*
 
         LanguageItemCollector {
-            session: session,
-            hir_map: hir_map,
+            session,
+            hir_map,
             items: LanguageItems::new(),
-            item_refs: item_refs,
+            item_refs,
         }
     }
 
@@ -274,6 +274,7 @@ language_item_table! {
     SizedTraitLangItem,              "sized",                   sized_trait;
     UnsizeTraitLangItem,             "unsize",                  unsize_trait;
     CopyTraitLangItem,               "copy",                    copy_trait;
+    CloneTraitLangItem,              "clone",                   clone_trait;
     SyncTraitLangItem,               "sync",                    sync_trait;
     FreezeTraitLangItem,             "freeze",                  freeze_trait;
 

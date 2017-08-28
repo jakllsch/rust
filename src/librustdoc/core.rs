@@ -10,6 +10,7 @@
 
 use rustc_lint;
 use rustc_driver::{driver, target_features, abort_on_err};
+use rustc_driver::pretty::ReplaceBodyWithLoop;
 use rustc::dep_graph::DepGraph;
 use rustc::session::{self, config};
 use rustc::hir::def_id::DefId;
@@ -26,6 +27,7 @@ use rustc_metadata::cstore::CStore;
 
 use syntax::{ast, codemap};
 use syntax::feature_gate::UnstableFeatures;
+use syntax::fold::Folder;
 use errors;
 use errors::emitter::ColorConfig;
 
@@ -106,7 +108,8 @@ pub fn run_core(search_paths: SearchPaths,
                 input: Input,
                 triple: Option<String>,
                 maybe_sysroot: Option<PathBuf>,
-                allow_warnings: bool) -> (clean::Crate, RenderInfo)
+                allow_warnings: bool,
+                force_unstable_if_unmarked: bool) -> (clean::Crate, RenderInfo)
 {
     // Parse, resolve, and typecheck the given crate.
 
@@ -118,16 +121,20 @@ pub fn run_core(search_paths: SearchPaths,
     let warning_lint = lint::builtin::WARNINGS.name_lower();
 
     let sessopts = config::Options {
-        maybe_sysroot: maybe_sysroot,
-        search_paths: search_paths,
+        maybe_sysroot,
+        search_paths,
         crate_types: vec![config::CrateTypeRlib],
         lint_opts: if !allow_warnings { vec![(warning_lint, lint::Allow)] } else { vec![] },
         lint_cap: Some(lint::Allow),
-        externs: externs,
+        externs,
         target_triple: triple.unwrap_or(config::host_triple().to_string()),
         // Ensure that rustdoc works even if rustc is feature-staged
         unstable_features: UnstableFeatures::Allow,
         actually_rustdoc: true,
+        debugging_opts: config::DebuggingOptions {
+            force_unstable_if_unmarked,
+            ..config::basic_debugging_options()
+        },
         ..config::basic_options().clone()
     };
 
@@ -150,7 +157,10 @@ pub fn run_core(search_paths: SearchPaths,
     target_features::add_configuration(&mut cfg, &sess);
     sess.parse_sess.config = cfg;
 
-    let krate = panictry!(driver::phase_1_parse_input(&sess, &input));
+    let krate = panictry!(driver::phase_1_parse_input(&driver::CompileController::basic(),
+                                                      &sess,
+                                                      &input));
+    let krate = ReplaceBodyWithLoop::new().fold_crate(krate);
 
     let name = link::find_crate_name(Some(&sess), &krate.attrs, &input);
 
@@ -193,7 +203,7 @@ pub fn run_core(search_paths: SearchPaths,
         };
 
         let ctxt = DocContext {
-            tcx: tcx,
+            tcx,
             populated_all_crate_impls: Cell::new(false),
             access_levels: RefCell::new(access_levels),
             external_traits: Default::default(),

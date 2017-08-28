@@ -15,7 +15,7 @@
 //! functionality through a unit-struct, `Markdown`, which has an implementation
 //! of `fmt::Display`. Example usage:
 //!
-//! ```rust,ignore
+//! ```
 //! use rustdoc::html::markdown::Markdown;
 //!
 //! let s = "My *markdown* _text_";
@@ -32,7 +32,6 @@ use std::ascii::AsciiExt;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::default::Default;
-use std::ffi::CString;
 use std::fmt::{self, Write};
 use std::str;
 use syntax::feature_gate::UnstableFeatures;
@@ -191,8 +190,8 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'a, I> {
                     .map(|l| map_line(l).for_code())
                     .collect::<Vec<&str>>().join("\n");
                 let krate = krate.as_ref().map(|s| &**s);
-                let test = test::maketest(&test, krate, false,
-                                        &Default::default());
+                let test = test::make_test(&test, krate, false,
+                                           &Default::default());
                 let channel = if test.contains("#![feature(") {
                     "&amp;version=nightly"
                 } else {
@@ -242,7 +241,7 @@ impl<'a, 'b, I: Iterator<Item = Event<'a>>> HeadingLinks<'a, 'b, I> {
     fn new(iter: I, toc: Option<&'b mut TocBuilder>) -> Self {
         HeadingLinks {
             inner: iter,
-            toc: toc,
+            toc,
             buf: VecDeque::new(),
         }
     }
@@ -529,8 +528,8 @@ extern {
     fn hoedown_document_free(md: *mut hoedown_document);
 
     fn hoedown_buffer_new(unit: libc::size_t) -> *mut hoedown_buffer;
-    fn hoedown_buffer_puts(b: *mut hoedown_buffer, c: *const libc::c_char);
     fn hoedown_buffer_free(b: *mut hoedown_buffer);
+    fn hoedown_buffer_put(b: *mut hoedown_buffer, c: *const u8, len: libc::size_t);
 }
 
 impl hoedown_buffer {
@@ -585,8 +584,8 @@ pub fn render(w: &mut fmt::Formatter,
                         .map(|l| map_line(l).for_code())
                         .collect::<Vec<&str>>().join("\n");
                     let krate = krate.as_ref().map(|s| &**s);
-                    let test = test::maketest(&test, krate, false,
-                                              &Default::default());
+                    let test = test::make_test(&test, krate, false,
+                                               &Default::default());
                     let channel = if test.contains("#![feature(") {
                         "&amp;version=nightly"
                     } else {
@@ -620,8 +619,7 @@ pub fn render(w: &mut fmt::Formatter,
                                Some("rust-example-rendered"),
                                None,
                                playground_button.as_ref().map(String::as_str)));
-                let output = CString::new(s).unwrap();
-                hoedown_buffer_puts(ob, output.as_ptr());
+                hoedown_buffer_put(ob, s.as_ptr(), s.len());
             })
         }
     }
@@ -630,7 +628,7 @@ pub fn render(w: &mut fmt::Formatter,
                      level: libc::c_int, data: *const hoedown_renderer_data,
                      _: libc::size_t) {
         // hoedown does this, we may as well too
-        unsafe { hoedown_buffer_puts(ob, "\n\0".as_ptr() as *const _); }
+        unsafe { hoedown_buffer_put(ob, "\n".as_ptr(), 1); }
 
         // Extract the text provided
         let s = if text.is_null() {
@@ -681,8 +679,7 @@ pub fn render(w: &mut fmt::Formatter,
                            <a href='#{id}'>{sec}{}</a></h{lvl}>",
                            s, lvl = level, id = id, sec = sec);
 
-        let text = CString::new(text).unwrap();
-        unsafe { hoedown_buffer_puts(ob, text.as_ptr()) }
+        unsafe { hoedown_buffer_put(ob, text.as_ptr(), text.len()); }
     }
 
     extern fn codespan(
@@ -700,8 +697,9 @@ pub fn render(w: &mut fmt::Formatter,
         };
 
         let content = format!("<code>{}</code>", Escape(&content));
-        let element = CString::new(content).unwrap();
-        unsafe { hoedown_buffer_puts(ob, element.as_ptr()); }
+        unsafe {
+            hoedown_buffer_put(ob, content.as_ptr(), content.len());
+        }
         // Return anything except 0, which would mean "also print the code span verbatim".
         1
     }
@@ -769,7 +767,7 @@ pub fn old_find_testable_code(doc: &str, tests: &mut ::test::Collector, position
                                block_info.should_panic, block_info.no_run,
                                block_info.ignore, block_info.test_harness,
                                block_info.compile_fail, block_info.error_codes,
-                               line, filename);
+                               line, filename, block_info.allow_fail);
             } else {
                 tests.add_old_test(text, filename);
             }
@@ -859,7 +857,7 @@ pub fn find_testable_code(doc: &str, tests: &mut ::test::Collector, position: Sp
                                block_info.should_panic, block_info.no_run,
                                block_info.ignore, block_info.test_harness,
                                block_info.compile_fail, block_info.error_codes,
-                               line, filename);
+                               line, filename, block_info.allow_fail);
                 prev_offset = offset;
             }
             Event::Start(Tag::Header(level)) => {
@@ -889,6 +887,7 @@ struct LangString {
     test_harness: bool,
     compile_fail: bool,
     error_codes: Vec<String>,
+    allow_fail: bool,
 }
 
 impl LangString {
@@ -902,6 +901,7 @@ impl LangString {
             test_harness: false,
             compile_fail: false,
             error_codes: Vec::new(),
+            allow_fail: false,
         }
     }
 
@@ -930,6 +930,7 @@ impl LangString {
                 }
                 "no_run" => { data.no_run = true; seen_rust_tags = !seen_other_tags; }
                 "ignore" => { data.ignore = true; seen_rust_tags = !seen_other_tags; }
+                "allow_fail" => { data.allow_fail = true; seen_rust_tags = !seen_other_tags; }
                 "rust" => { data.rust = true; seen_rust_tags = true; }
                 "test_harness" => {
                     data.test_harness = true;
@@ -1118,35 +1119,41 @@ mod tests {
     fn test_lang_string_parse() {
         fn t(s: &str,
             should_panic: bool, no_run: bool, ignore: bool, rust: bool, test_harness: bool,
-            compile_fail: bool, error_codes: Vec<String>) {
+            compile_fail: bool, allow_fail: bool, error_codes: Vec<String>) {
             assert_eq!(LangString::parse(s), LangString {
-                should_panic: should_panic,
-                no_run: no_run,
-                ignore: ignore,
-                rust: rust,
-                test_harness: test_harness,
-                compile_fail: compile_fail,
-                error_codes: error_codes,
+                should_panic,
+                no_run,
+                ignore,
+                rust,
+                test_harness,
+                compile_fail,
+                error_codes,
                 original: s.to_owned(),
+                allow_fail,
             })
         }
 
+        fn v() -> Vec<String> {
+            Vec::new()
+        }
+
         // marker                | should_panic| no_run| ignore| rust | test_harness| compile_fail
-        //                       | error_codes
-        t("",                      false,        false,  false,  true,  false, false, Vec::new());
-        t("rust",                  false,        false,  false,  true,  false, false, Vec::new());
-        t("sh",                    false,        false,  false,  false, false, false, Vec::new());
-        t("ignore",                false,        false,  true,   true,  false, false, Vec::new());
-        t("should_panic",          true,         false,  false,  true,  false, false, Vec::new());
-        t("no_run",                false,        true,   false,  true,  false, false, Vec::new());
-        t("test_harness",          false,        false,  false,  true,  true,  false, Vec::new());
-        t("compile_fail",          false,        true,   false,  true,  false, true,  Vec::new());
-        t("{.no_run .example}",    false,        true,   false,  true,  false, false, Vec::new());
-        t("{.sh .should_panic}",   true,         false,  false,  false, false, false, Vec::new());
-        t("{.example .rust}",      false,        false,  false,  true,  false, false, Vec::new());
-        t("{.test_harness .rust}", false,        false,  false,  true,  true,  false, Vec::new());
-        t("text, no_run",          false,        true,   false,  false, false, false, Vec::new());
-        t("text,no_run",           false,        true,   false,  false, false, false, Vec::new());
+        //                       | allow_fail | error_codes
+        t("",                      false,        false,  false,  true,  false, false, false, v());
+        t("rust",                  false,        false,  false,  true,  false, false, false, v());
+        t("sh",                    false,        false,  false,  false, false, false, false, v());
+        t("ignore",                false,        false,  true,   true,  false, false, false, v());
+        t("should_panic",          true,         false,  false,  true,  false, false, false, v());
+        t("no_run",                false,        true,   false,  true,  false, false, false, v());
+        t("test_harness",          false,        false,  false,  true,  true,  false, false, v());
+        t("compile_fail",          false,        true,   false,  true,  false, true,  false, v());
+        t("allow_fail",            false,        false,  false,  true,  false, false, true,  v());
+        t("{.no_run .example}",    false,        true,   false,  true,  false, false, false, v());
+        t("{.sh .should_panic}",   true,         false,  false,  false, false, false, false, v());
+        t("{.example .rust}",      false,        false,  false,  true,  false, false, false, v());
+        t("{.test_harness .rust}", false,        false,  false,  true,  true,  false, false, v());
+        t("text, no_run",          false,        true,   false,  false, false, false, false, v());
+        t("text,no_run",           false,        true,   false,  false, false, false, false, v());
     }
 
     #[test]

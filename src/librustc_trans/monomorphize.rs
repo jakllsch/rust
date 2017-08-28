@@ -40,7 +40,7 @@ fn fn_once_adapter_instance<'a, 'tcx>(
     let self_ty = tcx.mk_closure_from_closure_substs(
         closure_did, substs);
 
-    let sig = tcx.closure_type(closure_did).subst(tcx, substs.substs);
+    let sig = tcx.fn_sig(closure_did).subst(tcx, substs.substs);
     let sig = tcx.erase_late_bound_regions_and_normalize(&sig);
     assert_eq!(sig.inputs().len(), 1);
     let substs = tcx.mk_substs([
@@ -143,6 +143,12 @@ fn resolve_associated_item<'a, 'tcx>(
                 substs: rcvr_substs
             }
         }
+        traits::VtableBuiltin(..) if Some(trait_id) == tcx.lang_items.clone_trait() => {
+            Instance {
+                def: ty::InstanceDef::CloneShim(def_id, trait_ref.self_ty()),
+                substs: rcvr_substs
+            }
+        }
         _ => {
             bug!("static call to invalid vtable: {:?}", vtbl)
         }
@@ -165,9 +171,11 @@ pub fn resolve<'a, 'tcx>(
     } else {
         let item_type = def_ty(scx, def_id, substs);
         let def = match item_type.sty {
-            ty::TyFnDef(_, _, f) if
-                f.abi() == Abi::RustIntrinsic ||
-                f.abi() == Abi::PlatformIntrinsic =>
+            ty::TyFnDef(..) if {
+                    let f = item_type.fn_sig(scx.tcx());
+                    f.abi() == Abi::RustIntrinsic ||
+                    f.abi() == Abi::PlatformIntrinsic
+                } =>
             {
                 debug!(" => intrinsic");
                 ty::InstanceDef::Intrinsic(def_id)

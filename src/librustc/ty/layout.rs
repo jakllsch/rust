@@ -285,11 +285,13 @@ impl Size {
 }
 
 /// Alignment of a type in bytes, both ABI-mandated and preferred.
-/// Since alignments are always powers of 2, we can pack both in one byte,
-/// giving each a nibble (4 bits) for a maximum alignment of 2<sup>15</sup> = 32768.
+/// Each field is a power of two, giving the alignment a maximum
+/// value of 2^(2^8 - 1), which is limited by LLVM to a i32, with
+/// a maximum capacity of 2^31 - 1 or 2147483647.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Align {
-    raw: u8
+    abi: u8,
+    pref: u8,
 }
 
 impl Align {
@@ -298,7 +300,7 @@ impl Align {
     }
 
     pub fn from_bytes(abi: u64, pref: u64) -> Result<Align, String> {
-        let pack = |align: u64| {
+        let log2 = |align: u64| {
             // Treat an alignment of 0 bytes like 1-byte alignment.
             if align == 0 {
                 return Ok(0);
@@ -312,7 +314,7 @@ impl Align {
             }
             if bytes != 1 {
                 Err(format!("`{}` is not a power of 2", align))
-            } else if pow > 0x0f {
+            } else if pow > 30 {
                 Err(format!("`{}` is too large", align))
             } else {
                 Ok(pow)
@@ -320,31 +322,30 @@ impl Align {
         };
 
         Ok(Align {
-            raw: pack(abi)? | (pack(pref)? << 4)
+            abi: log2(abi)?,
+            pref: log2(pref)?,
         })
     }
 
     pub fn abi(self) -> u64 {
-        1 << (self.raw & 0xf)
+        1 << self.abi
     }
 
     pub fn pref(self) -> u64 {
-        1 << (self.raw >> 4)
+        1 << self.pref
     }
 
     pub fn min(self, other: Align) -> Align {
-        let abi = cmp::min(self.raw & 0x0f, other.raw & 0x0f);
-        let pref = cmp::min(self.raw & 0xf0, other.raw & 0xf0);
         Align {
-            raw: abi | pref
+            abi: cmp::min(self.abi, other.abi),
+            pref: cmp::min(self.pref, other.pref),
         }
     }
 
     pub fn max(self, other: Align) -> Align {
-        let abi = cmp::max(self.raw & 0x0f, other.raw & 0x0f);
-        let pref = cmp::max(self.raw & 0xf0, other.raw & 0xf0);
         Align {
-            raw: abi | pref
+            abi: cmp::max(self.abi, other.abi),
+            pref: cmp::max(self.pref, other.pref),
         }
     }
 }
@@ -580,14 +581,14 @@ pub struct Struct {
     pub min_size: Size,
 }
 
-// Info required to optimize struct layout.
+/// Info required to optimize struct layout.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
 enum StructKind {
-    // A tuple, closure, or univariant which cannot be coerced to unsized.
+    /// A tuple, closure, or univariant which cannot be coerced to unsized.
     AlwaysSizedUnivariant,
-    // A univariant, the last field of which may be coerced to unsized.
+    /// A univariant, the last field of which may be coerced to unsized.
     MaybeUnsizedUnivariant,
-    // A univariant, but part of an enum.
+    /// A univariant, but part of an enum.
     EnumVariant,
 }
 
@@ -609,7 +610,7 @@ impl<'a, 'tcx> Struct {
         };
 
         let mut ret = Struct {
-            align: align,
+            align,
             primitive_align: align,
             packed: repr.packed(),
             sized: true,
@@ -907,13 +908,30 @@ pub struct Union {
 }
 
 impl<'a, 'tcx> Union {
-    fn new(dl: &TargetDataLayout, packed: bool) -> Union {
-        let align = if packed { dl.i8_align } else { dl.aggregate_align };
+    fn new(dl: &TargetDataLayout, repr: &ReprOptions) -> Union {
+        if repr.packed() && repr.align > 0 {
+            bug!("Union cannot be packed and aligned");
+        }
+
+        let primitive_align = if repr.packed() {
+            dl.i8_align
+        } else {
+            dl.aggregate_align
+        };
+
+        let align = if repr.align > 0 {
+            let repr_align = repr.align as u64;
+            debug!("Union::new repr_align: {:?}", repr_align);
+            primitive_align.max(Align::from_bytes(repr_align, repr_align).unwrap())
+        } else {
+            primitive_align
+        };
+
         Union {
-            align: align,
-            primitive_align: align,
+            align,
+            primitive_align,
             min_size: Size::from_bytes(0),
-            packed: packed,
+            packed: repr.packed(),
         }
     }
 
@@ -1002,7 +1020,7 @@ pub enum Layout {
     /// TyRawPtr or TyRef with a !Sized pointee.
     FatPointer {
         metadata: Primitive,
-        // If true, the pointer cannot be null.
+        /// If true, the pointer cannot be null.
         non_zero: bool
     },
 
@@ -1013,8 +1031,8 @@ pub enum Layout {
         discr: Integer,
         signed: bool,
         non_zero: bool,
-        // Inclusive discriminant range.
-        // If min > max, it represents min...u64::MAX followed by 0...max.
+        /// Inclusive discriminant range.
+        /// If min > max, it represents min...u64::MAX followed by 0...max.
         // FIXME(eddyb) always use the shortest range, e.g. by finding
         // the largest space between two consecutive discriminants and
         // taking everything else as the (shortest) discriminant range.
@@ -1025,7 +1043,7 @@ pub enum Layout {
     /// Single-case enums, and structs/tuples.
     Univariant {
         variant: Struct,
-        // If true, the structure is NonZero.
+        /// If true, the structure is NonZero.
         // FIXME(eddyb) use a newtype Layout kind for this.
         non_zero: bool
     },
@@ -1066,9 +1084,9 @@ pub enum Layout {
     StructWrappedNullablePointer {
         nndiscr: u64,
         nonnull: Struct,
-        // N.B. There is a 0 at the start, for LLVM GEP through a pointer.
+        /// N.B. There is a 0 at the start, for LLVM GEP through a pointer.
         discrfield: FieldPath,
-        // Like discrfield, but in source order. For debuginfo.
+        /// Like discrfield, but in source order. For debuginfo.
         discrfield_source: FieldPath
     }
 }
@@ -1169,8 +1187,8 @@ impl<'a, 'tcx> Layout {
                     sized: true,
                     align: element.align(dl),
                     primitive_align: element.primitive_align(dl),
-                    element_size: element_size,
-                    count: count
+                    element_size,
+                    count,
                 }
             }
             ty::TySlice(element) => {
@@ -1220,12 +1238,16 @@ impl<'a, 'tcx> Layout {
             }
 
             ty::TyTuple(tys, _) => {
-                // FIXME(camlorn): if we ever allow unsized tuples, this needs to be checked.
-                // See the univariant case below to learn how.
+                let kind = if tys.len() == 0 {
+                    StructKind::AlwaysSizedUnivariant
+                } else {
+                    StructKind::MaybeUnsizedUnivariant
+                };
+
                 let st = Struct::new(dl,
                     &tys.iter().map(|ty| ty.layout(tcx, param_env))
                       .collect::<Result<Vec<_>, _>>()?,
-                    &ReprOptions::default(), StructKind::AlwaysSizedUnivariant, ty)?;
+                    &ReprOptions::default(), kind, ty)?;
                 Univariant { variant: st, non_zero: false }
             }
 
@@ -1276,9 +1298,9 @@ impl<'a, 'tcx> Layout {
                     // grok.
                     let (discr, signed) = Integer::repr_discr(tcx, ty, &def.repr, min, max);
                     return success(CEnum {
-                        discr: discr,
-                        signed: signed,
-                        non_zero: non_zero,
+                        discr,
+                        signed,
+                        non_zero,
                         // FIXME: should be u128?
                         min: min as u64,
                         max: max as u64
@@ -1306,7 +1328,7 @@ impl<'a, 'tcx> Layout {
                         field.ty(tcx, substs).layout(tcx, param_env)
                     }).collect::<Result<Vec<_>, _>>()?;
                     let layout = if def.is_union() {
-                        let mut un = Union::new(dl, def.repr.packed());
+                        let mut un = Union::new(dl, &def.repr);
                         un.extend(dl, fields.iter().map(|&f| Ok(f)), ty)?;
                         UntaggedUnion { variants: un }
                     } else {
@@ -1360,7 +1382,7 @@ impl<'a, 'tcx> Layout {
                             };
                             return success(RawNullablePointer {
                                 nndiscr: discr as u64,
-                                value: value,
+                                value,
                             });
                         }
 
@@ -1487,10 +1509,10 @@ impl<'a, 'tcx> Layout {
 
                 General {
                     discr: ity,
-                    variants: variants,
-                    size: size,
-                    align: align,
-                    primitive_align: primitive_align
+                    variants,
+                    size,
+                    align,
+                    primitive_align,
                 }
             }
 
@@ -1922,11 +1944,11 @@ pub enum SizeSkeleton<'tcx> {
 
     /// A potentially-fat pointer.
     Pointer {
-        // If true, this pointer is never null.
+        /// If true, this pointer is never null.
         non_zero: bool,
-        // The type which determines the unsized metadata, if any,
-        // of this pointer. Either a type parameter or a projection
-        // depending on one, with regions erased.
+        /// The type which determines the unsized metadata, if any,
+        /// of this pointer. Either a type parameter or a projection
+        /// depending on one, with regions erased.
         tail: Ty<'tcx>
     }
 }
@@ -1953,7 +1975,7 @@ impl<'a, 'tcx> SizeSkeleton<'tcx> {
                 ty::TyParam(_) | ty::TyProjection(_) => {
                     assert!(tail.has_param_types() || tail.has_self_ty());
                     Ok(SizeSkeleton::Pointer {
-                        non_zero: non_zero,
+                        non_zero,
                         tail: tcx.erase_regions(&tail)
                     })
                 }
@@ -2012,7 +2034,7 @@ impl<'a, 'tcx> SizeSkeleton<'tcx> {
                         return Ok(SizeSkeleton::Pointer {
                             non_zero: non_zero ||
                                 Some(def.did) == tcx.lang_items.non_zero(),
-                            tail: tail
+                            tail,
                         });
                     } else {
                         return Err(err);
@@ -2026,7 +2048,7 @@ impl<'a, 'tcx> SizeSkeleton<'tcx> {
                     (None, Some(SizeSkeleton::Pointer { non_zero: true, tail })) => {
                         Ok(SizeSkeleton::Pointer {
                             non_zero: false,
-                            tail: tail
+                            tail,
                         })
                     }
                     _ => Err(err)
@@ -2111,7 +2133,7 @@ impl<'a, 'tcx> LayoutTyper<'tcx> for LayoutCx<'a, 'tcx> {
         let ty = self.normalize_projections(ty);
 
         Ok(TyLayout {
-            ty: ty,
+            ty,
             layout: ty.layout(self.tcx, self.param_env)?,
             variant_index: None
         })
@@ -2175,8 +2197,8 @@ impl<'a, 'tcx> TyLayout<'tcx> {
         let tcx = cx.tcx();
 
         let ptr_field_type = |pointee: Ty<'tcx>| {
+            assert!(i < 2);
             let slice = |element: Ty<'tcx>| {
-                assert!(i < 2);
                 if i == 0 {
                     tcx.mk_mut_ptr(element)
                 } else {

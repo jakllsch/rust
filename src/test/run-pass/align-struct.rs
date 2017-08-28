@@ -9,11 +9,13 @@
 // except according to those terms.
 #![feature(attr_literals)]
 #![feature(repr_align)]
+#![feature(box_syntax)]
 
 use std::mem;
 
 // Raising alignment
 #[repr(align(16))]
+#[derive(Clone, Copy, Debug)]
 struct Align16(i32);
 
 // Lowering has no effect
@@ -58,6 +60,18 @@ struct Packed(i32);
 struct AlignContainsPacked {
     a: Packed,
     b: Packed,
+}
+
+// The align limit was originally smaller (2^15).
+// Check that it works with big numbers.
+#[repr(align(0x10000))]
+struct AlignLarge {
+    stuff: [u8; 0x10000],
+}
+
+union UnionContainsAlign {
+    a: Align16,
+    b: f32
 }
 
 impl Align16 {
@@ -168,6 +182,18 @@ pub fn main() {
     }
     assert!(is_aligned_to(&e, 16));
 
+    // check union alignment
+    assert_eq!(mem::align_of::<UnionContainsAlign>(), 16);
+    assert_eq!(mem::size_of::<UnionContainsAlign>(), 16);
+    let u = UnionContainsAlign { a: Align16(10) };
+    unsafe {
+        assert_eq!(mem::align_of_val(&u.a), 16);
+        assert_eq!(mem::size_of_val(&u.a), 16);
+        assert_eq!(u.a.0, 10);
+        let UnionContainsAlign { a } = u;
+        assert_eq!(a.0, 10);
+    }
+
     // arrays of aligned elements should also be aligned
     assert_eq!(mem::align_of::<[Align16;2]>(), 16);
     assert_eq!(mem::size_of::<[Align16;2]>(), 32);
@@ -193,4 +219,15 @@ pub fn main() {
     assert_eq!(mem::align_of_val(&a.b), 1);
     assert_eq!(mem::size_of_val(&a), 16);
     assert!(is_aligned_to(&a, 16));
+
+    let mut large = box AlignLarge {
+        stuff: [0; 0x10000],
+    };
+    large.stuff[0] = 132;
+    *large.stuff.last_mut().unwrap() = 102;
+    assert_eq!(large.stuff[0], 132);
+    assert_eq!(large.stuff.last(), Some(&102));
+    assert_eq!(mem::align_of::<AlignLarge>(), 0x10000);
+    assert_eq!(mem::align_of_val(&*large), 0x10000);
+    assert!(is_aligned_to(&*large, 0x10000));
 }

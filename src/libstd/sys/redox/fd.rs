@@ -14,7 +14,6 @@ use io::{self, Read};
 use mem;
 use sys::{cvt, syscall};
 use sys_common::AsInner;
-use sys_common::io::read_to_end_uninitialized;
 
 pub struct FileDesc {
     fd: usize,
@@ -58,9 +57,9 @@ impl FileDesc {
     }
 
     pub fn set_cloexec(&self) -> io::Result<()> {
-        let mut flags = cvt(syscall::fcntl(self.fd, syscall::F_GETFL, 0))?;
+        let mut flags = cvt(syscall::fcntl(self.fd, syscall::F_GETFD, 0))?;
         flags |= syscall::O_CLOEXEC;
-        cvt(syscall::fcntl(self.fd, syscall::F_SETFL, flags)).and(Ok(()))
+        cvt(syscall::fcntl(self.fd, syscall::F_SETFD, flags)).and(Ok(()))
     }
 
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
@@ -77,10 +76,6 @@ impl FileDesc {
 impl<'a> Read for &'a FileDesc {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         (**self).read(buf)
-    }
-
-    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        unsafe { read_to_end_uninitialized(self, buf) }
     }
 }
 

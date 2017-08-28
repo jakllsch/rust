@@ -23,7 +23,9 @@ use getopts::Options;
 use Build;
 use config::Config;
 use metadata;
-use step;
+use builder::Builder;
+
+use cache::{Interned, INTERNER};
 
 /// Deserialized version of all flags for this compile.
 pub struct Flags {
@@ -31,24 +33,15 @@ pub struct Flags {
     pub on_fail: Option<String>,
     pub stage: Option<u32>,
     pub keep_stage: Option<u32>,
-    pub build: String,
-    pub host: Vec<String>,
-    pub target: Vec<String>,
+    pub build: Option<Interned<String>>,
+
+    pub host: Vec<Interned<String>>,
+    pub target: Vec<Interned<String>>,
     pub config: Option<PathBuf>,
-    pub src: Option<PathBuf>,
+    pub src: PathBuf,
     pub jobs: Option<u32>,
     pub cmd: Subcommand,
     pub incremental: bool,
-}
-
-impl Flags {
-    pub fn verbose(&self) -> bool {
-        self.verbose > 0
-    }
-
-    pub fn very_verbose(&self) -> bool {
-        self.verbose > 1
-    }
 }
 
 pub enum Subcommand {
@@ -61,7 +54,7 @@ pub enum Subcommand {
     Test {
         paths: Vec<PathBuf>,
         test_args: Vec<String>,
-        no_fail_fast: bool,
+        fail_fast: bool,
     },
     Bench {
         paths: Vec<PathBuf>,
@@ -74,6 +67,14 @@ pub enum Subcommand {
     Install {
         paths: Vec<PathBuf>,
     },
+}
+
+impl Default for Subcommand {
+    fn default() -> Subcommand {
+        Subcommand::Build {
+            paths: vec![PathBuf::from("nowhere")],
+        }
+    }
 }
 
 impl Flags {
@@ -122,16 +123,15 @@ To learn more about a subcommand, run `./x.py <subcommand> -h`");
         // the subcommand. Therefore we must manually identify the subcommand first, so that we can
         // complete the definition of the options.  Then we can use the getopt::Matches object from
         // there on out.
-        let mut possible_subcommands = args.iter().collect::<Vec<_>>();
-        possible_subcommands.retain(|&s|
-                                           (s == "build")
-                                        || (s == "test")
-                                        || (s == "bench")
-                                        || (s == "doc")
-                                        || (s == "clean")
-                                        || (s == "dist")
-                                        || (s == "install"));
-        let subcommand = match possible_subcommands.first() {
+        let subcommand = args.iter().find(|&s|
+            (s == "build")
+            || (s == "test")
+            || (s == "bench")
+            || (s == "doc")
+            || (s == "clean")
+            || (s == "dist")
+            || (s == "install"));
+        let subcommand = match subcommand {
             Some(s) => s,
             None => {
                 // No subcommand -- show the general usage and subcommand help
@@ -164,7 +164,7 @@ To learn more about a subcommand, run `./x.py <subcommand> -h`");
         let mut pass_sanity_check = true;
         match matches.free.get(0) {
             Some(check_subcommand) => {
-                if &check_subcommand != subcommand {
+                if check_subcommand != subcommand {
                     pass_sanity_check = false;
                 }
             },
@@ -252,15 +252,12 @@ Arguments:
 
         // All subcommands can have an optional "Available paths" section
         if matches.opt_present("verbose") {
-            let flags = Flags::parse(&["build".to_string()]);
-            let mut config = Config::parse(&flags.build, cfg_file.clone());
-            config.build = flags.build.clone();
-            let mut build = Build::new(flags, config);
+            let config = Config::parse(&["build".to_string()]);
+            let mut build = Build::new(config);
             metadata::build(&mut build);
-            let maybe_rules_help = step::build_rules(&build).get_help(subcommand);
-            if maybe_rules_help.is_some() {
-                extra_help.push_str(maybe_rules_help.unwrap().as_str());
-            }
+
+            let maybe_rules_help = Builder::get_help(&build, subcommand.as_str());
+            extra_help.push_str(maybe_rules_help.unwrap_or_default().as_str());
         } else {
             extra_help.push_str(format!("Run `./x.py {} -h -v` to see a list of available paths.",
                      subcommand).as_str());
@@ -277,14 +274,14 @@ Arguments:
             }
             "test" => {
                 Subcommand::Test {
-                    paths: paths,
+                    paths,
                     test_args: matches.opt_strs("test-args"),
-                    no_fail_fast: matches.opt_present("no-fail-fast"),
+                    fail_fast: !matches.opt_present("no-fail-fast"),
                 }
             }
             "bench" => {
                 Subcommand::Bench {
-                    paths: paths,
+                    paths,
                     test_args: matches.opt_strs("test-args"),
                 }
             }
@@ -300,12 +297,12 @@ Arguments:
             }
             "dist" => {
                 Subcommand::Dist {
-                    paths: paths,
+                    paths,
                 }
             }
             "install" => {
                 Subcommand::Install {
-                    paths: paths,
+                    paths,
                 }
             }
             _ => {
@@ -316,26 +313,29 @@ Arguments:
 
         let mut stage = matches.opt_str("stage").map(|j| j.parse().unwrap());
 
-        if matches.opt_present("incremental") {
-            if stage.is_none() {
-                stage = Some(1);
-            }
+        if matches.opt_present("incremental") && stage.is_none() {
+            stage = Some(1);
         }
+
+        let cwd = t!(env::current_dir());
+        let src = matches.opt_str("src").map(PathBuf::from)
+            .or_else(|| env::var_os("SRC").map(PathBuf::from))
+            .unwrap_or(cwd);
 
         Flags {
             verbose: matches.opt_count("verbose"),
-            stage: stage,
+            stage,
             on_fail: matches.opt_str("on-fail"),
             keep_stage: matches.opt_str("keep-stage").map(|j| j.parse().unwrap()),
-            build: matches.opt_str("build").unwrap_or_else(|| {
-                env::var("BUILD").unwrap()
-            }),
-            host: split(matches.opt_strs("host")),
-            target: split(matches.opt_strs("target")),
+            build: matches.opt_str("build").map(|s| INTERNER.intern_string(s)),
+            host: split(matches.opt_strs("host"))
+                .into_iter().map(|x| INTERNER.intern_string(x)).collect::<Vec<_>>(),
+            target: split(matches.opt_strs("target"))
+                .into_iter().map(|x| INTERNER.intern_string(x)).collect::<Vec<_>>(),
             config: cfg_file,
-            src: matches.opt_str("src").map(PathBuf::from),
+            src,
             jobs: matches.opt_str("jobs").map(|j| j.parse().unwrap()),
-            cmd: cmd,
+            cmd,
             incremental: matches.opt_present("incremental"),
         }
     }
@@ -352,9 +352,9 @@ impl Subcommand {
         }
     }
 
-    pub fn no_fail_fast(&self) -> bool {
+    pub fn fail_fast(&self) -> bool {
         match *self {
-            Subcommand::Test { no_fail_fast, .. } => no_fail_fast,
+            Subcommand::Test { fail_fast, .. } => fail_fast,
             _ => false,
         }
     }

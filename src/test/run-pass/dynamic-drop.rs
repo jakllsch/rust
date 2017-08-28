@@ -106,6 +106,18 @@ fn struct_dynamic_drop(a: &Allocator, c0: bool, c1: bool, c: bool) {
     }
 }
 
+fn field_assignment(a: &Allocator, c0: bool) {
+    let mut x = (TwoPtrs(a.alloc(), a.alloc()), a.alloc());
+
+    x.1 = a.alloc();
+    x.1 = a.alloc();
+
+    let f = (x.0).0;
+    if c0 {
+        (x.0).0 = f;
+    }
+}
+
 fn assignment2(a: &Allocator, c0: bool, c1: bool) {
     let mut _v = a.alloc();
     let mut _w = a.alloc();
@@ -147,6 +159,11 @@ fn array_simple(a: &Allocator) {
 
 fn vec_simple(a: &Allocator) {
     let _x = vec![a.alloc(), a.alloc(), a.alloc(), a.alloc()];
+}
+
+#[allow(unreachable_code)]
+fn vec_unreachable(a: &Allocator) {
+    let _x = vec![a.alloc(), a.alloc(), a.alloc(), return];
 }
 
 fn run_test<F>(mut f: F)
@@ -197,6 +214,7 @@ fn main() {
 
     run_test(|a| array_simple(a));
     run_test(|a| vec_simple(a));
+    run_test(|a| vec_unreachable(a));
 
     run_test(|a| struct_dynamic_drop(a, false, false, false));
     run_test(|a| struct_dynamic_drop(a, false, false, true));
@@ -206,6 +224,9 @@ fn main() {
     run_test(|a| struct_dynamic_drop(a, true, false, true));
     run_test(|a| struct_dynamic_drop(a, true, true, false));
     run_test(|a| struct_dynamic_drop(a, true, true, true));
+
+    run_test(|a| field_assignment(a, false));
+    run_test(|a| field_assignment(a, true));
 
     run_test_nopanic(|a| union1(a));
 }

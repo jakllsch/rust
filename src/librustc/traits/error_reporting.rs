@@ -45,7 +45,8 @@ use syntax_pos::{DUMMY_SP, Span};
 
 impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     pub fn report_fulfillment_errors(&self,
-                                     errors: &Vec<FulfillmentError<'tcx>>) {
+                                     errors: &Vec<FulfillmentError<'tcx>>,
+                                     body_id: Option<hir::BodyId>) {
         #[derive(Debug)]
         struct ErrorDescriptor<'tcx> {
             predicate: ty::Predicate<'tcx>,
@@ -105,13 +106,13 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
 
         for (error, suppressed) in errors.iter().zip(is_suppressed) {
             if !suppressed {
-                self.report_fulfillment_error(error);
+                self.report_fulfillment_error(error, body_id);
             }
         }
     }
 
-    // returns if `cond` not occuring implies that `error` does not occur - i.e. that
-    // `error` occuring implies that `cond` occurs.
+    // returns if `cond` not occurring implies that `error` does not occur - i.e. that
+    // `error` occurring implies that `cond` occurs.
     fn error_implies(&self,
                      cond: &ty::Predicate<'tcx>,
                      error: &ty::Predicate<'tcx>)
@@ -148,7 +149,8 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         false
     }
 
-    fn report_fulfillment_error(&self, error: &FulfillmentError<'tcx>) {
+    fn report_fulfillment_error(&self, error: &FulfillmentError<'tcx>,
+                                body_id: Option<hir::BodyId>) {
         debug!("report_fulfillment_errors({:?})", error);
         match error.code {
             FulfillmentErrorCode::CodeSelectionError(ref e) => {
@@ -158,7 +160,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                 self.report_projection_error(&error.obligation, e);
             }
             FulfillmentErrorCode::CodeAmbiguity => {
-                self.maybe_report_ambiguity(&error.obligation);
+                self.maybe_report_ambiguity(&error.obligation, body_id);
             }
             FulfillmentErrorCode::CodeSubtypeError(ref expected_found, ref err) => {
                 self.report_mismatched_types(&error.obligation.cause,
@@ -276,8 +278,8 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         let mut self_match_impls = vec![];
         let mut fuzzy_match_impls = vec![];
 
-        self.tcx.trait_def(trait_ref.def_id)
-            .for_each_relevant_impl(self.tcx, trait_self_ty, |def_id| {
+        self.tcx.for_each_relevant_impl(
+            trait_ref.def_id, trait_self_ty, |def_id| {
                 let impl_substs = self.fresh_substs_for_item(obligation.cause.span, def_id);
                 let impl_trait_ref = tcx
                     .impl_trait_ref(def_id)
@@ -328,6 +330,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             .filter(|a| a.check_name("rustc_on_unimplemented"))
             .next()
         {
+            let name = self.tcx.item_name(def_id).as_str();
             let err_sp = item.span.substitute_dummy(span);
             let trait_str = self.tcx.item_path_str(trait_ref.def_id);
             if let Some(istring) = item.value_str() {
@@ -345,6 +348,9 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                         Piece::NextArgument(a) => match a.position {
                             Position::ArgumentNamed(s) => match generic_map.get(s) {
                                 Some(val) => Some(val),
+                                None if s == name => {
+                                    Some(&trait_str)
+                                }
                                 None => {
                                     span_err!(self.tcx.sess, err_sp, E0272,
                                               "the #[rustc_on_unimplemented] attribute on trait \
@@ -390,10 +396,9 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                                               trait_ref.skip_binder().self_ty(),
                                               true);
         let mut impl_candidates = Vec::new();
-        let trait_def = self.tcx.trait_def(trait_ref.def_id());
 
         match simp {
-            Some(simp) => trait_def.for_each_impl(self.tcx, |def_id| {
+            Some(simp) => self.tcx.for_each_impl(trait_ref.def_id(), |def_id| {
                 let imp = self.tcx.impl_trait_ref(def_id).unwrap();
                 let imp_simp = fast_reject::simplify_type(self.tcx,
                                                           imp.self_ty(),
@@ -405,7 +410,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                 }
                 impl_candidates.push(imp);
             }),
-            None => trait_def.for_each_impl(self.tcx, |def_id| {
+            None => self.tcx.for_each_impl(trait_ref.def_id(), |def_id| {
                 impl_candidates.push(
                     self.tcx.impl_trait_ref(def_id).unwrap());
             })
@@ -494,11 +499,21 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         // weird effect -- the diagnostic is reported as a lint, and
         // the builder which is returned is marked as canceled.
 
-        let mut err =
-            struct_span_err!(self.tcx.sess,
-                             error_span,
-                             E0276,
-                             "impl has stricter requirements than trait");
+        let msg = "impl has stricter requirements than trait";
+        let mut err = match lint_id {
+            Some(node_id) => {
+                self.tcx.struct_span_lint_node(EXTRA_REQUIREMENT_IN_IMPL,
+                                               node_id,
+                                               error_span,
+                                               msg)
+            }
+            None => {
+                struct_span_err!(self.tcx.sess,
+                                 error_span,
+                                 E0276,
+                                 "{}", msg)
+            }
+        };
 
         if let Some(trait_item_span) = self.tcx.hir.span_if_local(trait_item_def_id) {
             let span = self.tcx.sess.codemap().def_span(trait_item_span);
@@ -508,13 +523,6 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         err.span_label(
             error_span,
             format!("impl has extra requirement {}", requirement));
-
-        if let Some(node_id) = lint_id {
-            self.tcx.sess.add_lint_diagnostic(EXTRA_REQUIREMENT_IN_IMPL,
-                                              node_id,
-                                              (*err).clone());
-            err.cancel();
-        }
 
         err
     }
@@ -674,7 +682,9 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                         // Additional context information explaining why the closure only implements
                         // a particular trait.
                         if let Some(tables) = self.in_progress_tables {
-                            match tables.borrow().closure_kinds.get(&node_id) {
+                            let tables = tables.borrow();
+                            let closure_hir_id = self.tcx.hir.node_to_hir_id(node_id);
+                            match tables.closure_kinds().get(closure_hir_id) {
                                 Some(&(ty::ClosureKind::FnOnce, Some((span, name)))) => {
                                     err.span_note(span, &format!(
                                         "closure is `FnOnce` because it moves the \
@@ -869,14 +879,14 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 }
 
 impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
-    fn maybe_report_ambiguity(&self, obligation: &PredicateObligation<'tcx>) {
+    fn maybe_report_ambiguity(&self, obligation: &PredicateObligation<'tcx>,
+                              body_id: Option<hir::BodyId>) {
         // Unable to successfully determine, probably means
         // insufficient type information, but could mean
         // ambiguous impls. The latter *ought* to be a
         // coherence violation, so we don't report it here.
 
         let predicate = self.resolve_type_vars_if_possible(&obligation.predicate);
-        let body_id = hir::BodyId { node_id: obligation.cause.body_id };
         let span = obligation.cause.span;
 
         debug!("maybe_report_ambiguity(predicate={:?}, obligation={:?})",
@@ -953,7 +963,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                     let &SubtypePredicate { a_is_expected: _, a, b } = data.skip_binder();
                     // both must be type variables, or the other would've been instantiated
                     assert!(a.is_ty_var() && b.is_ty_var());
-                    self.need_type_info(hir::BodyId { node_id: obligation.cause.body_id },
+                    self.need_type_info(body_id,
                                         obligation.cause.span,
                                         a);
                 }
@@ -1058,7 +1068,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                 err.note("slice and array elements must have `Sized` type");
             }
             ObligationCauseCode::TupleElem => {
-                err.note("tuple elements must have `Sized` type");
+                err.note("only the last element of a tuple may have a dynamically sized type");
             }
             ObligationCauseCode::ProjectionWf(data) => {
                 err.note(&format!("required so that the projection `{}` is well-formed",
@@ -1088,18 +1098,32 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             ObligationCauseCode::VariableType(_) => {
                 err.note("all local variables must have a statically known size");
             }
-            ObligationCauseCode::ReturnType => {
+            ObligationCauseCode::SizedReturnType => {
                 err.note("the return type of a function must have a \
                           statically known size");
             }
             ObligationCauseCode::AssignmentLhsSized => {
                 err.note("the left-hand-side of an assignment must have a statically known size");
             }
+            ObligationCauseCode::TupleInitializerSized => {
+                err.note("tuples must have a statically known size to be initialized");
+            }
             ObligationCauseCode::StructInitializerSized => {
                 err.note("structs must have a statically known size to be initialized");
             }
-            ObligationCauseCode::FieldSized => {
-                err.note("only the last field of a struct may have a dynamically sized type");
+            ObligationCauseCode::FieldSized(ref item) => {
+                match *item {
+                    AdtKind::Struct => {
+                        err.note("only the last field of a struct may have a dynamically \
+                                  sized type");
+                    }
+                    AdtKind::Union => {
+                        err.note("no field of a union may have a dynamically sized type");
+                    }
+                    AdtKind::Enum => {
+                        err.note("no field of an enum variant may have a dynamically sized type");
+                    }
+                }
             }
             ObligationCauseCode::ConstSized => {
                 err.note("constant expressions must have a statically known size");
@@ -1133,14 +1157,15 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                               but not on the corresponding trait method",
                              predicate));
             }
+            ObligationCauseCode::ReturnType(_) |
+            ObligationCauseCode::BlockTailExpression(_) => (),
         }
     }
 
     fn suggest_new_overflow_limit(&self, err: &mut DiagnosticBuilder) {
         let current_limit = self.tcx.sess.recursion_limit.get();
         let suggested_limit = current_limit * 2;
-        err.help(&format!(
-                          "consider adding a `#![recursion_limit=\"{}\"]` attribute to your crate",
+        err.help(&format!("consider adding a `#![recursion_limit=\"{}\"]` attribute to your crate",
                           suggested_limit));
     }
 }

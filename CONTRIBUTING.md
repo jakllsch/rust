@@ -99,7 +99,7 @@ Before you can start building the compiler you need to configure the build for
 your system. In most cases, that will just mean using the defaults provided
 for Rust.
 
-To change configuration, you must copy the file `src/bootstrap/config.toml.example`
+To change configuration, you must copy the file `config.toml.example`
 to `config.toml` in the directory from which you will be running the build, and
 change the settings provided.
 
@@ -232,14 +232,18 @@ Some common invocations of `x.py` are:
   guidelines as of yet, but basic rules like 4 spaces for indentation and no
   more than 99 characters in a single line should be kept in mind when writing
   code.
+- `rustup toolchain link <name> build/<host-triple>/<stage>` - Use the custom compiler build via [rustup](https://github.com/rust-lang-nursery/rustup.rs#working-with-custom-toolchains-and-local-builds).
 
 ## Pull Requests
 
 Pull requests are the primary mechanism we use to change Rust. GitHub itself
-has some [great documentation][pull-requests] on using the Pull Request
-feature. We use the 'fork and pull' model described there.
+has some [great documentation][pull-requests] on using the Pull Request feature.
+We use the "fork and pull" model [described here][development-models], where
+contributors push changes to their personal fork and create pull requests to
+bring those changes into the source repository.
 
-[pull-requests]: https://help.github.com/articles/using-pull-requests/
+[pull-requests]: https://help.github.com/articles/about-pull-requests/
+[development-models]: https://help.github.com/articles/about-collaborative-development-models/
 
 Please make pull requests against the `master` branch.
 
@@ -288,7 +292,7 @@ been approved. The PR then enters the [merge queue][merge-queue], where @bors
 will run all the tests on every platform we support. If it all works out,
 @bors will merge your code into `master` and close the pull request.
 
-[merge-queue]: https://buildbot.rust-lang.org/homu/queue/rust
+[merge-queue]: https://buildbot2.rust-lang.org/homu/queue/rust
 
 Speaking of tests, Rust has a comprehensive test suite. More information about
 it can be found
@@ -411,4 +415,4 @@ are:
 [tlgba]: http://tomlee.co/2014/04/a-more-detailed-tour-of-the-rust-compiler/
 [ro]: http://www.rustaceans.org/
 [rctd]: ./src/test/COMPILER_TESTS.md
-[cheatsheet]: https://buildbot.rust-lang.org/homu/
+[cheatsheet]: https://buildbot2.rust-lang.org/homu/

@@ -36,7 +36,7 @@ use rustc::ty::{self, Ty};
 use rustc::traits::{self, Reveal};
 use rustc::hir::map as hir_map;
 use util::nodemap::NodeSet;
-use lint::{Level, LateContext, LintContext, LintArray};
+use lint::{LateContext, LintContext, LintArray};
 use lint::{LintPass, LateLintPass, EarlyLintPass, EarlyContext};
 
 use std::collections::HashSet;
@@ -139,7 +139,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for BoxPointers {
     }
 
     fn check_expr(&mut self, cx: &LateContext, e: &hir::Expr) {
-        let ty = cx.tables.node_id_to_type(e.id);
+        let ty = cx.tables.node_id_to_type(e.hir_id);
         self.check_heap_type(cx, e.span, ty);
     }
 }
@@ -195,12 +195,23 @@ impl LintPass for UnsafeCode {
     }
 }
 
+impl UnsafeCode {
+    fn report_unsafe(&self, cx: &LateContext, span: Span, desc: &'static str) {
+        // This comes from a macro that has #[allow_internal_unsafe].
+        if span.allows_unsafe() {
+            return;
+        }
+
+        cx.span_lint(UNSAFE_CODE, span, desc);
+    }
+}
+
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnsafeCode {
     fn check_expr(&mut self, cx: &LateContext, e: &hir::Expr) {
         if let hir::ExprBlock(ref blk) = e.node {
             // Don't warn about generated blocks, that'll just pollute the output.
             if blk.rules == hir::UnsafeBlock(hir::UserProvided) {
-                cx.span_lint(UNSAFE_CODE, blk.span, "usage of an `unsafe` block");
+                self.report_unsafe(cx, blk.span, "usage of an `unsafe` block");
             }
         }
     }
@@ -208,11 +219,11 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnsafeCode {
     fn check_item(&mut self, cx: &LateContext, it: &hir::Item) {
         match it.node {
             hir::ItemTrait(hir::Unsafety::Unsafe, ..) => {
-                cx.span_lint(UNSAFE_CODE, it.span, "declaration of an `unsafe` trait")
+                self.report_unsafe(cx, it.span, "declaration of an `unsafe` trait")
             }
 
             hir::ItemImpl(hir::Unsafety::Unsafe, ..) => {
-                cx.span_lint(UNSAFE_CODE, it.span, "implementation of an `unsafe` trait")
+                self.report_unsafe(cx, it.span, "implementation of an `unsafe` trait")
             }
 
             _ => return,
@@ -228,12 +239,12 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnsafeCode {
                 _: ast::NodeId) {
         match fk {
             FnKind::ItemFn(_, _, hir::Unsafety::Unsafe, ..) => {
-                cx.span_lint(UNSAFE_CODE, span, "declaration of an `unsafe` function")
+                self.report_unsafe(cx, span, "declaration of an `unsafe` function")
             }
 
             FnKind::Method(_, sig, ..) => {
                 if sig.unsafety == hir::Unsafety::Unsafe {
-                    cx.span_lint(UNSAFE_CODE, span, "implementation of an `unsafe` method")
+                    self.report_unsafe(cx, span, "implementation of an `unsafe` method")
                 }
             }
 
@@ -244,9 +255,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnsafeCode {
     fn check_trait_item(&mut self, cx: &LateContext, item: &hir::TraitItem) {
         if let hir::TraitItemKind::Method(ref sig, hir::TraitMethod::Required(_)) = item.node {
             if sig.unsafety == hir::Unsafety::Unsafe {
-                cx.span_lint(UNSAFE_CODE,
-                             item.span,
-                             "declaration of an `unsafe` method")
+                self.report_unsafe(cx, item.span, "declaration of an `unsafe` method")
             }
         }
     }
@@ -542,9 +551,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDebugImplementations {
         };
 
         if self.impling_types.is_none() {
-            let debug_def = cx.tcx.trait_def(debug);
             let mut impls = NodeSet();
-            debug_def.for_each_impl(cx.tcx, |d| {
+            cx.tcx.for_each_impl(debug, |d| {
                 if let Some(ty_def) = cx.tcx.type_of(d).ty_to_def_id() {
                     if let Some(node_id) = cx.tcx.hir.as_local_node_id(ty_def) {
                         impls.insert(node_id);
@@ -684,13 +692,9 @@ fn fl_lit_check_expr(cx: &EarlyContext, expr: &ast::Expr) {
         // These may occur in patterns
         // and can maybe contain float literals
         ExprKind::Unary(_, ref f) => fl_lit_check_expr(cx, f),
-        // These may occur in patterns
-        // and can't contain float literals
-        ExprKind::Path(..) => (),
-        // If something unhandled is encountered, we need to expand the
-        // search or ignore more ExprKinds.
-        _ => span_bug!(expr.span, "Unhandled expression {:?} in float lit pattern lint",
-                       expr.node),
+        // Other kinds of exprs can't occur in patterns so we don't have to check them
+        // (ast_validation will emit an error if they occur)
+        _ => (),
     }
 }
 
@@ -723,6 +727,46 @@ impl EarlyLintPass for IllegalFloatLiteralPattern {
             }
             true
         });
+    }
+}
+
+declare_lint! {
+    pub UNUSED_DOC_COMMENT,
+    Warn,
+    "detects doc comments that aren't used by rustdoc"
+}
+
+#[derive(Copy, Clone)]
+pub struct UnusedDocComment;
+
+impl LintPass for UnusedDocComment {
+    fn get_lints(&self) -> LintArray {
+        lint_array![UNUSED_DOC_COMMENT]
+    }
+}
+
+impl UnusedDocComment {
+    fn warn_if_doc<'a, 'tcx,
+                   I: Iterator<Item=&'a ast::Attribute>,
+                   C: LintContext<'tcx>>(&self, mut attrs: I, cx: &C) {
+        if let Some(attr) = attrs.find(|a| a.is_value_str() && a.check_name("doc")) {
+            cx.struct_span_lint(UNUSED_DOC_COMMENT, attr.span, "doc comment not used by rustdoc")
+              .emit();
+        }
+    }
+}
+
+impl EarlyLintPass for UnusedDocComment {
+    fn check_local(&mut self, cx: &EarlyContext, decl: &ast::Local) {
+        self.warn_if_doc(decl.attrs.iter(), cx);
+    }
+
+    fn check_arm(&mut self, cx: &EarlyContext, arm: &ast::Arm) {
+        self.warn_if_doc(arm.attrs.iter(), cx);
+    }
+
+    fn check_expr(&mut self, cx: &EarlyContext, expr: &ast::Expr) {
+        self.warn_if_doc(expr.attrs.iter(), cx);
     }
 }
 
@@ -841,16 +885,13 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnconditionalRecursion {
             let mut db = cx.struct_span_lint(UNCONDITIONAL_RECURSION,
                                              sp,
                                              "function cannot return without recurring");
-
             // FIXME #19668: these could be span_lint_note's instead of this manual guard.
-            if cx.current_level(UNCONDITIONAL_RECURSION) != Level::Allow {
-                // offer some help to the programmer.
-                for call in &self_call_spans {
-                    db.span_note(*call, "recursive call site");
-                }
-                db.help("a `loop` may express intention \
-                         better if this is on purpose");
+            // offer some help to the programmer.
+            for call in &self_call_spans {
+                db.span_note(*call, "recursive call site");
             }
+            db.help("a `loop` may express intention \
+                     better if this is on purpose");
             db.emit();
         }
 
@@ -864,7 +905,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnconditionalRecursion {
             match cx.tcx.hir.get(id) {
                 hir_map::NodeExpr(&hir::Expr { node: hir::ExprCall(ref callee, _), .. }) => {
                     let def = if let hir::ExprPath(ref qpath) = callee.node {
-                        cx.tables.qpath_def(qpath, callee.id)
+                        cx.tables.qpath_def(qpath, callee.hir_id)
                     } else {
                         return false;
                     };
@@ -902,8 +943,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnconditionalRecursion {
 
             // Check for method calls and overloaded operators.
             if cx.tables.is_method_call(expr) {
-                let def_id = cx.tables.type_dependent_defs[&id].def_id();
-                let substs = cx.tables.node_substs(id);
+                let hir_id = cx.tcx.hir.definitions().node_to_hir_id(id);
+                let def_id = cx.tables.type_dependent_defs()[hir_id].def_id();
+                let substs = cx.tables.node_substs(hir_id);
                 if method_call_refers_to_method(cx, method, def_id, substs, id) {
                     return true;
                 }
@@ -913,13 +955,13 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnconditionalRecursion {
             match expr.node {
                 hir::ExprCall(ref callee, _) => {
                     let def = if let hir::ExprPath(ref qpath) = callee.node {
-                        cx.tables.qpath_def(qpath, callee.id)
+                        cx.tables.qpath_def(qpath, callee.hir_id)
                     } else {
                         return false;
                     };
                     match def {
                         Def::Method(def_id) => {
-                            let substs = cx.tables.node_substs(callee.id);
+                            let substs = cx.tables.node_substs(callee.hir_id);
                             method_call_refers_to_method(cx, method, def_id, substs, id)
                         }
                         _ => false,
@@ -1075,7 +1117,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for InvalidNoMangleItems {
     fn check_item(&mut self, cx: &LateContext, it: &hir::Item) {
         match it.node {
             hir::ItemFn(.., ref generics, _) => {
-                if attr::contains_name(&it.attrs, "no_mangle") {
+                if attr::contains_name(&it.attrs, "no_mangle") &&
+                   !attr::contains_name(&it.attrs, "linkage") {
                     if !cx.access_levels.is_reachable(it.id) {
                         let msg = format!("function {} is marked #[no_mangle], but not exported",
                                           it.name);
@@ -1146,7 +1189,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MutableTransmutes {
              expr: &hir::Expr)
              -> Option<(&'tcx ty::TypeVariants<'tcx>, &'tcx ty::TypeVariants<'tcx>)> {
             let def = if let hir::ExprPath(ref qpath) = expr.node {
-                cx.tables.qpath_def(qpath, expr.id)
+                cx.tables.qpath_def(qpath, expr.hir_id)
             } else {
                 return None;
             };
@@ -1154,24 +1197,16 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MutableTransmutes {
                 if !def_id_is_transmute(cx, did) {
                     return None;
                 }
-                let typ = cx.tables.node_id_to_type(expr.id);
-                match typ.sty {
-                    ty::TyFnDef(.., bare_fn) if bare_fn.abi() == RustIntrinsic => {
-                        let from = bare_fn.inputs().skip_binder()[0];
-                        let to = *bare_fn.output().skip_binder();
-                        return Some((&from.sty, &to.sty));
-                    }
-                    _ => (),
-                }
+                let sig = cx.tables.node_id_to_type(expr.hir_id).fn_sig(cx.tcx);
+                let from = sig.inputs().skip_binder()[0];
+                let to = *sig.output().skip_binder();
+                return Some((&from.sty, &to.sty));
             }
             None
         }
 
         fn def_id_is_transmute(cx: &LateContext, def_id: DefId) -> bool {
-            match cx.tcx.type_of(def_id).sty {
-                ty::TyFnDef(.., bfty) if bfty.abi() == RustIntrinsic => (),
-                _ => return false,
-            }
+            cx.tcx.fn_sig(def_id).abi() == RustIntrinsic &&
             cx.tcx.item_name(def_id) == "transmute"
         }
     }

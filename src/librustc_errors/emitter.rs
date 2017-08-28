@@ -47,7 +47,13 @@ impl Emitter for EmitterWriter {
                // don't display multiline suggestions as labels
                sugg.substitution_parts[0].substitutions[0].find('\n').is_none() {
                 let substitution = &sugg.substitution_parts[0].substitutions[0];
-                let msg = format!("help: {} `{}`", sugg.msg, substitution);
+                let msg = if substitution.len() == 0 || !sugg.show_code_when_inline {
+                    // This substitution is only removal or we explicitely don't want to show the
+                    // code inline, don't show it
+                    format!("help: {}", sugg.msg)
+                } else {
+                    format!("help: {}: `{}`", sugg.msg, substitution)
+                };
                 primary_span.push_span_label(sugg.substitution_spans().next().unwrap(), msg);
             } else {
                 // if there are multiple suggestions, print them all in full
@@ -114,7 +120,7 @@ impl EmitterWriter {
         if color_config.use_color() {
             let dst = Destination::from_stderr();
             EmitterWriter {
-                dst: dst,
+                dst,
                 cm: code_map,
             }
         } else {
@@ -150,7 +156,7 @@ impl EmitterWriter {
                     }
                     // We don't have a line yet, create one
                     slot.lines.push(Line {
-                        line_index: line_index,
+                        line_index,
                         annotations: vec![ann],
                     });
                     slot.lines.sort();
@@ -159,9 +165,9 @@ impl EmitterWriter {
             }
             // This is the first time we're seeing the file
             file_vec.push(FileWithAnnotatedLines {
-                file: file,
+                file,
                 lines: vec![Line {
-                                line_index: line_index,
+                                line_index,
                                 annotations: vec![ann],
                             }],
                 multiline_depth: 0,
@@ -305,7 +311,9 @@ impl EmitterWriter {
         if line.annotations.len() == 1 {
             if let Some(ref ann) = line.annotations.get(0) {
                 if let AnnotationType::MultilineStart(depth) = ann.annotation_type {
-                    if source_string[0..ann.start_col].trim() == "" {
+                    if source_string.chars()
+                                    .take(ann.start_col)
+                                    .all(|c| c.is_whitespace()) {
                         let style = if ann.is_primary {
                             Style::UnderlinePrimary
                         } else {
@@ -341,9 +349,20 @@ impl EmitterWriter {
         // and "annotations lines", where the highlight lines have the `^`.
 
         // Sort the annotations by (start, end col)
+        // The labels are reversed, sort and then reversed again.
+        // Consider a list of annotations (A1, A2, C1, C2, B1, B2) where
+        // the letter signifies the span. Here we are only sorting by the
+        // span and hence, the order of the elements with the same span will
+        // not change. On reversing the ordering (|a, b| but b.cmp(a)), you get
+        // (C1, C2, B1, B2, A1, A2). All the elements with the same span are
+        // still ordered first to last, but all the elements with different
+        // spans are ordered by their spans in last to first order. Last to
+        // first order is important, because the jiggly lines and | are on
+        // the left, so the rightmost span needs to be rendered first,
+        // otherwise the lines would end up needing to go over a message.
+
         let mut annotations = line.annotations.clone();
-        annotations.sort();
-        annotations.reverse();
+        annotations.sort_by(|a,b| b.start_col.cmp(&a.start_col));
 
         // First, figure out where each label will be positioned.
         //
@@ -805,7 +824,7 @@ impl EmitterWriter {
             .map(|_| " ")
             .collect::<String>();
 
-        /// Return wether `style`, or the override if present and the style is `NoStyle`.
+        /// Return whether `style`, or the override if present and the style is `NoStyle`.
         fn style_or_override(style: Style, override_style: Option<Style>) -> Style {
             if let Some(o) = override_style {
                 if style == Style::NoStyle {
@@ -1055,44 +1074,72 @@ impl EmitterWriter {
                                -> io::Result<()> {
         use std::borrow::Borrow;
 
-        let primary_span = suggestion.substitution_spans().next().unwrap();
+        let primary_sub = &suggestion.substitution_parts[0];
         if let Some(ref cm) = self.cm {
             let mut buffer = StyledBuffer::new();
 
-            let lines = cm.span_to_lines(primary_span).unwrap();
+            let lines = cm.span_to_lines(primary_sub.span).unwrap();
 
             assert!(!lines.lines.is_empty());
 
             buffer.append(0, &level.to_string(), Style::Level(level.clone()));
             buffer.append(0, ": ", Style::HeaderMsg);
             self.msg_to_buffer(&mut buffer,
-                            &[(suggestion.msg.to_owned(), Style::NoStyle)],
-                            max_line_num_len,
-                            "suggestion",
-                            Some(Style::HeaderMsg));
+                               &[(suggestion.msg.to_owned(), Style::NoStyle)],
+                               max_line_num_len,
+                               "suggestion",
+                               Some(Style::HeaderMsg));
 
             let suggestions = suggestion.splice_lines(cm.borrow());
-            let mut row_num = 1;
-            for complete in suggestions.iter().take(MAX_SUGGESTIONS) {
-
-                // print the suggestion without any line numbers, but leave
-                // space for them. This helps with lining up with previous
-                // snippets from the actual error being reported.
+            let span_start_pos = cm.lookup_char_pos(primary_sub.span.lo);
+            let line_start = span_start_pos.line;
+            draw_col_separator_no_space(&mut buffer, 1, max_line_num_len + 1);
+            let mut row_num = 2;
+            for (&(ref complete, show_underline), ref sub) in suggestions
+                    .iter().zip(primary_sub.substitutions.iter()).take(MAX_SUGGESTIONS)
+            {
+                let mut line_pos = 0;
+                // Only show underline if there's a single suggestion and it is a single line
                 let mut lines = complete.lines();
                 for line in lines.by_ref().take(MAX_HIGHLIGHT_LINES) {
+                    // Print the span column to avoid confusion
+                    buffer.puts(row_num,
+                                0,
+                                &((line_start + line_pos).to_string()),
+                                Style::LineNumber);
+                    // print the suggestion
                     draw_col_separator(&mut buffer, row_num, max_line_num_len + 1);
                     buffer.append(row_num, line, Style::NoStyle);
+                    line_pos += 1;
                     row_num += 1;
+                    // Only show an underline in the suggestions if the suggestion is not the
+                    // entirety of the code being shown and the displayed code is not multiline.
+                    if show_underline {
+                        draw_col_separator(&mut buffer, row_num, max_line_num_len + 1);
+                        let sub_len = sub.trim_right().len();
+                        let underline_start = span_start_pos.col.0;
+                        let underline_end = span_start_pos.col.0 + sub_len;
+                        for p in underline_start..underline_end {
+                            buffer.putc(row_num,
+                                        max_line_num_len + 3 + p,
+                                        '^',
+                                        Style::UnderlinePrimary);
+                        }
+                        row_num += 1;
+                    }
                 }
 
                 // if we elided some lines, add an ellipsis
                 if let Some(_) = lines.next() {
-                    buffer.append(row_num, "...", Style::NoStyle);
+                    buffer.puts(row_num, max_line_num_len - 1, "...", Style::LineNumber);
+                } else if !show_underline {
+                    draw_col_separator_no_space(&mut buffer, row_num, max_line_num_len + 1);
+                    row_num += 1;
                 }
             }
             if suggestions.len() > MAX_SUGGESTIONS {
                 let msg = format!("and {} other candidates", suggestions.len() - MAX_SUGGESTIONS);
-                buffer.append(row_num, &msg, Style::NoStyle);
+                buffer.puts(row_num, 0, &msg, Style::NoStyle);
             }
             emit_to_destination(&buffer.render(), level, &mut self.dst)?;
         }
@@ -1340,7 +1387,7 @@ impl Destination {
 
     fn apply_style(&mut self, lvl: Level, style: Style) -> io::Result<()> {
         match style {
-            Style::FileNameStyle | Style::LineAndColumn => {}
+            Style::LineAndColumn => {}
             Style::LineNumber => {
                 self.start_attr(term::Attr::Bold)?;
                 if cfg!(windows) {
@@ -1349,16 +1396,8 @@ impl Destination {
                     self.start_attr(term::Attr::ForegroundColor(term::color::BRIGHT_BLUE))?;
                 }
             }
-            Style::ErrorCode => {
-                self.start_attr(term::Attr::Bold)?;
-                self.start_attr(term::Attr::ForegroundColor(term::color::BRIGHT_MAGENTA))?;
-            }
             Style::Quotation => {}
-            Style::OldSchoolNote => {
-                self.start_attr(term::Attr::Bold)?;
-                self.start_attr(term::Attr::ForegroundColor(term::color::BRIGHT_GREEN))?;
-            }
-            Style::OldSchoolNoteText | Style::HeaderMsg => {
+            Style::HeaderMsg => {
                 self.start_attr(term::Attr::Bold)?;
                 if cfg!(windows) {
                     self.start_attr(term::Attr::ForegroundColor(term::color::BRIGHT_WHITE))?;

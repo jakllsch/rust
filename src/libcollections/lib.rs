@@ -8,8 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![crate_name = "collections"]
-#![crate_type = "rlib"]
 #![allow(unused_attributes)]
 #![unstable(feature = "collections",
             reason = "this library is unlikely to be stabilized in its current \
@@ -23,13 +21,11 @@
        issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
        test(no_crate_inject, attr(allow(unused_variables), deny(warnings))))]
 #![no_std]
-#![needs_allocator]
 #![deny(warnings)]
 
 #![feature(alloc)]
 #![feature(collections_range)]
 #![feature(macro_reexport)]
-#![feature(needs_allocator)]
 #![feature(staged_api)]
 
 //! Collection types

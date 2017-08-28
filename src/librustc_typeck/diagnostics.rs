@@ -226,8 +226,10 @@ size of trait implementors isn't fixed, this type has no compile-time size.
 Therefore, all accesses to trait types must be through pointers. If you
 encounter this error you should try to avoid dereferencing the pointer.
 
-```ignore
-let trait_obj: &SomeTrait = ...;
+```compile_fail,E0033
+# trait SomeTrait { fn method_one(&self){} fn method_two(&self){} }
+# impl<T> SomeTrait for T {}
+let trait_obj: &SomeTrait = &"some_value";
 
 // This tries to implicitly dereference to create an unsized local variable.
 let &invalid = trait_obj;
@@ -237,10 +239,10 @@ trait_obj.method_one();
 trait_obj.method_two();
 ```
 
-You can read more about trait objects in the Trait Object section of the
-Reference:
+You can read more about trait objects in the [Trait Objects] section of the
+Reference.
 
-https://doc.rust-lang.org/reference.html#trait-objects
+[Trait Objects]: https://doc.rust-lang.org/reference/types.html#trait-objects
 "##,
 
 E0034: r##"
@@ -327,88 +329,6 @@ fn main() {
     F::m(&f); // it displays "I am F"
     G::m(&f); // it displays "I am G"
 }
-```
-"##,
-
-E0035: r##"
-You tried to give a type parameter where it wasn't needed. Erroneous code
-example:
-
-```compile_fail,E0035
-struct Test;
-
-impl Test {
-    fn method(&self) {}
-}
-
-fn main() {
-    let x = Test;
-
-    x.method::<i32>(); // Error: Test::method doesn't need type parameter!
-}
-```
-
-To fix this error, just remove the type parameter:
-
-```
-struct Test;
-
-impl Test {
-    fn method(&self) {}
-}
-
-fn main() {
-    let x = Test;
-
-    x.method(); // OK, we're good!
-}
-```
-"##,
-
-E0036: r##"
-This error occurrs when you pass too many or not enough type parameters to
-a method. Erroneous code example:
-
-```compile_fail,E0036
-struct Test;
-
-impl Test {
-    fn method<T>(&self, v: &[T]) -> usize {
-        v.len()
-    }
-}
-
-fn main() {
-    let x = Test;
-    let v = &[0];
-
-    x.method::<i32, i32>(v); // error: only one type parameter is expected!
-}
-```
-
-To fix it, just specify a correct number of type parameters:
-
-```
-struct Test;
-
-impl Test {
-    fn method<T>(&self, v: &[T]) -> usize {
-        v.len()
-    }
-}
-
-fn main() {
-    let x = Test;
-    let v = &[0];
-
-    x.method::<i32>(v); // OK, we're good!
-}
-```
-
-Please note on the last example that we could have called `method` like this:
-
-```ignore
-x.method(v);
 ```
 "##,
 
@@ -684,9 +604,8 @@ External C functions are allowed to be variadic. However, a variadic function
 takes a minimum number of arguments. For example, consider C's variadic `printf`
 function:
 
-```ignore
-extern crate libc;
-use libc::{ c_char, c_int };
+```
+use std::os::raw::{c_char, c_int};
 
 extern "C" {
     fn printf(_: *const c_char, ...) -> c_int;
@@ -696,16 +615,35 @@ extern "C" {
 Using this declaration, it must be called with at least one argument, so
 simply calling `printf()` is invalid. But the following uses are allowed:
 
-```ignore
+```
+# #![feature(static_nobundle)]
+# use std::os::raw::{c_char, c_int};
+# #[cfg_attr(all(windows, target_env = "msvc"),
+#            link(name = "legacy_stdio_definitions", kind = "static-nobundle"))]
+# extern "C" { fn printf(_: *const c_char, ...) -> c_int; }
+# fn main() {
 unsafe {
     use std::ffi::CString;
 
-    printf(CString::new("test\n").unwrap().as_ptr());
-    printf(CString::new("number = %d\n").unwrap().as_ptr(), 3);
-    printf(CString::new("%d, %d\n").unwrap().as_ptr(), 10, 5);
+    let fmt = CString::new("test\n").unwrap();
+    printf(fmt.as_ptr());
+
+    let fmt = CString::new("number = %d\n").unwrap();
+    printf(fmt.as_ptr(), 3);
+
+    let fmt = CString::new("%d, %d\n").unwrap();
+    printf(fmt.as_ptr(), 10, 5);
 }
+# }
 ```
 "##,
+// ^ Note: On MSVC 2015, the `printf` function is "inlined" in the C code, and
+// the C runtime does not contain the `printf` definition. This leads to linker
+// error from the doc test (issue #42830).
+// This can be fixed by linking to the static library
+// `legacy_stdio_definitions.lib` (see https://stackoverflow.com/a/36504365/).
+// If this compatibility library is removed in the future, consider changing
+// `printf` in this example to another well-known variadic function.
 
 E0061: r##"
 The number of arguments passed to a function must match the number of arguments
@@ -850,8 +788,9 @@ lvalue expression represents a memory location and can be a variable (with
 optional namespacing), a dereference, an indexing expression or a field
 reference.
 
-More details can be found here:
-https://doc.rust-lang.org/reference.html#lvalues-rvalues-and-temporaries
+More details can be found in the [Expressions] section of the Reference.
+
+[Expressions]: https://doc.rust-lang.org/reference/expressions.html#lvalues-rvalues-and-temporaries
 
 Now, we can go further. Here are some erroneous code examples:
 
@@ -924,13 +863,15 @@ fn main() {
 "##,
 
 E0073: r##"
+#### Note: this error code is no longer emitted by the compiler.
+
 You cannot define a struct (or enum) `Foo` that requires an instance of `Foo`
 in order to make a new `Foo` value. This is because there would be no way a
 first instance of `Foo` could be made to initialize another instance!
 
 Here's an example of a struct that has this problem:
 
-```ignore
+```
 struct Foo { x: Box<Foo> } // error
 ```
 
@@ -944,6 +885,8 @@ Now it's possible to create at least one instance of `Foo`: `Foo { x: None }`.
 "##,
 
 E0074: r##"
+#### Note: this error code is no longer emitted by the compiler.
+
 When using the `#[simd]` attribute on a tuple struct, the components of the
 tuple struct must all be of a concrete, nongeneric type so the compiler can
 reason about how to use SIMD with them. This error will occur if the types
@@ -951,7 +894,7 @@ are generic.
 
 This will cause an error:
 
-```ignore
+```
 #![feature(repr_simd)]
 
 #[repr(simd)]
@@ -1078,13 +1021,16 @@ encountered, so a conflict occurs.
 "##,
 
 E0082: r##"
+#### Note: this error code is no longer emitted by the compiler.
+
 When you specify enum discriminants with `=`, the compiler expects `isize`
 values by default. Or you can add the `repr` attibute to the enum declaration
 for an explicit choice of the discriminant type. In either cases, the
 discriminant values must fall within a valid range for the expected type;
 otherwise this error is raised. For example:
 
-```ignore
+```compile_fail
+# #![deny(overflowing_literals)]
 #[repr(u8)]
 enum Thing {
     A = 1024,
@@ -1095,7 +1041,8 @@ enum Thing {
 Here, 1024 lies outside the valid range for `u8`, so the discriminant for `A` is
 invalid. Here is another, more subtle example which depends on target word size:
 
-```ignore
+```compile_fail,E0080
+# #[repr(i32)]
 enum DependsOnPointerSize {
     A = 1 << 32,
 }
@@ -1448,11 +1395,12 @@ impl Drop for u32 {}
 To avoid this kind of error, ensure that at least one local type is referenced
 by the `impl`:
 
-```ignore
+```
 pub struct Foo; // you define your type in your crate
 
 impl Drop for Foo { // and you can implement the trait on it!
     // code of trait implementation here
+#   fn drop(&mut self) { }
 }
 
 impl From<Foo> for i32 { // or you use a type from your crate as
@@ -1577,9 +1525,9 @@ static BAR: _ = "test"; // error, explicitly write out the type instead
 "##,
 
 E0122: r##"
-An attempt was made to add a generic constraint to a type alias. While Rust will
-allow this with a warning, it will not currently enforce the constraint.
-Consider the example below:
+An attempt was made to add a generic constraint to a type alias. This constraint
+is entirely ignored. For backwards compatibility, Rust still allows this with a
+warning. Consider the example below:
 
 ```
 trait Foo{}
@@ -1644,7 +1592,8 @@ It is not possible to declare type parameters on a function that has the `start`
 attribute. Such a function must have the following type signature (for more
 information: http://doc.rust-lang.org/stable/book/first-edition/no-stdlib.html):
 
-```ignore
+```
+# let _:
 fn(isize, *const *const u8) -> isize;
 ```
 
@@ -1684,45 +1633,6 @@ fn bar(foo: Foo) -> u32 {
         Foo::B{i} => i,
     }
 }
-```
-"##,
-
-E0182: r##"
-You bound an associated type in an expression path which is not
-allowed.
-
-Erroneous code example:
-
-```compile_fail,E0182
-trait Foo {
-    type A;
-    fn bar() -> isize;
-}
-
-impl Foo for isize {
-    type A = usize;
-    fn bar() -> isize { 42 }
-}
-
-// error: unexpected binding of associated item in expression path
-let x: isize = Foo::<A=usize>::bar();
-```
-
-To give a concrete type when using the Universal Function Call Syntax,
-use "Type as Trait". Example:
-
-```
-trait Foo {
-    type A;
-    fn bar() -> isize;
-}
-
-impl Foo for isize {
-    type A = usize;
-    fn bar() -> isize { 42 }
-}
-
-let x: isize = <isize as Foo>::bar(); // ok!
 ```
 "##,
 
@@ -1812,10 +1722,12 @@ information see the [opt-in builtin traits RFC][RFC 19].
 "##,
 
 E0193: r##"
+#### Note: this error code is no longer emitted by the compiler.
+
 `where` clauses must use generic type parameters: it does not make sense to use
 them otherwise. An example causing this error:
 
-```ignore
+```
 trait Foo {
     fn bar(&self);
 }
@@ -2265,17 +2177,20 @@ If `ForeignTrait` is a trait defined in some external crate `foo`, then the
 following trait `impl` is an error:
 
 ```compile_fail,E0210
-extern crate alloc;
-use alloc::range::RangeArgument;
+# #[cfg(for_demonstration_only)]
+extern crate foo;
+# #[cfg(for_demonstration_only)]
+use foo::ForeignTrait;
+# use std::panic::UnwindSafe as ForeignTrait;
 
-impl<T> RangeArgument<T> for T { } // error
-
-fn main() {}
+impl<T> ForeignTrait for T { } // error
+# fn main() {}
 ```
 
 To work around this, it can be covered with a local type, `MyType`:
 
-```ignore
+```
+# use std::panic::UnwindSafe as ForeignTrait;
 struct MyType<T>(T);
 impl<T> ForeignTrait for MyType<T> { } // Ok
 ```
@@ -2286,7 +2201,7 @@ For another example of an error, suppose there's another trait defined in `foo`
 named `ForeignTrait2` that takes two type parameters. Then this `impl` results
 in the same rule violation:
 
-```compile_fail
+```ignore (cannot-doctest-multicrate-project)
 struct MyType2;
 impl<T> ForeignTrait2<T, MyType<T>> for MyType2 { } // error
 ```
@@ -2297,7 +2212,7 @@ is uncovered, and so runs afoul of the orphan rule.
 
 Consider one more example:
 
-```ignore
+```ignore (cannot-doctest-multicrate-project)
 impl<T> ForeignTrait2<MyType<T>, T> for MyType2 { } // Ok
 ```
 
@@ -2308,7 +2223,7 @@ violate the orphan rule; it is permitted.
 To see why that last example was allowed, you need to understand the general
 rule. Unfortunately this rule is a bit tricky to state. Consider an `impl`:
 
-```ignore
+```ignore (only-for-syntax-highlight)
 impl<P1, ..., Pm> ForeignTrait<T1, ..., Tn> for T0 { ... }
 ```
 
@@ -2405,21 +2320,6 @@ impl Foo {
 "##,
      */
 
-E0214: r##"
-A generic type was described using parentheses rather than angle brackets. For
-example:
-
-```compile_fail,E0214
-fn main() {
-    let v: Vec(&str) = vec!["foo"];
-}
-```
-
-This is not currently supported: `v` should be defined as `Vec<&str>`.
-Parentheses are currently only used with generic types when defining parameters
-for `Fn`-family traits.
-"##,
-
 E0220: r##"
 You used an associated type which isn't defined in the trait.
 Erroneous code example:
@@ -2437,7 +2337,7 @@ trait T2 {
     type Bar;
 
     // error: Baz is used but not declared
-    fn return_bool(&self, &Self::Bar, &Self::Baz) -> bool;
+    fn return_bool(&self, _: &Self::Bar, _: &Self::Baz) -> bool;
 }
 ```
 
@@ -2459,7 +2359,7 @@ trait T2 {
     type Baz; // we declare `Baz` in our trait.
 
     // and now we can use it here:
-    fn return_bool(&self, &Self::Bar, &Self::Baz) -> bool;
+    fn return_bool(&self, _: &Self::Bar, _: &Self::Baz) -> bool;
 }
 ```
 "##,
@@ -2590,13 +2490,17 @@ fn baz<I>(x: &<I as Foo<A=Bar>>::A) {}
 To solve this error, please move the type bindings in the type parameter
 declaration:
 
-```ignore
+```
+# struct Bar;
+# trait Foo { type A; }
 fn baz<I: Foo<A=Bar>>(x: &<I as Foo>::A) {} // ok!
 ```
 
 Or in the `where` clause:
 
-```ignore
+```
+# struct Bar;
+# trait Foo { type A; }
 fn baz<I>(x: &<I as Foo>::A) where I: Foo<A=Bar> {}
 ```
 "##,
@@ -2673,26 +2577,6 @@ struct Bar<S, T> { x: Foo<S, T> }
 ```
 "##,
 
-E0569: r##"
-If an impl has a generic parameter with the `#[may_dangle]` attribute, then
-that impl must be declared as an `unsafe impl. For example:
-
-```compile_fail,E0569
-#![feature(generic_param_attrs)]
-#![feature(dropck_eyepatch)]
-
-struct Foo<X>(X);
-impl<#[may_dangle] X> Drop for Foo<X> {
-    fn drop(&mut self) { }
-}
-```
-
-In this example, we are asserting that the destructor for `Foo` will not
-access any data of type `X`, and require this assertion to be true for
-overall safety in our program. The compiler does not currently attempt to
-verify this assertion; therefore we must tag this `impl` as unsafe.
-"##,
-
 E0318: r##"
 Default impls for a trait must be located in the same crate where the trait was
 defined. For more information see the [opt-in builtin traits RFC][RFC 19].
@@ -2734,8 +2618,6 @@ An associated const was implemented when another trait item was expected.
 Erroneous code example:
 
 ```compile_fail,E0323
-#![feature(associated_consts)]
-
 trait Foo {
     type N;
 }
@@ -2767,8 +2649,6 @@ impl Foo for Bar {
 Or:
 
 ```
-#![feature(associated_consts)]
-
 struct Bar;
 
 trait Foo {
@@ -2786,8 +2666,6 @@ A method was implemented when another trait item was expected. Erroneous
 code example:
 
 ```compile_fail,E0324
-#![feature(associated_consts)]
-
 struct Bar;
 
 trait Foo {
@@ -2807,8 +2685,6 @@ To fix this error, please verify that the method name wasn't misspelled and
 verify that you are indeed implementing the correct trait items. Example:
 
 ```
-#![feature(associated_consts)]
-
 struct Bar;
 
 trait Foo {
@@ -2830,8 +2706,6 @@ An associated type was implemented when another trait item was expected.
 Erroneous code example:
 
 ```compile_fail,E0325
-#![feature(associated_consts)]
-
 struct Bar;
 
 trait Foo {
@@ -2863,8 +2737,6 @@ impl Foo for Bar {
 Or:
 
 ```
-#![feature(associated_consts)]
-
 struct Bar;
 
 trait Foo {
@@ -2884,8 +2756,6 @@ types in the trait definition. This error indicates that there was a mismatch.
 Here's an example of this error:
 
 ```compile_fail,E0326
-#![feature(associated_consts)]
-
 trait Foo {
     const BAR: bool;
 }
@@ -2935,14 +2805,19 @@ impl<T, U> CoerceUnsized<MyType<U>> for MyType<T>
 [`CoerceUnsized`]: https://doc.rust-lang.org/std/ops/trait.CoerceUnsized.html
 "##,
 
+/*
+// Associated consts can now be accessed through generic type parameters, and
+// this error is no longer emitted.
+//
+// FIXME: consider whether to leave it in the error index, or remove it entirely
+//        as associated consts is not stabilized yet.
+
 E0329: r##"
 An attempt was made to access an associated constant through either a generic
 type parameter or `Self`. This is not supported yet. An example causing this
 error is shown below:
 
-```ignore
-#![feature(associated_consts)]
-
+```
 trait Foo {
     const BAR: f64;
 }
@@ -2961,9 +2836,7 @@ fn get_bar_bad<F: Foo>(t: F) -> f64 {
 Currently, the value of `BAR` for a particular type can only be accessed
 through a concrete type, as shown below:
 
-```ignore
-#![feature(associated_consts)]
-
+```
 trait Foo {
     const BAR: f64;
 }
@@ -2975,6 +2848,7 @@ fn get_bar_good() -> f64 {
 }
 ```
 "##,
+*/
 
 E0366: r##"
 An attempt was made to implement `Drop` on a concrete specialization of a
@@ -3434,10 +3308,10 @@ struct Foo<'a, T: 'a> {
 }
 ```
 
-PhantomData can also be used to express information about unused type
-parameters. You can read more about it in the API documentation:
+[PhantomData] can also be used to express information about unused type
+parameters.
 
-https://doc.rust-lang.org/std/marker/struct.PhantomData.html
+[PhantomData]: https://doc.rust-lang.org/std/marker/struct.PhantomData.html
 "##,
 
 E0393: r##"
@@ -3505,6 +3379,56 @@ pub trait Foo {
 impl Foo for i32 {
     type Assoc = i32;
     fn bar(&self) {} // ok!
+}
+```
+"##,
+
+E0436: r##"
+The functional record update syntax is only allowed for structs. (Struct-like
+enum variants don't qualify, for example.)
+
+Erroneous code example:
+
+```compile_fail,E0436
+enum PublicationFrequency {
+    Weekly,
+    SemiMonthly { days: (u8, u8), annual_special: bool },
+}
+
+fn one_up_competitor(competitor_frequency: PublicationFrequency)
+                     -> PublicationFrequency {
+    match competitor_frequency {
+        PublicationFrequency::Weekly => PublicationFrequency::SemiMonthly {
+            days: (1, 15), annual_special: false
+        },
+        c @ PublicationFrequency::SemiMonthly{ .. } =>
+            PublicationFrequency::SemiMonthly {
+                annual_special: true, ..c // error: functional record update
+                                          //        syntax requires a struct
+        }
+    }
+}
+```
+
+Rewrite the expression without functional record update syntax:
+
+```
+enum PublicationFrequency {
+    Weekly,
+    SemiMonthly { days: (u8, u8), annual_special: bool },
+}
+
+fn one_up_competitor(competitor_frequency: PublicationFrequency)
+                     -> PublicationFrequency {
+    match competitor_frequency {
+        PublicationFrequency::Weekly => PublicationFrequency::SemiMonthly {
+            days: (1, 15), annual_special: false
+        },
+        PublicationFrequency::SemiMonthly{ days, .. } =>
+            PublicationFrequency::SemiMonthly {
+                days, annual_special: true // ok!
+        }
+    }
 }
 ```
 "##,
@@ -3938,6 +3862,68 @@ let s = Simba { mother: 1, father: 0 }; // ok!
 ```
 "##,
 
+E0562: r##"
+Abstract return types (written `impl Trait` for some trait `Trait`) are only
+allowed as function return types.
+
+Erroneous code example:
+
+```compile_fail,E0562
+#![feature(conservative_impl_trait)]
+
+fn main() {
+    let count_to_ten: impl Iterator<Item=usize> = 0..10;
+    // error: `impl Trait` not allowed outside of function and inherent method
+    //        return types
+    for i in count_to_ten {
+        println!("{}", i);
+    }
+}
+```
+
+Make sure `impl Trait` only appears in return-type position.
+
+```
+#![feature(conservative_impl_trait)]
+
+fn count_to_n(n: usize) -> impl Iterator<Item=usize> {
+    0..n
+}
+
+fn main() {
+    for i in count_to_n(10) {  // ok!
+        println!("{}", i);
+    }
+}
+```
+
+See [RFC 1522] for more details.
+
+[RFC 1522]: https://github.com/rust-lang/rfcs/blob/master/text/1522-conservative-impl-trait.md
+"##,
+
+E0569: r##"
+If an impl has a generic parameter with the `#[may_dangle]` attribute, then
+that impl must be declared as an `unsafe impl.
+
+Erroneous code example:
+
+```compile_fail,E0569
+#![feature(generic_param_attrs)]
+#![feature(dropck_eyepatch)]
+
+struct Foo<X>(X);
+impl<#[may_dangle] X> Drop for Foo<X> {
+    fn drop(&mut self) { }
+}
+```
+
+In this example, we are asserting that the destructor for `Foo` will not
+access any data of type `X`, and require this assertion to be true for
+overall safety in our program. The compiler does not currently attempt to
+verify this assertion; therefore we must tag this `impl` as unsafe.
+"##,
+
 E0570: r##"
 The requested ABI is unsupported by the current target.
 
@@ -4117,6 +4103,104 @@ println!("{}", v[2]);
 ```
 "##,
 
+E0604: r##"
+A cast to `char` was attempted on a type other than `u8`.
+
+Erroneous code example:
+
+```compile_fail,E0604
+0u32 as char; // error: only `u8` can be cast as `char`, not `u32`
+```
+
+As the error message indicates, only `u8` can be cast into `char`. Example:
+
+```
+let c = 86u8 as char; // ok!
+assert_eq!(c, 'V');
+```
+
+For more information about casts, take a look at The Book:
+https://doc.rust-lang.org/book/first-edition/casting-between-types.html
+"##,
+
+E0605: r##"
+An invalid cast was attempted.
+
+Erroneous code examples:
+
+```compile_fail,E0605
+let x = 0u8;
+x as Vec<u8>; // error: non-primitive cast: `u8` as `std::vec::Vec<u8>`
+
+// Another example
+
+let v = 0 as *const u8; // So here, `v` is a `*const u8`.
+v as &u8; // error: non-primitive cast: `*const u8` as `&u8`
+```
+
+Only primitive types can be cast into each other. Examples:
+
+```
+let x = 0u8;
+x as u32; // ok!
+
+let v = 0 as *const u8;
+v as *const i8; // ok!
+```
+
+For more information about casts, take a look at The Book:
+https://doc.rust-lang.org/book/first-edition/casting-between-types.html
+"##,
+
+E0606: r##"
+An incompatible cast was attempted.
+
+Erroneous code example:
+
+```compile_fail,E0606
+let x = &0u8; // Here, `x` is a `&u8`.
+let y: u32 = x as u32; // error: casting `&u8` as `u32` is invalid
+```
+
+When casting, keep in mind that only primitive types can be cast into each
+other. Example:
+
+```
+let x = &0u8;
+let y: u32 = *x as u32; // We dereference it first and then cast it.
+```
+
+For more information about casts, take a look at The Book:
+https://doc.rust-lang.org/book/first-edition/casting-between-types.html
+"##,
+
+E0607: r##"
+A cast between a thin and a fat pointer was attempted.
+
+Erroneous code example:
+
+```compile_fail,E0607
+let v = 0 as *const u8;
+v as *const [u8];
+```
+
+First: what are thin and fat pointers?
+
+Thin pointers are "simple" pointers: they are purely a reference to a memory
+address.
+
+Fat pointers are pointers referencing Dynamically Sized Types (also called DST).
+DST don't have a statically known size, therefore they can only exist behind
+some kind of pointers that contain additional information. Slices and trait
+objects are DSTs. In the case of slices, the additional information the fat
+pointer holds is their size.
+
+To fix this error, don't try to cast directly between thin and fat pointers.
+
+For more information about casts, take a look at The Book:
+https://doc.rust-lang.org/book/first-edition/casting-between-types.html
+"##,
+
 E0609: r##"
 Attempted to access a non-existent field in a struct.
 
@@ -4171,7 +4255,208 @@ let variable = Foo { x: 0, y: -12 };
 println!("x: {}, y: {}", variable.x, variable.y);
 ```
 
-For more information see The Rust Book: https://doc.rust-lang.org/book/
+For more information about primitives and structs, take a look at The Book:
+https://doc.rust-lang.org/book/first-edition/primitive-types.html
+https://doc.rust-lang.org/book/first-edition/structs.html
+"##,
+
+E0611: r##"
+Attempted to access a private field on a tuple-struct.
+
+Erroneous code example:
+
+```compile_fail,E0611
+mod some_module {
+    pub struct Foo(u32);
+
+    impl Foo {
+        pub fn new() -> Foo { Foo(0) }
+    }
+}
+
+let y = some_module::Foo::new();
+println!("{}", y.0); // error: field `0` of tuple-struct `some_module::Foo`
+                     //        is private
+```
+
+Since the field is private, you have two solutions:
+
+1) Make the field public:
+
+```
+mod some_module {
+    pub struct Foo(pub u32); // The field is now public.
+
+    impl Foo {
+        pub fn new() -> Foo { Foo(0) }
+    }
+}
+
+let y = some_module::Foo::new();
+println!("{}", y.0); // So we can access it directly.
+```
+
+2) Add a getter function to keep the field private but allow for accessing its
+value:
+
+```
+mod some_module {
+    pub struct Foo(u32);
+
+    impl Foo {
+        pub fn new() -> Foo { Foo(0) }
+
+        // We add the getter function.
+        pub fn get(&self) -> &u32 { &self.0 }
+    }
+}
+
+let y = some_module::Foo::new();
+println!("{}", y.get()); // So we can get the value through the function.
+```
+"##,
+
+E0612: r##"
+Attempted out-of-bounds tuple index.
+
+Erroneous code example:
+
+```compile_fail,E0612
+struct Foo(u32);
+
+let y = Foo(0);
+println!("{}", y.1); // error: attempted out-of-bounds tuple index `1`
+                     //        on type `Foo`
+```
+
+If a tuple/tuple-struct type has n fields, you can only try to access these n
+fields from 0 to (n - 1). So in this case, you can only index `0`. Example:
+
+```
+struct Foo(u32);
+
+let y = Foo(0);
+println!("{}", y.0); // ok!
+```
+"##,
+
+E0614: r##"
+Attempted to dereference a variable which cannot be dereferenced.
+
+Erroneous code example:
+
+```compile_fail,E0614
+let y = 0u32;
+*y; // error: type `u32` cannot be dereferenced
+```
+
+Only types implementing `std::ops::Deref` can be dereferenced (such as `&T`).
+Example:
+
+```
+let y = 0u32;
+let x = &y;
+// So here, `x` is a `&u32`, so we can dereference it:
+*x; // ok!
+```
+"##,
+
+E0615: r##"
+Attempted to access a method like a field.
+
+Erroneous code example:
+
+```compile_fail,E0615
+struct Foo {
+    x: u32,
+}
+
+impl Foo {
+    fn method(&self) {}
+}
+
+let f = Foo { x: 0 };
+f.method; // error: attempted to take value of method `method` on type `Foo`
+```
+
+If you want to use a method, add `()` after it:
+
+```
+# struct Foo { x: u32 }
+# impl Foo { fn method(&self) {} }
+# let f = Foo { x: 0 };
+f.method();
+```
+
+However, if you wanted to access a field of a struct check that the field name
+is spelled correctly. Example:
+
+```
+# struct Foo { x: u32 }
+# impl Foo { fn method(&self) {} }
+# let f = Foo { x: 0 };
+println!("{}", f.x);
+```
+"##,
+
+E0616: r##"
+Attempted to access a private field on a struct.
+
+Erroneous code example:
+
+```compile_fail,E0616
+mod some_module {
+    pub struct Foo {
+        x: u32, // So `x` is private in here.
+    }
+
+    impl Foo {
+        pub fn new() -> Foo { Foo { x: 0 } }
+    }
+}
+
+let f = some_module::Foo::new();
+println!("{}", f.x); // error: field `x` of struct `some_module::Foo` is private
+```
+
+If you want to access this field, you have two options:
+
+1) Set the field public:
+
+```
+mod some_module {
+    pub struct Foo {
+        pub x: u32, // `x` is now public.
+    }
+
+    impl Foo {
+        pub fn new() -> Foo { Foo { x: 0 } }
+    }
+}
+
+let f = some_module::Foo::new();
+println!("{}", f.x); // ok!
+```
+
+2) Add a getter function:
+
+```
+mod some_module {
+    pub struct Foo {
+        x: u32, // So `x` is still private in here.
+    }
+
+    impl Foo {
+        pub fn new() -> Foo { Foo { x: 0 } }
+
+        // We create the getter function here:
+        pub fn get_x(&self) -> &u32 { &self.x }
+    }
+}
+
+let f = some_module::Foo::new();
+println!("{}", f.get_x()); // ok!
+```
 "##,
 
 E0617: r##"
@@ -4190,9 +4475,10 @@ unsafe {
 }
 ```
 
-To fix this error, you need to pass variables corresponding to C types as much
-as possible. For better explanations, see The Rust Book:
-https://doc.rust-lang.org/book/
+Certain Rust types must be cast before passing them to a variadic function,
+because of arcane ABI rules dictated by the C standard. To fix the error,
+cast the value to the type specified by the error message (which you may need
+to import from `std::os::raw`).
 "##,
 
 E0618: r##"
@@ -4223,9 +4509,148 @@ i_am_a_function();
 ```
 "##,
 
+E0619: r##"
+The type-checker needed to know the type of an expression, but that type had not
+yet been inferred.
+
+Erroneous code example:
+
+```compile_fail,E0619
+let mut x = vec![];
+match x.pop() {
+    Some(v) => {
+        // Here, the type of `v` is not (yet) known, so we
+        // cannot resolve this method call:
+        v.to_uppercase(); // error: the type of this value must be known in
+                          //        this context
+    }
+    None => {}
+}
+```
+
+Type inference typically proceeds from the top of the function to the bottom,
+figuring out types as it goes. In some cases -- notably method calls and
+overloadable operators like `*` -- the type checker may not have enough
+information *yet* to make progress. This can be true even if the rest of the
+function provides enough context (because the type-checker hasn't looked that
+far ahead yet). In this case, type annotations can be used to help it along.
+
+To fix this error, just specify the type of the variable. Example:
+
+```
+let mut x: Vec<String> = vec![]; // We precise the type of the vec elements.
+match x.pop() {
+    Some(v) => {
+        v.to_uppercase(); // Since rustc now knows the type of the vec elements,
+                          // we can use `v`'s methods.
+    }
+    None => {}
+}
+```
+"##,
+
+E0620: r##"
+A cast to an unsized type was attempted.
+
+Erroneous code example:
+
+```compile_fail,E0620
+let x = &[1_usize, 2] as [usize]; // error: cast to unsized type: `&[usize; 2]`
+                                  //        as `[usize]`
+```
+
+In Rust, some types don't have a known size at compile-time. For example, in a
+slice type like `[u32]`, the number of elements is not known at compile-time and
+hence the overall size cannot be computed. As a result, such types can only be
+manipulated through a reference (e.g., `&T` or `&mut T`) or other pointer-type
+(e.g., `Box` or `Rc`). Try casting to a reference instead:
+
+```
+let x = &[1_usize, 2] as &[usize]; // ok!
+```
+"##,
+
+E0622: r##"
+An intrinsic was declared without being a function.
+
+Erroneous code example:
+
+```compile_fail,E0622
+#![feature(intrinsics)]
+extern "rust-intrinsic" {
+    pub static breakpoint : unsafe extern "rust-intrinsic" fn();
+    // error: intrinsic must be a function
+}
+
+fn main() { unsafe { breakpoint(); } }
+```
+
+An intrinsic is a function available for use in a given programming language
+whose implementation is handled specially by the compiler. In order to fix this
+error, just declare a function.
+"##,
+
+E0624: r##"
+A private item was used outside of its scope.
+
+Erroneous code example:
+
+```compile_fail,E0624
+mod inner {
+    pub struct Foo;
+
+    impl Foo {
+        fn method(&self) {}
+    }
+}
+
+let foo = inner::Foo;
+foo.method(); // error: method `method` is private
+```
+
+Two possibilities are available to solve this issue:
+
+1. Only use the item in the scope it has been defined:
+
+```
+mod inner {
+    pub struct Foo;
+
+    impl Foo {
+        fn method(&self) {}
+    }
+
+    pub fn call_method(foo: &Foo) { // We create a public function.
+        foo.method(); // Which calls the item.
+    }
+}
+
+let foo = inner::Foo;
+inner::call_method(&foo); // And since the function is public, we can call the
+                          // method through it.
+```
+
+2. Make the item public:
+
+```
+mod inner {
+    pub struct Foo;
+
+    impl Foo {
+        pub fn method(&self) {} // It's now public.
+    }
+}
+
+let foo = inner::Foo;
+foo.method(); // Ok!
+```
+"##,
+
 }
 
 register_diagnostics! {
+//  E0035, merged into E0087/E0089
+//  E0036, merged into E0087/E0089
 //  E0068,
 //  E0085,
 //  E0086,
@@ -4242,6 +4667,7 @@ register_diagnostics! {
 //  E0172, // non-trait found in a type sum, moved to resolve
 //  E0173, // manual implementations of unboxed closure traits are experimental
 //  E0174,
+//  E0182, // merged into E0229
     E0183,
 //  E0187, // can't infer the kind of the closure
 //  E0188, // can not cast an immutable reference to a mutable pointer
@@ -4284,16 +4710,15 @@ register_diagnostics! {
 //  E0372, // coherence not object safe
     E0377, // the trait `CoerceUnsized` may only be implemented for a coercion
            // between structures with the same definition
-    E0436, // functional record update requires a struct
     E0521, // redundant default implementations of trait
     E0533, // `{}` does not name a unit variant, unit struct or a constant
-    E0562, // `impl Trait` not allowed outside of function
-           // and inherent method return types
-    E0563, // cannot determine a type for this `impl Trait`: {}
+//  E0563, // cannot determine a type for this `impl Trait`: {} // removed in 6383de15
     E0564, // only named lifetimes are allowed in `impl Trait`,
            // but `{}` was found in the type `{}`
     E0567, // auto traits can not have type parameters
     E0568, // auto-traits can not have predicates,
+    E0587, // struct has conflicting packed and align representation hints
     E0588, // packed struct cannot transitively contain a `[repr(align)]` struct
     E0592, // duplicate definitions with name `{}`
+//  E0613, // Removed (merged with E0609)
 }

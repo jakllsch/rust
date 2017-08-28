@@ -108,7 +108,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 // haven't yet decided on whether the closure is fn vs
                 // fnmut vs fnonce. If so, we have to defer further processing.
                 if self.closure_kind(def_id).is_none() {
-                    let closure_ty = self.closure_type(def_id).subst(self.tcx, substs.substs);
+                    let closure_ty = self.fn_sig(def_id).subst(self.tcx, substs.substs);
                     let fn_sig = self.replace_late_bound_regions_with_fresh_var(call_expr.span,
                                                                    infer::FnCall,
                                                                    &closure_ty)
@@ -196,8 +196,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                             expected: Expectation<'tcx>)
                             -> Ty<'tcx> {
         let (fn_sig, def_span) = match callee_ty.sty {
-            ty::TyFnDef(def_id, .., sig) => {
-                (sig, self.tcx.hir.span_if_local(def_id))
+            ty::TyFnDef(def_id, _) => {
+                (callee_ty.fn_sig(self.tcx), self.tcx.hir.span_if_local(def_id))
             }
             ty::TyFnPtr(sig) => (sig, None),
             ref t => {
@@ -222,7 +222,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 
                 if let hir::ExprCall(ref expr, _) = call_expr.node {
                     let def = if let hir::ExprPath(ref qpath) = expr.node {
-                        self.tables.borrow().qpath_def(qpath, expr.id)
+                        self.tables.borrow().qpath_def(qpath, expr.hir_id)
                     } else {
                         Def::Err
                     };
@@ -314,7 +314,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                                            TupleArgumentsFlag::TupleArguments,
                                                            expected);
 
-        self.write_method_call(call_expr.id, method_callee);
+        self.write_method_call(call_expr.hir_id, method_callee);
         output_type
     }
 }
@@ -364,7 +364,8 @@ impl<'a, 'gcx, 'tcx> DeferredCallResolution<'gcx, 'tcx> {
                 adjustments.extend(autoref);
                 fcx.apply_adjustments(self.callee_expr, adjustments);
 
-                fcx.write_method_call(self.call_expr.id, method_callee);
+                fcx.write_method_call(self.call_expr.hir_id,
+                                      method_callee);
             }
             None => {
                 span_bug!(self.call_expr.span,

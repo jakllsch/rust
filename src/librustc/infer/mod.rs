@@ -274,7 +274,7 @@ pub enum LateBoundRegionConversionTime {
     HigherRankedType,
 
     /// when projecting an associated type
-    AssocTypeProjection(ast::Name),
+    AssocTypeProjection(DefId),
 }
 
 /// Reasons to create a region inference variable
@@ -299,7 +299,7 @@ pub enum RegionVariableOrigin {
     Coercion(Span),
 
     // Region variables created as the values for early-bound regions
-    EarlyBoundRegion(Span, ast::Name, Option<ty::Issue32330>),
+    EarlyBoundRegion(Span, ast::Name),
 
     // Region variables created for bound regions
     // in a function or method that is called
@@ -358,8 +358,8 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'gcx> {
 impl<'a, 'gcx, 'tcx> InferCtxtBuilder<'a, 'gcx, 'tcx> {
     /// Used only by `rustc_typeck` during body type-checking/inference,
     /// will initialize `in_progress_tables` with fresh `TypeckTables`.
-    pub fn with_fresh_in_progress_tables(mut self) -> Self {
-        self.fresh_tables = Some(RefCell::new(ty::TypeckTables::empty()));
+    pub fn with_fresh_in_progress_tables(mut self, table_owner: DefId) -> Self {
+        self.fresh_tables = Some(RefCell::new(ty::TypeckTables::empty(Some(table_owner))));
         self
     }
 
@@ -459,9 +459,9 @@ impl<'gcx> TransNormalize<'gcx> for LvalueTy<'gcx> {
             LvalueTy::Ty { ty } => LvalueTy::Ty { ty: ty.trans_normalize(infcx, param_env) },
             LvalueTy::Downcast { adt_def, substs, variant_index } => {
                 LvalueTy::Downcast {
-                    adt_def: adt_def,
+                    adt_def,
                     substs: substs.trans_normalize(infcx, param_env),
-                    variant_index: variant_index
+                    variant_index,
                 }
             }
         }
@@ -675,7 +675,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                       -> CombineFields<'a, 'gcx, 'tcx> {
         CombineFields {
             infcx: self,
-            trace: trace,
+            trace,
             cause: None,
             param_env,
             obligations: PredicateObligations::new(),
@@ -989,7 +989,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                               span: Span,
                               def: &ty::RegionParameterDef)
                               -> ty::Region<'tcx> {
-        self.next_region_var(EarlyBoundRegion(span, def.name, def.issue_32330))
+        self.next_region_var(EarlyBoundRegion(span, def.name))
     }
 
     /// Create a type inference variable for the given
@@ -1077,6 +1077,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                                                region_map,
                                                free_regions);
         let errors = self.region_vars.resolve_regions(&region_rels);
+
         if !self.is_tainted_by_errors() {
             // As a heuristic, just skip reporting region errors
             // altogether if other errors have been reported while
@@ -1191,28 +1192,6 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     // types using one of these methods, and should not call span_err directly for such
     // errors.
 
-    pub fn type_error_message<M>(&self,
-                                 sp: Span,
-                                 mk_msg: M,
-                                 actual_ty: Ty<'tcx>)
-        where M: FnOnce(String) -> String,
-    {
-        self.type_error_struct(sp, mk_msg, actual_ty).emit();
-    }
-
-    // FIXME: this results in errors without an error code. Deprecate?
-    pub fn type_error_struct<M>(&self,
-                                sp: Span,
-                                mk_msg: M,
-                                actual_ty: Ty<'tcx>)
-                                -> DiagnosticBuilder<'tcx>
-        where M: FnOnce(String) -> String,
-    {
-        self.type_error_struct_with_diag(sp, |actual_ty| {
-            self.tcx.sess.struct_span_err(sp, &mk_msg(actual_ty))
-        }, actual_ty)
-    }
-
     pub fn type_error_struct_with_diag<M>(&self,
                                           sp: Span,
                                           mk_diag: M,
@@ -1257,7 +1236,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         self.report_and_explain_type_error(
             trace,
             &TypeError::TyParamDefaultMismatch(ExpectedFound {
-                expected: expected,
+                expected,
                 found: actual
             }))
             .emit();
@@ -1298,16 +1277,14 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                                            match_b: ty::TraitRef<'tcx>)
                                            -> InferResult<'tcx, HrMatchResult<Ty<'tcx>>>
     {
-        let span = cause.span;
-        let match_trait_ref = match_a.skip_binder().projection_ty.trait_ref;
+        let match_pair = match_a.map_bound(|p| (p.projection_ty.trait_ref(self.tcx), p.ty));
         let trace = TypeTrace {
-            cause: cause,
-            values: TraitRefs(ExpectedFound::new(true, match_trait_ref, match_b))
+            cause,
+            values: TraitRefs(ExpectedFound::new(true, match_pair.skip_binder().0, match_b))
         };
 
-        let match_pair = match_a.map_bound(|p| (p.projection_ty.trait_ref, p.ty));
         let mut combine = self.combine_fields(trace, param_env);
-        let result = combine.higher_ranked_match(span, &match_pair, &match_b, true)?;
+        let result = combine.higher_ranked_match(&match_pair, &match_b, true)?;
         Ok(InferOk { value: result, obligations: combine.obligations })
     }
 
@@ -1354,9 +1331,10 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     {
         if let Some(tables) = self.in_progress_tables {
             if let Some(id) = self.tcx.hir.as_local_node_id(def_id) {
+                let hir_id = self.tcx.hir.node_to_hir_id(id);
                 return tables.borrow()
-                             .closure_kinds
-                             .get(&id)
+                             .closure_kinds()
+                             .get(hir_id)
                              .cloned()
                              .map(|(kind, _)| kind);
             }
@@ -1369,16 +1347,21 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         Some(self.tcx.closure_kind(def_id))
     }
 
-    pub fn closure_type(&self, def_id: DefId) -> ty::PolyFnSig<'tcx> {
+    /// Obtain the signature of a function or closure.
+    /// For closures, unlike `tcx.fn_sig(def_id)`, this method will
+    /// work during the type-checking of the enclosing function and
+    /// return the closure signature in its partially inferred state.
+    pub fn fn_sig(&self, def_id: DefId) -> ty::PolyFnSig<'tcx> {
         if let Some(tables) = self.in_progress_tables {
             if let Some(id) = self.tcx.hir.as_local_node_id(def_id) {
-                if let Some(&ty) = tables.borrow().closure_tys.get(&id) {
+                let hir_id = self.tcx.hir.node_to_hir_id(id);
+                if let Some(&ty) = tables.borrow().closure_tys().get(hir_id) {
                     return ty;
                 }
             }
         }
 
-        self.tcx.closure_type(def_id)
+        self.tcx.fn_sig(def_id)
     }
 }
 
@@ -1461,10 +1444,10 @@ impl<'tcx> SubregionOrigin<'tcx> {
                                                                        lint_id } =>
                 SubregionOrigin::CompareImplMethodObligation {
                     span: cause.span,
-                    item_name: item_name,
-                    impl_item_def_id: impl_item_def_id,
-                    trait_item_def_id: trait_item_def_id,
-                    lint_id: lint_id,
+                    item_name,
+                    impl_item_def_id,
+                    trait_item_def_id,
+                    lint_id,
                 },
 
             _ => default(),

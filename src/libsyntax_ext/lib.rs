@@ -10,9 +10,6 @@
 
 //! Syntax extensions in the Rust compiler.
 
-#![crate_name = "syntax_ext"]
-#![crate_type = "dylib"]
-#![crate_type = "rlib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/")]
@@ -21,7 +18,6 @@
 #![feature(proc_macro_internals)]
 
 extern crate fmt_macros;
-extern crate log;
 #[macro_use]
 extern crate syntax;
 extern crate syntax_pos;
@@ -30,6 +26,7 @@ extern crate rustc_errors as errors;
 
 mod asm;
 mod cfg;
+mod compile_error;
 mod concat;
 mod concat_idents;
 mod env;
@@ -63,7 +60,12 @@ pub fn register_builtins(resolver: &mut syntax::ext::base::Resolver,
     macro_rules! register {
         ($( $name:ident: $f:expr, )*) => { $(
             register(Symbol::intern(stringify!($name)),
-                     NormalTT(Box::new($f as MacroExpanderFn), None, false));
+                     NormalTT {
+                        expander: Box::new($f as MacroExpanderFn),
+                        def_info: None,
+                        allow_internal_unstable: false,
+                        allow_internal_unsafe: false,
+                    });
         )* }
     }
 
@@ -88,6 +90,7 @@ pub fn register_builtins(resolver: &mut syntax::ext::base::Resolver,
     use syntax::ext::source_util::*;
     register! {
         line: expand_line,
+        __rust_unstable_column: expand_column_gated,
         column: expand_column,
         file: expand_file,
         stringify: expand_stringify,
@@ -105,11 +108,17 @@ pub fn register_builtins(resolver: &mut syntax::ext::base::Resolver,
         option_env: env::expand_option_env,
         log_syntax: log_syntax::expand_syntax_ext,
         trace_macros: trace_macros::expand_trace_macros,
+        compile_error: compile_error::expand_compile_error,
     }
 
     // format_args uses `unstable` things internally.
     register(Symbol::intern("format_args"),
-             NormalTT(Box::new(format::expand_format_args), None, true));
+             NormalTT {
+                expander: Box::new(format::expand_format_args),
+                def_info: None,
+                allow_internal_unstable: true,
+                allow_internal_unsafe: false,
+            });
 
     for (name, ext) in user_exts {
         register(name, ext);

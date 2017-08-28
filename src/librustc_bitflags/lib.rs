@@ -9,9 +9,6 @@
 // except according to those terms.
 
 
-#![crate_name = "rustc_bitflags"]
-#![feature(associated_consts)]
-#![crate_type = "rlib"]
 #![no_std]
 #![deny(warnings)]
 
@@ -31,7 +28,6 @@ extern crate std;
 ///
 /// ```{.rust}
 /// #![feature(rustc_private)]
-/// #![feature(associated_consts)]
 /// #[macro_use] extern crate rustc_bitflags;
 ///
 /// bitflags! {

@@ -133,22 +133,12 @@ impl_stable_hash_for!(struct hir::PathSegment {
     parameters
 });
 
-impl_stable_hash_for!(enum hir::PathParameters {
-    AngleBracketedParameters(data),
-    ParenthesizedParameters(data)
-});
-
-impl_stable_hash_for!(struct hir::AngleBracketedParameterData {
+impl_stable_hash_for!(struct hir::PathParameters {
     lifetimes,
     types,
     infer_types,
-    bindings
-});
-
-impl_stable_hash_for!(struct hir::ParenthesizedParameterData {
-    span,
-    inputs,
-    output
+    bindings,
+    parenthesized
 });
 
 impl_stable_hash_for!(enum hir::TyParamBound {
@@ -359,6 +349,7 @@ impl<'a, 'gcx, 'tcx> HashStable<StableHashingContext<'a, 'gcx, 'tcx>> for hir::B
             ref stmts,
             ref expr,
             id,
+            hir_id: _,
             rules,
             span,
             targeted_by_break,
@@ -423,6 +414,7 @@ impl<'a, 'gcx, 'tcx> HashStable<StableHashingContext<'a, 'gcx, 'tcx>> for hir::P
 
         let hir::Pat {
             id,
+            hir_id: _,
             ref node,
             ref span
         } = *self;
@@ -442,9 +434,11 @@ impl_stable_hash_for!(struct hir::FieldPat {
     is_shorthand
 });
 
-impl_stable_hash_for!(enum hir::BindingMode {
-    BindByRef(mutability),
-    BindByValue(mutability)
+impl_stable_hash_for!(enum hir::BindingAnnotation {
+    Unannotated,
+    Mutable,
+    Ref,
+    RefMut
 });
 
 impl_stable_hash_for!(enum hir::RangeEnd {
@@ -502,6 +496,7 @@ impl_stable_hash_for!(struct hir::Local {
     ty,
     init,
     id,
+    hir_id,
     span,
     attrs,
     source
@@ -549,6 +544,7 @@ impl<'a, 'gcx, 'tcx> HashStable<StableHashingContext<'a, 'gcx, 'tcx>> for hir::E
         hcx.while_hashing_hir_bodies(true, |hcx| {
             let hir::Expr {
                 id,
+                hir_id: _,
                 ref span,
                 ref node,
                 ref attrs
@@ -626,7 +622,7 @@ impl_stable_hash_for!(enum hir::Expr_ {
     ExprBox(sub),
     ExprArray(subs),
     ExprCall(callee, args),
-    ExprMethodCall(name, ts, args),
+    ExprMethodCall(segment, span, args),
     ExprTup(fields),
     ExprBinary(op, lhs, rhs),
     ExprUnary(op, operand),
@@ -735,6 +731,7 @@ impl<'a, 'gcx, 'tcx> HashStable<StableHashingContext<'a, 'gcx, 'tcx>> for hir::T
                                           hasher: &mut StableHasher<W>) {
         let hir::TraitItem {
             id,
+            hir_id: _,
             name,
             ref attrs,
             ref node,
@@ -768,6 +765,7 @@ impl<'a, 'gcx, 'tcx> HashStable<StableHashingContext<'a, 'gcx, 'tcx>> for hir::I
                                           hasher: &mut StableHasher<W>) {
         let hir::ImplItem {
             id,
+            hir_id: _,
             name,
             ref vis,
             defaultness,
@@ -895,25 +893,28 @@ impl<'a, 'gcx, 'tcx> HashStable<StableHashingContext<'a, 'gcx, 'tcx>> for hir::I
     fn hash_stable<W: StableHasherResult>(&self,
                                           hcx: &mut StableHashingContext<'a, 'gcx, 'tcx>,
                                           hasher: &mut StableHasher<W>) {
-        let node_id_hashing_mode = match self.node {
-            hir::ItemExternCrate(..) |
+        let (node_id_hashing_mode, hash_spans) = match self.node {
             hir::ItemStatic(..)      |
             hir::ItemConst(..)       |
-            hir::ItemFn(..)          |
-            hir::ItemMod(..)         |
+            hir::ItemFn(..)          => {
+                (NodeIdHashingMode::Ignore, hcx.hash_spans())
+            }
+            hir::ItemUse(..) => {
+                (NodeIdHashingMode::HashTraitsInScope, false)
+            }
+
+            hir::ItemExternCrate(..) |
             hir::ItemForeignMod(..)  |
             hir::ItemGlobalAsm(..)   |
+            hir::ItemMod(..)         |
+            hir::ItemDefaultImpl(..) |
+            hir::ItemTrait(..)       |
+            hir::ItemImpl(..)        |
             hir::ItemTy(..)          |
             hir::ItemEnum(..)        |
             hir::ItemStruct(..)      |
-            hir::ItemUnion(..)       |
-            hir::ItemTrait(..)       |
-            hir::ItemDefaultImpl(..) |
-            hir::ItemImpl(..)        => {
-                NodeIdHashingMode::Ignore
-            }
-            hir::ItemUse(..) => {
-                NodeIdHashingMode::HashTraitsInScope
+            hir::ItemUnion(..)       => {
+                (NodeIdHashingMode::Ignore, false)
             }
         };
 
@@ -921,20 +922,23 @@ impl<'a, 'gcx, 'tcx> HashStable<StableHashingContext<'a, 'gcx, 'tcx>> for hir::I
             name,
             ref attrs,
             id,
+            hir_id: _,
             ref node,
             ref vis,
             span
         } = *self;
 
         hcx.hash_hir_item_like(attrs, |hcx| {
-            hcx.with_node_id_hashing_mode(node_id_hashing_mode, |hcx| {
-                id.hash_stable(hcx, hasher);
+            hcx.while_hashing_spans(hash_spans, |hcx| {
+                hcx.with_node_id_hashing_mode(node_id_hashing_mode, |hcx| {
+                    id.hash_stable(hcx, hasher);
+                });
+                name.hash_stable(hcx, hasher);
+                attrs.hash_stable(hcx, hasher);
+                node.hash_stable(hcx, hasher);
+                vis.hash_stable(hcx, hasher);
+                span.hash_stable(hcx, hasher);
             });
-            name.hash_stable(hcx, hasher);
-            attrs.hash_stable(hcx, hasher);
-            node.hash_stable(hcx, hasher);
-            vis.hash_stable(hcx, hasher);
-            span.hash_stable(hcx, hasher);
         });
     }
 }
@@ -1014,7 +1018,8 @@ impl_stable_hash_for!(enum hir::Stmt_ {
 
 impl_stable_hash_for!(struct hir::Arg {
     pat,
-    id
+    id,
+    hir_id
 });
 
 impl_stable_hash_for!(struct hir::Body {

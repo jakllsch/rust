@@ -16,12 +16,13 @@ use hir::def_id::{CrateNum, DefIndex};
 
 use lint;
 use middle::cstore::CrateStore;
+use middle::allocator::AllocatorKind;
 use middle::dependency_format;
 use session::search_paths::PathKind;
 use session::config::DebugInfoLevel;
 use ty::tls;
 use util::nodemap::{FxHashMap, FxHashSet};
-use util::common::duration_to_secs_str;
+use util::common::{duration_to_secs_str, ErrorReported};
 
 use syntax::ast::NodeId;
 use errors::{self, DiagnosticBuilder};
@@ -38,14 +39,16 @@ use syntax_pos::{Span, MultiSpan};
 use rustc_back::{LinkerFlavor, PanicStrategy};
 use rustc_back::target::Target;
 use rustc_data_structures::flock;
+use jobserver::Client;
 
-use std::path::{Path, PathBuf};
 use std::cell::{self, Cell, RefCell};
 use std::collections::HashMap;
 use std::env;
-use std::io::Write;
-use std::rc::Rc;
 use std::fmt;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::{Once, ONCE_INIT};
 use std::time::Duration;
 
 mod code_stats;
@@ -76,11 +79,11 @@ pub struct Session {
     // if the value stored here has been affected by path remapping.
     pub working_dir: (String, bool),
     pub lint_store: RefCell<lint::LintStore>,
-    pub lints: RefCell<lint::LintTable>,
-    /// Set of (LintId, span, message) tuples tracking lint (sub)diagnostics
-    /// that have been set once, but should not be set again, in order to avoid
-    /// redundantly verbose output (Issue #24690).
-    pub one_time_diagnostics: RefCell<FxHashSet<(lint::LintId, Span, String)>>,
+    pub buffered_lints: RefCell<Option<lint::LintBuffer>>,
+    /// Set of (LintId, Option<Span>, message) tuples tracking lint
+    /// (sub)diagnostics that have been set once, but should not be set again,
+    /// in order to avoid redundantly verbose output (Issue #24690).
+    pub one_time_diagnostics: RefCell<FxHashSet<(lint::LintId, Option<Span>, String)>>,
     pub plugin_llvm_passes: RefCell<Vec<String>>,
     pub plugin_attributes: RefCell<Vec<(String, AttributeType)>>,
     pub crate_types: RefCell<Vec<config::CrateType>>,
@@ -104,11 +107,12 @@ pub struct Session {
     /// dependency if it didn't already find one, and this tracks what was
     /// injected.
     pub injected_allocator: Cell<Option<CrateNum>>,
+    pub allocator_kind: Cell<Option<AllocatorKind>>,
     pub injected_panic_runtime: Cell<Option<CrateNum>>,
 
     /// Map from imported macro spans (which consist of
     /// the localized span for the macro body) to the
-    /// macro name and defintion span in the source crate.
+    /// macro name and definition span in the source crate.
     pub imported_macro_spans: RefCell<HashMap<Span, (String, Span)>>,
 
     incr_comp_session: RefCell<IncrCompSession>,
@@ -134,6 +138,13 @@ pub struct Session {
     pub print_fuel_crate: Option<String>,
     /// Always set to zero and incremented so that we can print fuel expended by a crate.
     pub print_fuel: Cell<u64>,
+
+    /// Loaded up early on in the initialization of this `Session` to avoid
+    /// false positives about a job server in our environment.
+    pub jobserver_from_env: Option<Client>,
+
+    /// Metadata about the allocators for the current crate being compiled
+    pub has_global_allocator: Cell<bool>,
 }
 
 pub struct PerfStats {
@@ -149,6 +160,13 @@ pub struct PerfStats {
     pub symbol_hash_time: Cell<Duration>,
     // The accumulated time spent decoding def path tables from metadata
     pub decode_def_path_tables_time: Cell<Duration>,
+}
+
+/// Enum to support dispatch of one-time diagnostics (in Session.diag_once)
+enum DiagnosticBuilderMethod {
+    Note,
+    SpanNote,
+    // add more variants as needed to support one-time diagnostics
 }
 
 impl Session {
@@ -242,7 +260,10 @@ impl Session {
     pub fn abort_if_errors(&self) {
         self.diagnostic().abort_if_errors();
     }
-    pub fn track_errors<F, T>(&self, f: F) -> Result<T, usize>
+    pub fn compile_status(&self) -> Result<(), CompileIncomplete> {
+        compile_result_from_err_count(self.err_count())
+    }
+    pub fn track_errors<F, T>(&self, f: F) -> Result<T, ErrorReported>
         where F: FnOnce() -> T
     {
         let old_count = self.err_count();
@@ -251,7 +272,7 @@ impl Session {
         if errors == 0 {
             Ok(result)
         } else {
-            Err(errors)
+            Err(ErrorReported)
         }
     }
     pub fn span_warn<S: Into<MultiSpan>>(&self, sp: S, msg: &str) {
@@ -286,22 +307,15 @@ impl Session {
         self.diagnostic().unimpl(msg)
     }
 
-    pub fn add_lint<S: Into<MultiSpan>>(&self,
-                                        lint: &'static lint::Lint,
-                                        id: ast::NodeId,
-                                        sp: S,
-                                        msg: String)
-    {
-        self.lints.borrow_mut().add_lint(lint, id, sp, msg);
-    }
-
-    pub fn add_lint_diagnostic<M>(&self,
-                                  lint: &'static lint::Lint,
-                                  id: ast::NodeId,
-                                  msg: M)
-        where M: lint::IntoEarlyLint,
-    {
-        self.lints.borrow_mut().add_lint_diagnostic(lint, id, msg);
+    pub fn buffer_lint<S: Into<MultiSpan>>(&self,
+                                           lint: &'static lint::Lint,
+                                           id: ast::NodeId,
+                                           sp: S,
+                                           msg: &str) {
+        match *self.buffered_lints.borrow_mut() {
+            Some(ref mut buffer) => buffer.add_lint(lint, id, sp.into(), msg),
+            None => bug!("can't buffer lints after HIR lowering"),
+        }
     }
 
     pub fn reserve_node_ids(&self, count: usize) -> ast::NodeId {
@@ -323,32 +337,51 @@ impl Session {
         &self.parse_sess.span_diagnostic
     }
 
-    /// Analogous to calling `.span_note` on the given DiagnosticBuilder, but
-    /// deduplicates on lint ID, span, and message for this `Session` if we're
-    /// not outputting in JSON mode.
-    //
-    // FIXME: if the need arises for one-time diagnostics other than
-    // `span_note`, we almost certainly want to generalize this
-    // "check/insert-into the one-time diagnostics map, then set message if
-    // it's not already there" code to accomodate all of them
-    pub fn diag_span_note_once<'a, 'b>(&'a self,
-                                       diag_builder: &'b mut DiagnosticBuilder<'a>,
-                                       lint: &'static lint::Lint, span: Span, message: &str) {
+    /// Analogous to calling methods on the given `DiagnosticBuilder`, but
+    /// deduplicates on lint ID, span (if any), and message for this `Session`
+    /// if we're not outputting in JSON mode.
+    fn diag_once<'a, 'b>(&'a self,
+                         diag_builder: &'b mut DiagnosticBuilder<'a>,
+                         method: DiagnosticBuilderMethod,
+                         lint: &'static lint::Lint, message: &str, span: Option<Span>) {
+        let mut do_method = || {
+            match method {
+                DiagnosticBuilderMethod::Note => {
+                    diag_builder.note(message);
+                },
+                DiagnosticBuilderMethod::SpanNote => {
+                    diag_builder.span_note(span.expect("span_note expects a span"), message);
+                }
+            }
+        };
+
         match self.opts.error_format {
             // when outputting JSON for tool consumption, the tool might want
             // the duplicates
             config::ErrorOutputType::Json => {
-                diag_builder.span_note(span, &message);
+                do_method()
             },
             _ => {
                 let lint_id = lint::LintId::of(lint);
                 let id_span_message = (lint_id, span, message.to_owned());
                 let fresh = self.one_time_diagnostics.borrow_mut().insert(id_span_message);
                 if fresh {
-                    diag_builder.span_note(span, &message);
+                    do_method()
                 }
             }
         }
+    }
+
+    pub fn diag_span_note_once<'a, 'b>(&'a self,
+                                       diag_builder: &'b mut DiagnosticBuilder<'a>,
+                                       lint: &'static lint::Lint, span: Span, message: &str) {
+        self.diag_once(diag_builder, DiagnosticBuilderMethod::SpanNote, lint, message, Some(span));
+    }
+
+    pub fn diag_note_once<'a, 'b>(&'a self,
+                                  diag_builder: &'b mut DiagnosticBuilder<'a>,
+                                  lint: &'static lint::Lint, message: &str) {
+        self.diag_once(diag_builder, DiagnosticBuilderMethod::Note, lint, message, None);
     }
 
     pub fn codemap<'a>(&'a self) -> &'a codemap::CodeMap {
@@ -356,6 +389,13 @@ impl Session {
     }
     pub fn verbose(&self) -> bool { self.opts.debugging_opts.verbose }
     pub fn time_passes(&self) -> bool { self.opts.debugging_opts.time_passes }
+    pub fn profile_queries(&self) -> bool {
+        self.opts.debugging_opts.profile_queries ||
+            self.opts.debugging_opts.profile_queries_and_keys
+    }
+    pub fn profile_queries_and_keys(&self) -> bool {
+        self.opts.debugging_opts.profile_queries_and_keys
+    }
     pub fn count_llvm_insns(&self) -> bool {
         self.opts.debugging_opts.count_llvm_insns
     }
@@ -394,6 +434,31 @@ impl Session {
         self.opts.cg.overflow_checks
             .or(self.opts.debugging_opts.force_overflow_checks)
             .unwrap_or(self.opts.debug_assertions)
+    }
+
+    pub fn crt_static(&self) -> bool {
+        // If the target does not opt in to crt-static support, use its default.
+        if self.target.target.options.crt_static_respected {
+            self.crt_static_feature()
+        } else {
+            self.target.target.options.crt_static_default
+        }
+    }
+
+    pub fn crt_static_feature(&self) -> bool {
+        let requested_features = self.opts.cg.target_feature.split(',');
+        let found_negative = requested_features.clone().any(|r| r == "-crt-static");
+        let found_positive = requested_features.clone().any(|r| r == "+crt-static");
+
+        // If the target we're compiling for requests a static crt by default,
+        // then see if the `-crt-static` feature was passed to disable that.
+        // Otherwise if we don't have a static crt by default then see if the
+        // `+crt-static` feature was passed.
+        if self.target.target.options.crt_static_default {
+            !found_negative
+        } else {
+            found_positive
+        }
     }
 
     pub fn must_not_eliminate_frame_pointers(&self) -> bool {
@@ -445,7 +510,7 @@ impl Session {
 
         *incr_comp_session = IncrCompSession::Active {
             session_directory: session_dir,
-            lock_file: lock_file,
+            lock_file,
         };
     }
 
@@ -475,7 +540,7 @@ impl Session {
 
         // Note: This will also drop the lock file, thus unlocking the directory
         *incr_comp_session = IncrCompSession::InvalidBecauseOfErrors {
-            session_directory: session_directory
+            session_directory,
         };
     }
 
@@ -655,20 +720,20 @@ pub fn build_session_(sopts: config::Options,
     let sess = Session {
         dep_graph: dep_graph.clone(),
         target: target_cfg,
-        host: host,
+        host,
         opts: sopts,
-        cstore: cstore,
+        cstore,
         parse_sess: p_s,
         // For a library crate, this is always none
         entry_fn: RefCell::new(None),
         entry_type: Cell::new(None),
         plugin_registrar_fn: Cell::new(None),
         derive_registrar_fn: Cell::new(None),
-        default_sysroot: default_sysroot,
-        local_crate_source_file: local_crate_source_file,
-        working_dir: working_dir,
+        default_sysroot,
+        local_crate_source_file,
+        working_dir,
         lint_store: RefCell::new(lint::LintStore::new()),
-        lints: RefCell::new(lint::LintTable::new()),
+        buffered_lints: RefCell::new(Some(lint::LintBuffer::new())),
         one_time_diagnostics: RefCell::new(FxHashSet()),
         plugin_llvm_passes: RefCell::new(Vec::new()),
         plugin_attributes: RefCell::new(Vec::new()),
@@ -680,6 +745,7 @@ pub fn build_session_(sopts: config::Options,
         type_length_limit: Cell::new(1048576),
         next_node_id: Cell::new(NodeId::new(1)),
         injected_allocator: Cell::new(None),
+        allocator_kind: Cell::new(None),
         injected_panic_runtime: Cell::new(None),
         imported_macro_spans: RefCell::new(HashMap::new()),
         incr_comp_session: RefCell::new(IncrCompSession::NotInitialized),
@@ -692,11 +758,29 @@ pub fn build_session_(sopts: config::Options,
             decode_def_path_tables_time: Cell::new(Duration::from_secs(0)),
         },
         code_stats: RefCell::new(CodeStats::new()),
-        optimization_fuel_crate: optimization_fuel_crate,
-        optimization_fuel_limit: optimization_fuel_limit,
-        print_fuel_crate: print_fuel_crate,
-        print_fuel: print_fuel,
+        optimization_fuel_crate,
+        optimization_fuel_limit,
+        print_fuel_crate,
+        print_fuel,
         out_of_fuel: Cell::new(false),
+        // Note that this is unsafe because it may misinterpret file descriptors
+        // on Unix as jobserver file descriptors. We hopefully execute this near
+        // the beginning of the process though to ensure we don't get false
+        // positives, or in other words we try to execute this before we open
+        // any file descriptors ourselves.
+        //
+        // Also note that we stick this in a global because there could be
+        // multiple `Session` instances in this process, and the jobserver is
+        // per-process.
+        jobserver_from_env: unsafe {
+            static mut GLOBAL_JOBSERVER: *mut Option<Client> = 0 as *mut _;
+            static INIT: Once = ONCE_INIT;
+            INIT.call_once(|| {
+                GLOBAL_JOBSERVER = Box::into_raw(Box::new(Client::from_env()));
+            });
+            (*GLOBAL_JOBSERVER).clone()
+        },
+        has_global_allocator: Cell::new(false),
     };
 
     sess
@@ -752,15 +836,23 @@ pub fn early_warn(output: config::ErrorOutputType, msg: &str) {
     handler.emit(&MultiSpan::new(), msg, errors::Level::Warning);
 }
 
-// Err(0) means compilation was stopped, but no errors were found.
-// This would be better as a dedicated enum, but using try! is so convenient.
-pub type CompileResult = Result<(), usize>;
+#[derive(Copy, Clone, Debug)]
+pub enum CompileIncomplete {
+    Stopped,
+    Errored(ErrorReported)
+}
+impl From<ErrorReported> for CompileIncomplete {
+    fn from(err: ErrorReported) -> CompileIncomplete {
+        CompileIncomplete::Errored(err)
+    }
+}
+pub type CompileResult = Result<(), CompileIncomplete>;
 
 pub fn compile_result_from_err_count(err_count: usize) -> CompileResult {
     if err_count == 0 {
         Ok(())
     } else {
-        Err(err_count)
+        Err(CompileIncomplete::Errored(ErrorReported))
     }
 }
 
@@ -768,7 +860,7 @@ pub fn compile_result_from_err_count(err_count: usize) -> CompileResult {
 #[inline(never)]
 pub fn bug_fmt(file: &'static str, line: u32, args: fmt::Arguments) -> ! {
     // this wrapper mostly exists so I don't have to write a fully
-    // qualified path of None::<Span> inside the bug!() macro defintion
+    // qualified path of None::<Span> inside the bug!() macro definition
     opt_span_bug_fmt(file, line, None::<Span>, args);
 }
 

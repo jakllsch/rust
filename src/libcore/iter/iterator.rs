@@ -482,6 +482,53 @@ pub trait Iterator {
         Map{iter: self, f: f}
     }
 
+    /// Calls a closure on each element of an iterator.
+    ///
+    /// This is equivalent to using a [`for`] loop on the iterator, although
+    /// `break` and `continue` are not possible from a closure.  It's generally
+    /// more idiomatic to use a `for` loop, but `for_each` may be more legible
+    /// when processing items at the end of longer iterator chains.  In some
+    /// cases `for_each` may also be faster than a loop, because it will use
+    /// internal iteration on adaptors like `Chain`.
+    ///
+    /// [`for`]: ../../book/first-edition/loops.html#for
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```
+    /// #![feature(iterator_for_each)]
+    ///
+    /// use std::sync::mpsc::channel;
+    ///
+    /// let (tx, rx) = channel();
+    /// (0..5).map(|x| x * 2 + 1)
+    ///       .for_each(move |x| tx.send(x).unwrap());
+    ///
+    /// let v: Vec<_> =  rx.iter().collect();
+    /// assert_eq!(v, vec![1, 3, 5, 7, 9]);
+    /// ```
+    ///
+    /// For such a small example, a `for` loop may be cleaner, but `for_each`
+    /// might be preferable to keep a functional style with longer iterators:
+    ///
+    /// ```
+    /// #![feature(iterator_for_each)]
+    ///
+    /// (0..5).flat_map(|x| x * 100 .. x * 110)
+    ///       .enumerate()
+    ///       .filter(|&(i, x)| (i + x) % 3 == 0)
+    ///       .for_each(|(i, x)| println!("{}:{}", i, x));
+    /// ```
+    #[inline]
+    #[unstable(feature = "iterator_for_each", issue = "42986")]
+    fn for_each<F>(self, mut f: F) where
+        Self: Sized, F: FnMut(Self::Item),
+    {
+        self.fold((), move |(), item| f(item));
+    }
+
     /// Creates an iterator which uses a closure to determine if an element
     /// should be yielded.
     ///
@@ -558,7 +605,7 @@ pub trait Iterator {
     /// closure returns [`None`], it will try again, and call the closure on the
     /// next element, seeing if it will return [`Some`].
     ///
-    /// Why `filter_map` and not just [`filter`].[`map`]? The key is in this
+    /// Why `filter_map` and not just [`filter`] and [`map`]? The key is in this
     /// part:
     ///
     /// [`filter`]: #method.filter
@@ -590,15 +637,14 @@ pub trait Iterator {
     /// let a = ["1", "2", "lol"];
     ///
     /// let mut iter = a.iter()
-    ///                 .map(|s| s.parse().ok())
-    ///                 .filter(|s| s.is_some());
+    ///                 .map(|s| s.parse())
+    ///                 .filter(|s| s.is_ok())
+    ///                 .map(|s| s.unwrap());
     ///
-    /// assert_eq!(iter.next(), Some(Some(1)));
-    /// assert_eq!(iter.next(), Some(Some(2)));
+    /// assert_eq!(iter.next(), Some(1));
+    /// assert_eq!(iter.next(), Some(2));
     /// assert_eq!(iter.next(), None);
     /// ```
-    ///
-    /// There's an extra layer of [`Some`] in there.
     ///
     /// [`Option<T>`]: ../../std/option/enum.Option.html
     /// [`Some`]: ../../std/option/enum.Option.html#variant.Some
@@ -1201,7 +1247,7 @@ pub trait Iterator {
     /// assert_eq!(vec![2, 4, 6], doubled);
     /// ```
     ///
-    /// Because `collect()` cares about what you're collecting into, you can
+    /// Because `collect()` only cares about what you're collecting into, you can
     /// still use a partial type hint, `_`, with the turbofish:
     ///
     /// ```

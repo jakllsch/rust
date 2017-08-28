@@ -27,13 +27,11 @@ use rustc::hir;
 pub use self::MethodError::*;
 pub use self::CandidateSource::*;
 
-pub use self::suggest::AllTraitsVec;
-
 mod confirm;
 pub mod probe;
 mod suggest;
 
-use self::probe::IsSuggestion;
+use self::probe::{IsSuggestion, ProbeScope};
 
 #[derive(Clone, Copy, Debug)]
 pub struct MethodCallee<'tcx> {
@@ -58,8 +56,13 @@ pub enum MethodError<'tcx> {
     ClosureAmbiguity(// DefId of fn trait
                      DefId),
 
-    // Found an applicable method, but it is not visible.
-    PrivateMatch(Def),
+    // Found an applicable method, but it is not visible. The second argument contains a list of
+    // not-in-scope traits which may work.
+    PrivateMatch(Def, Vec<DefId>),
+
+    // Found a `Self: Sized` bound where `Self` is a trait object, also the caller may have
+    // forgotten to import a trait.
+    IllegalSizedBound(Vec<DefId>),
 }
 
 // Contains a list of static methods that may apply, a list of unsatisfied trait predicates which
@@ -78,10 +81,10 @@ impl<'tcx> NoMatchData<'tcx> {
                mode: probe::Mode)
                -> Self {
         NoMatchData {
-            static_candidates: static_candidates,
-            unsatisfied_predicates: unsatisfied_predicates,
-            out_of_scope_traits: out_of_scope_traits,
-            mode: mode,
+            static_candidates,
+            unsatisfied_predicates,
+            out_of_scope_traits,
+            mode,
         }
     }
 }
@@ -106,12 +109,13 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                          -> bool {
         let mode = probe::Mode::MethodCall;
         match self.probe_for_name(span, mode, method_name, IsSuggestion(false),
-                                  self_ty, call_expr_id) {
+                                  self_ty, call_expr_id, ProbeScope::TraitsInScope) {
             Ok(..) => true,
             Err(NoMatch(..)) => false,
             Err(Ambiguity(..)) => true,
             Err(ClosureAmbiguity(..)) => true,
             Err(PrivateMatch(..)) => allow_private,
+            Err(IllegalSizedBound(..)) => true,
         }
     }
 
@@ -130,23 +134,25 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     /// * `supplied_method_types`: the explicit method type parameters, if any (`T1..Tn`)
     /// * `self_expr`:             the self expression (`foo`)
     pub fn lookup_method(&self,
-                         span: Span,
-                         method_name: ast::Name,
                          self_ty: ty::Ty<'tcx>,
-                         supplied_method_types: Vec<ty::Ty<'tcx>>,
+                         segment: &hir::PathSegment,
+                         span: Span,
                          call_expr: &'gcx hir::Expr,
                          self_expr: &'gcx hir::Expr)
                          -> Result<MethodCallee<'tcx>, MethodError<'tcx>> {
         debug!("lookup(method_name={}, self_ty={:?}, call_expr={:?}, self_expr={:?})",
-               method_name,
+               segment.name,
                self_ty,
                call_expr,
                self_expr);
 
-        let mode = probe::Mode::MethodCall;
-        let self_ty = self.resolve_type_vars_if_possible(&self_ty);
-        let pick = self.probe_for_name(span, mode, method_name, IsSuggestion(false),
-                                       self_ty, call_expr.id)?;
+        let pick = self.lookup_probe(
+            span,
+            segment.name,
+            self_ty,
+            call_expr,
+            ProbeScope::TraitsInScope
+        )?;
 
         if let Some(import_id) = pick.import_id {
             let import_def_id = self.tcx.hir.local_def_id(import_id);
@@ -156,18 +162,62 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 
         self.tcx.check_stability(pick.item.def_id, call_expr.id, span);
 
-        Ok(self.confirm_method(span,
-                               self_expr,
-                               call_expr,
-                               self_ty,
-                               pick,
-                               supplied_method_types))
+        let result = self.confirm_method(span,
+                                         self_expr,
+                                         call_expr,
+                                         self_ty,
+                                         pick.clone(),
+                                         segment);
+
+        if result.illegal_sized_bound {
+            // We probe again, taking all traits into account (not only those in scope).
+            let candidates =
+                match self.lookup_probe(span,
+                                        segment.name,
+                                        self_ty,
+                                        call_expr,
+                                        ProbeScope::AllTraits) {
+
+                    // If we find a different result the caller probably forgot to import a trait.
+                    Ok(ref new_pick) if *new_pick != pick => vec![new_pick.item.container.id()],
+                    Err(Ambiguity(ref sources)) => {
+                        sources.iter()
+                               .filter_map(|source| {
+                                   match *source {
+                                       // Note: this cannot come from an inherent impl,
+                                       // because the first probing succeeded.
+                                       ImplSource(def) => self.tcx.trait_id_of_impl(def),
+                                       TraitSource(_) => None,
+                                   }
+                               })
+                               .collect()
+                    }
+                    _ => Vec::new(),
+                };
+
+            return Err(IllegalSizedBound(candidates));
+        }
+
+        Ok(result.callee)
+    }
+
+    fn lookup_probe(&self,
+                    span: Span,
+                    method_name: ast::Name,
+                    self_ty: ty::Ty<'tcx>,
+                    call_expr: &'gcx hir::Expr,
+                    scope: ProbeScope)
+                    -> probe::PickResult<'tcx> {
+        let mode = probe::Mode::MethodCall;
+        let self_ty = self.resolve_type_vars_if_possible(&self_ty);
+        self.probe_for_name(span, mode, method_name, IsSuggestion(false),
+                            self_ty, call_expr.id, scope)
     }
 
     /// `lookup_method_in_trait` is used for overloaded operators.
     /// It does a very narrow slice of what the normal probe/confirm path does.
     /// In particular, it doesn't really do any probing: it simply constructs
-    /// an obligation for aparticular trait with the given self-type and checks
+    /// an obligation for a particular trait with the given self-type and checks
     /// whether that trait is implemented.
     ///
     /// FIXME(#18741) -- It seems likely that we can consolidate some of this
@@ -235,7 +285,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         // NB: Instantiate late-bound regions first so that
         // `instantiate_type_scheme` can normalize associated types that
         // may reference those regions.
-        let fn_sig = tcx.type_of(def_id).fn_sig();
+        let fn_sig = tcx.fn_sig(def_id);
         let fn_sig = self.replace_late_bound_regions_with_fresh_var(span,
                                                                     infer::FnCall,
                                                                     &fn_sig).0;
@@ -279,7 +329,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                                  ty::Predicate::WellFormed(method_ty)));
 
         let callee = MethodCallee {
-            def_id: def_id,
+            def_id,
             substs: trait_ref.substs,
             sig: fn_sig,
         };
@@ -300,7 +350,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                         -> Result<Def, MethodError<'tcx>> {
         let mode = probe::Mode::Path;
         let pick = self.probe_for_name(span, mode, method_name, IsSuggestion(false),
-                                       self_ty, expr_id)?;
+                                       self_ty, expr_id, ProbeScope::TraitsInScope)?;
 
         if let Some(import_id) = pick.import_id {
             let import_def_id = self.tcx.hir.local_def_id(import_id);

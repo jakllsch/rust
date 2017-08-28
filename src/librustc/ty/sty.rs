@@ -11,10 +11,9 @@
 //! This module contains TypeVariants and its major components
 
 use hir::def_id::DefId;
-use hir::map::DefPathHash;
 
 use middle::region;
-use ty::subst::Substs;
+use ty::subst::{Substs, Subst};
 use ty::{self, AdtDef, TypeFlags, Ty, TyCtxt, TypeFoldable};
 use ty::{Slice, TyS};
 use ty::subst::Kind;
@@ -24,7 +23,7 @@ use std::iter;
 use std::cmp::Ordering;
 use syntax::abi;
 use syntax::ast::{self, Name};
-use syntax::symbol::{keywords, InternedString};
+use syntax::symbol::keywords;
 use util::nodemap::FxHashMap;
 
 use serialize;
@@ -78,20 +77,6 @@ impl BoundRegion {
     }
 }
 
-/// When a region changed from late-bound to early-bound when #32330
-/// was fixed, its `RegionParameterDef` will have one of these
-/// structures that we can use to give nicer errors.
-#[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq, Ord, Hash,
-         RustcEncodable, RustcDecodable)]
-pub struct Issue32330 {
-    /// fn where is region declared
-    pub fn_def_id: DefId,
-
-    /// name of region; duplicates the info in BrNamed but convenient
-    /// to have it here, and this code is only temporary
-    pub region_name: ast::Name,
-}
-
 /// NB: If you change this, you'll probably want to change the corresponding
 /// AST structure in libsyntax/ast.rs as well.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable)]
@@ -138,7 +123,7 @@ pub enum TypeVariants<'tcx> {
 
     /// The anonymous type of a function declaration/definition. Each
     /// function has a unique type.
-    TyFnDef(DefId, &'tcx Substs<'tcx>, PolyFnSig<'tcx>),
+    TyFnDef(DefId, &'tcx Substs<'tcx>),
 
     /// A pointer to a function.  Written as `fn() -> i32`.
     TyFnPtr(PolyFnSig<'tcx>),
@@ -291,7 +276,8 @@ impl<'a, 'gcx, 'tcx> ExistentialPredicate<'tcx> {
         use self::ExistentialPredicate::*;
         match (*self, *other) {
             (Trait(_), Trait(_)) => Ordering::Equal,
-            (Projection(ref a), Projection(ref b)) => a.sort_key(tcx).cmp(&b.sort_key(tcx)),
+            (Projection(ref a), Projection(ref b)) =>
+                tcx.def_path_hash(a.item_def_id).cmp(&tcx.def_path_hash(b.item_def_id)),
             (AutoTrait(ref a), AutoTrait(ref b)) =>
                 tcx.trait_def(*a).def_path_hash.cmp(&tcx.trait_def(*b).def_path_hash),
             (Trait(_), _) => Ordering::Less,
@@ -551,8 +537,8 @@ impl fmt::Debug for TypeFlags {
 /// form this would be written `<T as Trait<..>>::N`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable)]
 pub struct ProjectionTy<'tcx> {
-    /// The trait reference `T as Trait<..>`.
-    pub trait_ref: ty::TraitRef<'tcx>,
+    /// The parameters of the associated item.
+    pub substs: &'tcx Substs<'tcx>,
 
     /// The DefId of the TraitItem for the associated type N.
     ///
@@ -568,16 +554,28 @@ impl<'a, 'tcx> ProjectionTy<'tcx> {
         tcx: TyCtxt, trait_ref: ty::TraitRef<'tcx>, item_name: Name
     ) -> ProjectionTy<'tcx> {
         let item_def_id = tcx.associated_items(trait_ref.def_id).find(
-            |item| item.name == item_name).unwrap().def_id;
+            |item| item.name == item_name && item.kind == ty::AssociatedKind::Type
+        ).unwrap().def_id;
 
         ProjectionTy {
-            trait_ref: trait_ref,
-            item_def_id: item_def_id,
+            substs: trait_ref.substs,
+            item_def_id,
         }
     }
 
-    pub fn item_name(self, tcx: TyCtxt) -> Name {
-        tcx.associated_item(self.item_def_id).name
+    /// Extracts the underlying trait reference from this projection.
+    /// For example, if this is a projection of `<T as Iterator>::Item`,
+    /// then this function would return a `T: Iterator` trait reference.
+    pub fn trait_ref(&self, tcx: TyCtxt) -> ty::TraitRef<'tcx> {
+        let def_id = tcx.associated_item(self.item_def_id).container.id();
+        ty::TraitRef {
+            def_id,
+            substs: self.substs,
+        }
+    }
+
+    pub fn self_ty(&self) -> Ty<'tcx> {
+        self.substs.type_at(0)
     }
 }
 
@@ -741,7 +739,7 @@ pub type Region<'tcx> = &'tcx RegionKind;
 ///
 /// The process of doing that is called "skolemization". The bound regions
 /// are replaced by skolemized markers, which don't satisfy any relation
-/// not explicity provided.
+/// not explicitly provided.
 ///
 /// There are 2 kinds of skolemized regions in rustc: `ReFree` and
 /// `ReSkolemized`. When checking an item's body, `ReFree` is supposed
@@ -861,29 +859,24 @@ pub enum InferTy {
 /// A `ProjectionPredicate` for an `ExistentialTraitRef`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable)]
 pub struct ExistentialProjection<'tcx> {
-    pub trait_ref: ExistentialTraitRef<'tcx>,
-    pub item_name: Name,
+    pub item_def_id: DefId,
+    pub substs: &'tcx Substs<'tcx>,
     pub ty: Ty<'tcx>,
 }
 
 pub type PolyExistentialProjection<'tcx> = Binder<ExistentialProjection<'tcx>>;
 
 impl<'a, 'tcx, 'gcx> ExistentialProjection<'tcx> {
-    pub fn item_name(&self) -> Name {
-        self.item_name // safe to skip the binder to access a name
-    }
-
-    pub fn sort_key(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> (DefPathHash, InternedString) {
-        // We want something here that is stable across crate boundaries.
-        // The DefId isn't but the `deterministic_hash` of the corresponding
-        // DefPath is.
-        let trait_def = tcx.trait_def(self.trait_ref.def_id);
-        let def_path_hash = trait_def.def_path_hash;
-
-        // An `ast::Name` is also not stable (it's just an index into an
-        // interning table), so map to the corresponding `InternedString`.
-        let item_name = self.item_name.as_str();
-        (def_path_hash, item_name)
+    /// Extracts the underlying existential trait reference from this projection.
+    /// For example, if this is a projection of `exists T. <T as Iterator>::Item == X`,
+    /// then this function would return a `exists T. T: Iterator` existential trait
+    /// reference.
+    pub fn trait_ref(&self, tcx: TyCtxt) -> ty::ExistentialTraitRef<'tcx> {
+        let def_id = tcx.associated_item(self.item_def_id).container.id();
+        ty::ExistentialTraitRef{
+            def_id,
+            substs: self.substs,
+        }
     }
 
     pub fn with_self_ty(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>,
@@ -894,24 +887,17 @@ impl<'a, 'tcx, 'gcx> ExistentialProjection<'tcx> {
         assert!(!self_ty.has_escaping_regions());
 
         ty::ProjectionPredicate {
-            projection_ty: ty::ProjectionTy::from_ref_and_name(
-                tcx,
-                self.trait_ref.with_self_ty(tcx, self_ty),
-                self.item_name),
+            projection_ty: ty::ProjectionTy {
+                item_def_id: self.item_def_id,
+                substs: tcx.mk_substs(
+                iter::once(Kind::from(self_ty)).chain(self.substs.iter().cloned())),
+            },
             ty: self.ty,
         }
     }
 }
 
 impl<'a, 'tcx, 'gcx> PolyExistentialProjection<'tcx> {
-    pub fn item_name(&self) -> Name {
-        self.skip_binder().item_name()
-    }
-
-    pub fn sort_key(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> (DefPathHash, InternedString) {
-        self.skip_binder().sort_key(tcx)
-    }
-
     pub fn with_self_ty(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>, self_ty: Ty<'tcx>)
         -> ty::PolyProjectionPredicate<'tcx> {
         self.map_bound(|p| p.with_self_ty(tcx, self_ty))
@@ -989,6 +975,19 @@ impl RegionKind {
         debug!("type_flags({:?}) = {:?}", self, flags);
 
         flags
+    }
+
+    // This method returns whether the given Region is Named
+    pub fn is_named_region(&self) -> bool {
+        match *self {
+            ty::ReFree(ref free_region) => {
+                match free_region.bound_region {
+                    ty::BrNamed(..) => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
     }
 }
 
@@ -1329,9 +1328,12 @@ impl<'a, 'gcx, 'tcx> TyS<'tcx> {
         }
     }
 
-    pub fn fn_sig(&self) -> PolyFnSig<'tcx> {
+    pub fn fn_sig(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> PolyFnSig<'tcx> {
         match self.sty {
-            TyFnDef(.., f) | TyFnPtr(f) => f,
+            TyFnDef(def_id, substs) => {
+                tcx.fn_sig(def_id).subst(tcx, substs)
+            }
+            TyFnPtr(f) => f,
             _ => bug!("Ty::fn_sig() called on non-fn type: {:?}", self)
         }
     }
@@ -1381,7 +1383,7 @@ impl<'a, 'gcx, 'tcx> TyS<'tcx> {
                 substs.substs.regions().collect()
             }
             TyProjection(ref data) => {
-                data.trait_ref.substs.regions().collect()
+                data.substs.regions().collect()
             }
             TyFnDef(..) |
             TyFnPtr(_) |

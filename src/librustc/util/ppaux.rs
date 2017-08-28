@@ -224,7 +224,7 @@ pub fn parameterized(f: &mut fmt::Formatter,
         start_or_continue(f, "<", ", ")?;
         ty::tls::with(|tcx|
             write!(f, "{}={}",
-            projection.projection_ty.item_name(tcx),
+            tcx.associated_item(projection.projection_ty.item_def_id).name,
             projection.ty)
         )?;
     }
@@ -753,8 +753,14 @@ impl<'tcx> fmt::Display for ty::TypeVariants<'tcx> {
                 }
                 write!(f, ")")
             }
-            TyFnDef(def_id, substs, ref bare_fn) => {
-                write!(f, "{} {{", bare_fn.0)?;
+            TyFnDef(def_id, substs) => {
+                ty::tls::with(|tcx| {
+                    let mut sig = tcx.fn_sig(def_id);
+                    if let Some(substs) = tcx.lift(&substs) {
+                        sig = sig.subst(tcx, substs);
+                    }
+                    write!(f, "{} {{", sig.0)
+                })?;
                 parameterized(f, substs, def_id, &[])?;
                 write!(f, "}}")
             }
@@ -858,9 +864,9 @@ impl<'tcx> fmt::Display for ty::TyS<'tcx> {
 
 impl fmt::Debug for ty::UpvarId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "UpvarId({};`{}`;{})",
+        write!(f, "UpvarId({:?};`{}`;{:?})",
                self.var_id,
-               ty::tls::with(|tcx| tcx.local_var_name_str(self.var_id)),
+               ty::tls::with(|tcx| tcx.local_var_name_str_def_index(self.var_id)),
                self.closure_expr_id)
     }
 }
@@ -952,9 +958,14 @@ impl<'tcx> fmt::Display for ty::ProjectionPredicate<'tcx> {
 
 impl<'tcx> fmt::Display for ty::ProjectionTy<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let item_name = ty::tls::with(|tcx| self.item_name(tcx));
+        // FIXME(tschottdorf): use something like
+        //   parameterized(f, self.substs, self.item_def_id, &[])
+        // (which currently ICEs).
+        let (trait_ref, item_name) = ty::tls::with(|tcx|
+            (self.trait_ref(tcx), tcx.associated_item(self.item_def_id).name)
+        );
         write!(f, "{:?}::{}",
-               self.trait_ref,
+               trait_ref,
                item_name)
     }
 }

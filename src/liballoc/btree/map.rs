@@ -234,7 +234,7 @@ impl<K, Q: ?Sized> super::Recover<Q> for BTreeMap<K, ()>
         match search::search_tree(self.root.as_mut(), key) {
             Found(handle) => {
                 Some(OccupiedEntry {
-                         handle: handle,
+                         handle,
                          length: &mut self.length,
                          _marker: PhantomData,
                      }
@@ -250,8 +250,8 @@ impl<K, Q: ?Sized> super::Recover<Q> for BTreeMap<K, ()>
             Found(handle) => Some(mem::replace(handle.into_kv_mut().0, key)),
             GoDown(handle) => {
                 VacantEntry {
-                    key: key,
-                    handle: handle,
+                    key,
+                    handle,
                     length: &mut self.length,
                     _marker: PhantomData,
                 }
@@ -334,9 +334,9 @@ pub struct Keys<'a, K: 'a, V: 'a> {
 }
 
 #[stable(feature = "collection_debug", since = "1.17.0")]
-impl<'a, K: 'a + fmt::Debug, V: 'a + fmt::Debug> fmt::Debug for Keys<'a, K, V> {
+impl<'a, K: 'a + fmt::Debug, V: 'a> fmt::Debug for Keys<'a, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_list().entries(self.inner.clone()).finish()
+        f.debug_list().entries(self.clone()).finish()
     }
 }
 
@@ -353,9 +353,9 @@ pub struct Values<'a, K: 'a, V: 'a> {
 }
 
 #[stable(feature = "collection_debug", since = "1.17.0")]
-impl<'a, K: 'a + fmt::Debug, V: 'a + fmt::Debug> fmt::Debug for Values<'a, K, V> {
+impl<'a, K: 'a, V: 'a + fmt::Debug> fmt::Debug for Values<'a, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_list().entries(self.inner.clone()).finish()
+        f.debug_list().entries(self.clone()).finish()
     }
 }
 
@@ -695,7 +695,7 @@ impl<K: Ord, V> BTreeMap<K, V> {
         match search::search_tree(self.root.as_mut(), key) {
             Found(handle) => {
                 Some(OccupiedEntry {
-                         handle: handle,
+                         handle,
                          length: &mut self.length,
                          _marker: PhantomData,
                      }
@@ -866,15 +866,15 @@ impl<K: Ord, V> BTreeMap<K, V> {
         match search::search_tree(self.root.as_mut(), &key) {
             Found(handle) => {
                 Occupied(OccupiedEntry {
-                    handle: handle,
+                    handle,
                     length: &mut self.length,
                     _marker: PhantomData,
                 })
             }
             GoDown(handle) => {
                 Vacant(VacantEntry {
-                    key: key,
-                    handle: handle,
+                    key,
+                    handle,
                     length: &mut self.length,
                     _marker: PhantomData,
                 })

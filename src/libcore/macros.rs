@@ -8,6 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#[macro_export]
+// This stability attribute is totally useless.
+#[stable(feature = "rust1", since = "1.0.0")]
+#[cfg(stage0)]
+macro_rules! __rust_unstable_column {
+    () => {
+        column!()
+    }
+}
+
 /// Entry point of thread panic, for details, see std::macros
 #[macro_export]
 #[allow_internal_unstable]
@@ -17,16 +27,18 @@ macro_rules! panic {
         panic!("explicit panic")
     );
     ($msg:expr) => ({
-        static _MSG_FILE_LINE: (&'static str, &'static str, u32) = ($msg, file!(), line!());
-        $crate::panicking::panic(&_MSG_FILE_LINE)
+        static _MSG_FILE_LINE_COL: (&'static str, &'static str, u32, u32) =
+            ($msg, file!(), line!(), __rust_unstable_column!());
+        $crate::panicking::panic(&_MSG_FILE_LINE_COL)
     });
     ($fmt:expr, $($arg:tt)*) => ({
         // The leading _'s are to avoid dead code warnings if this is
         // used inside a dead function. Just `#[allow(dead_code)]` is
         // insufficient, since the user may have
         // `#[forbid(dead_code)]` and which cannot be overridden.
-        static _FILE_LINE: (&'static str, u32) = (file!(), line!());
-        $crate::panicking::panic_fmt(format_args!($fmt, $($arg)*), &_FILE_LINE)
+        static _MSG_FILE_LINE_COL: (&'static str, u32, u32) =
+            (file!(), line!(), __rust_unstable_column!());
+        $crate::panicking::panic_fmt(format_args!($fmt, $($arg)*), &_MSG_FILE_LINE_COL)
     });
 }
 
@@ -116,8 +128,9 @@ macro_rules! assert_eq {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if !(*left_val == *right_val) {
-                    panic!("assertion failed: `(left == right)` \
-                           (left: `{:?}`, right: `{:?}`)", left_val, right_val)
+                    panic!(r#"assertion failed: `(left == right)`
+  left: `{:?}`,
+ right: `{:?}`"#, left_val, right_val)
                 }
             }
         }
@@ -126,8 +139,9 @@ macro_rules! assert_eq {
         match (&($left), &($right)) {
             (left_val, right_val) => {
                 if !(*left_val == *right_val) {
-                    panic!("assertion failed: `(left == right)` \
-                           (left: `{:?}`, right: `{:?}`): {}", left_val, right_val,
+                    panic!(r#"assertion failed: `(left == right)`
+  left: `{:?}`,
+ right: `{:?}`: {}"#, left_val, right_val,
                            format_args!($($arg)+))
                 }
             }
@@ -162,8 +176,9 @@ macro_rules! assert_ne {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if *left_val == *right_val {
-                    panic!("assertion failed: `(left != right)` \
-                           (left: `{:?}`, right: `{:?}`)", left_val, right_val)
+                    panic!(r#"assertion failed: `(left != right)`
+  left: `{:?}`,
+ right: `{:?}`"#, left_val, right_val)
                 }
             }
         }
@@ -172,8 +187,9 @@ macro_rules! assert_ne {
         match (&($left), &($right)) {
             (left_val, right_val) => {
                 if *left_val == *right_val {
-                    panic!("assertion failed: `(left != right)` \
-                           (left: `{:?}`, right: `{:?}`): {}", left_val, right_val,
+                    panic!(r#"assertion failed: `(left != right)`
+  left: `{:?}`,
+ right: `{:?}`: {}"#, left_val, right_val,
                            format_args!($($arg)+))
                 }
             }
@@ -456,7 +472,7 @@ macro_rules! writeln {
 ///
 /// # Panics
 ///
-/// This will always panic.
+/// This will always [panic!](macro.panic.html)
 ///
 /// # Examples
 ///
@@ -562,6 +578,17 @@ macro_rules! unimplemented {
 ///
 /// For more information, see documentation for `std`'s macros.
 mod builtin {
+
+    /// Unconditionally causes compilation to fail with the given error message when encountered.
+    ///
+    /// For more information, see the [RFC].
+    ///
+    /// [RFC]: https://github.com/rust-lang/rfcs/blob/master/text/1695-add-error-macro.md
+    #[stable(feature = "compile_error_macro", since = "1.20.0")]
+    #[macro_export]
+    #[cfg(dox)]
+    macro_rules! compile_error { ($msg:expr) => ({ /* compiler built-in */ }) }
+
     /// The core macro for formatted string creation & output.
     ///
     /// For more information, see the documentation for [`std::format_args!`].

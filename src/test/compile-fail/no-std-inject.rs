@@ -9,8 +9,9 @@
 // except according to those terms.
 
 #![no_std]
+#![allow(unused_extern_crates)]
 
-extern crate core; //~ ERROR: an extern crate named `core` has already
+extern crate core; //~ ERROR: the name `core` is defined multiple times
 extern crate std;
 
 fn main() {}

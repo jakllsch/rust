@@ -9,7 +9,7 @@
 // except according to those terms.
 
 use LinkerFlavor;
-use target::{Target, TargetResult};
+use target::{Target, TargetResult, RelroLevel};
 
 pub fn target() -> TargetResult {
     let mut base = super::linux_base::opts();
@@ -17,8 +17,12 @@ pub fn target() -> TargetResult {
     base.pre_link_args.get_mut(&LinkerFlavor::Gcc).unwrap().push("-m64".to_string());
     base.max_atomic_width = Some(64);
 
+    // ld.so in at least RHEL6 on ppc64 has a bug related to BIND_NOW, so only enable partial RELRO
+    // for now. https://github.com/rust-lang/rust/pull/43170#issuecomment-315411474
+    base.relro_level = RelroLevel::Partial;
+
     // see #36994
-    base.exe_allocation_crate = "alloc_system".to_string();
+    base.exe_allocation_crate = None;
 
     Ok(Target {
         llvm_target: "powerpc64-unknown-linux-gnu".to_string(),

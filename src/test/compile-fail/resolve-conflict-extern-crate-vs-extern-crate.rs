@@ -8,7 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#[allow(unused_extern_crates)]
 extern crate std;
-//~^ ERROR an extern crate named `std` has already been imported
+//~^ ERROR the name `std` is defined multiple times
 
 fn main(){}

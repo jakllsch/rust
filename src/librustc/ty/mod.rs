@@ -15,7 +15,6 @@ pub use self::IntVarValue::*;
 pub use self::LvaluePreference::*;
 pub use self::fold::TypeFoldable;
 
-use dep_graph::{DepNode, DepConstructor};
 use hir::{map as hir_map, FreevarMap, TraitMap};
 use hir::def::{Def, CtorKind, ExportMap};
 use hir::def_id::{CrateNum, DefId, DefIndex, CRATE_DEF_INDEX, LOCAL_CRATE};
@@ -68,14 +67,16 @@ pub use self::sty::{ExistentialTraitRef, PolyExistentialTraitRef};
 pub use self::sty::{ExistentialProjection, PolyExistentialProjection};
 pub use self::sty::{BoundRegion, EarlyBoundRegion, FreeRegion, Region};
 pub use self::sty::RegionKind;
-pub use self::sty::Issue32330;
 pub use self::sty::{TyVid, IntVid, FloatVid, RegionVid, SkolemizedRegionVid};
 pub use self::sty::BoundRegion::*;
 pub use self::sty::InferTy::*;
 pub use self::sty::RegionKind::*;
 pub use self::sty::TypeVariants::*;
 
-pub use self::context::{TyCtxt, GlobalArenas, tls};
+pub use self::binding::BindingMode;
+pub use self::binding::BindingMode::*;
+
+pub use self::context::{TyCtxt, GlobalArenas, tls, keep_local};
 pub use self::context::{Lift, TypeckTables};
 
 pub use self::instance::{Instance, InstanceDef};
@@ -85,6 +86,7 @@ pub use self::trait_def::TraitDef;
 pub use self::maps::queries;
 
 pub mod adjustment;
+pub mod binding;
 pub mod cast;
 pub mod error;
 pub mod fast_reject;
@@ -129,6 +131,7 @@ pub struct Resolutions {
     pub freevars: FreevarMap,
     pub trait_map: TraitMap,
     pub maybe_unused_trait_imports: NodeSet,
+    pub maybe_unused_extern_crates: Vec<(NodeId, Span)>,
     pub export_map: ExportMap,
 }
 
@@ -158,7 +161,7 @@ pub struct ImplHeader<'tcx> {
     pub predicates: Vec<Predicate<'tcx>>,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct AssociatedItem {
     pub def_id: DefId,
     pub name: Name,
@@ -172,7 +175,7 @@ pub struct AssociatedItem {
     pub method_has_self_argument: bool,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash, RustcEncodable, RustcDecodable)]
 pub enum AssociatedKind {
     Const,
     Method,
@@ -206,7 +209,7 @@ impl AssociatedItem {
                 // late-bound regions, and we don't want method signatures to show up
                 // `as for<'r> fn(&'r MyType)`.  Pretty-printing handles late-bound
                 // regions just fine, showing `fn(&MyType)`.
-                format!("{}", tcx.type_of(self.def_id).fn_sig().skip_binder())
+                format!("{}", tcx.fn_sig(self.def_id).skip_binder())
             }
             ty::AssociatedKind::Type => format!("type {};", self.name.to_string()),
             ty::AssociatedKind::Const => {
@@ -481,9 +484,22 @@ impl<'tcx> TyS<'tcx> {
             _ => false,
         }
     }
+
+    pub fn is_suggestable(&self) -> bool {
+        match self.sty {
+            TypeVariants::TyAnon(..) |
+            TypeVariants::TyFnDef(..) |
+            TypeVariants::TyFnPtr(..) |
+            TypeVariants::TyDynamic(..) |
+            TypeVariants::TyClosure(..) |
+            TypeVariants::TyInfer(..) |
+            TypeVariants::TyProjection(..) => false,
+            _ => true,
+        }
+    }
 }
 
-impl<'a, 'gcx, 'tcx> HashStable<StableHashingContext<'a, 'gcx, 'tcx>> for ty::TyS<'tcx> {
+impl<'a, 'gcx, 'tcx> HashStable<StableHashingContext<'a, 'gcx, 'tcx>> for ty::TyS<'gcx> {
     fn hash_stable<W: StableHasherResult>(&self,
                                           hcx: &mut StableHashingContext<'a, 'gcx, 'tcx>,
                                           hasher: &mut StableHasher<W>) {
@@ -557,8 +573,8 @@ impl<T> Slice<T> {
 /// by the upvar) and the id of the closure expression.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
 pub struct UpvarId {
-    pub var_id: NodeId,
-    pub closure_expr_id: NodeId,
+    pub var_id: DefIndex,
+    pub closure_expr_id: DefIndex,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable, Copy)]
@@ -665,7 +681,6 @@ pub struct RegionParameterDef {
     pub name: Name,
     pub def_id: DefId,
     pub index: u32,
-    pub issue_32330: Option<ty::Issue32330>,
 
     /// `pure_wrt_drop`, set by the (unsafe) `#[may_dangle]` attribute
     /// on generic parameter `'a`, asserts data of lifetime `'a`
@@ -708,6 +723,7 @@ pub struct Generics {
     pub type_param_to_index: BTreeMap<DefIndex, u32>,
 
     pub has_self: bool,
+    pub has_late_bound_regions: Option<Span>,
 }
 
 impl Generics {
@@ -935,28 +951,6 @@ impl<'tcx> TraitPredicate<'tcx> {
         self.trait_ref.def_id
     }
 
-    /// Creates the dep-node for selecting/evaluating this trait reference.
-    fn dep_node(&self, tcx: TyCtxt) -> DepNode {
-        // Extact the trait-def and first def-id from inputs.  See the
-        // docs for `DepNode::TraitSelect` for more information.
-        let trait_def_id = self.def_id();
-        let input_def_id =
-            self.input_types()
-                .flat_map(|t| t.walk())
-                .filter_map(|t| match t.sty {
-                    ty::TyAdt(adt_def, ..) => Some(adt_def.did),
-                    ty::TyClosure(def_id, ..) => Some(def_id),
-                    ty::TyFnDef(def_id, ..) => Some(def_id),
-                    _ => None
-                })
-                .next()
-                .unwrap_or(trait_def_id);
-        DepNode::new(tcx, DepConstructor::TraitSelect {
-            trait_def_id: trait_def_id,
-            input_def_id: input_def_id
-        })
-    }
-
     pub fn input_types<'a>(&'a self) -> impl DoubleEndedIterator<Item=Ty<'tcx>> + 'a {
         self.trait_ref.input_types()
     }
@@ -970,11 +964,6 @@ impl<'tcx> PolyTraitPredicate<'tcx> {
     pub fn def_id(&self) -> DefId {
         // ok to skip binder since trait def-id does not care about regions
         self.0.def_id()
-    }
-
-    pub fn dep_node(&self, tcx: TyCtxt) -> DepNode {
-        // ok to skip binder since depnode does not care about regions
-        self.0.dep_node(tcx)
     }
 }
 
@@ -1018,8 +1007,13 @@ pub struct ProjectionPredicate<'tcx> {
 pub type PolyProjectionPredicate<'tcx> = Binder<ProjectionPredicate<'tcx>>;
 
 impl<'tcx> PolyProjectionPredicate<'tcx> {
-    pub fn item_name(&self, tcx: TyCtxt) -> Name {
-        self.0.projection_ty.item_name(tcx) // safe to skip the binder to access a name
+    pub fn to_poly_trait_ref(&self, tcx: TyCtxt) -> PolyTraitRef<'tcx> {
+        // Note: unlike with TraitRef::to_poly_trait_ref(),
+        // self.0.trait_ref is permitted to have escaping regions.
+        // This is because here `self` has a `Binder` and so does our
+        // return value, so we are preserving the number of binding
+        // levels.
+        ty::Binder(self.0.projection_ty.trait_ref(tcx))
     }
 }
 
@@ -1037,17 +1031,6 @@ impl<'tcx> ToPolyTraitRef<'tcx> for TraitRef<'tcx> {
 impl<'tcx> ToPolyTraitRef<'tcx> for PolyTraitPredicate<'tcx> {
     fn to_poly_trait_ref(&self) -> PolyTraitRef<'tcx> {
         self.map_bound_ref(|trait_pred| trait_pred.trait_ref)
-    }
-}
-
-impl<'tcx> ToPolyTraitRef<'tcx> for PolyProjectionPredicate<'tcx> {
-    fn to_poly_trait_ref(&self) -> PolyTraitRef<'tcx> {
-        // Note: unlike with TraitRef::to_poly_trait_ref(),
-        // self.0.trait_ref is permitted to have escaping regions.
-        // This is because here `self` has a `Binder` and so does our
-        // return value, so we are preserving the number of binding
-        // levels.
-        ty::Binder(self.0.projection_ty.trait_ref)
     }
 }
 
@@ -1120,8 +1103,7 @@ impl<'tcx> Predicate<'tcx> {
                 vec![]
             }
             ty::Predicate::Projection(ref data) => {
-                let trait_inputs = data.0.projection_ty.trait_ref.input_types();
-                trait_inputs.chain(Some(data.0.ty)).collect()
+                data.0.projection_ty.substs.types().chain(Some(data.0.ty)).collect()
             }
             ty::Predicate::WellFormed(data) => {
                 vec![data]
@@ -1232,12 +1214,12 @@ impl<'tcx> ParamEnv<'tcx> {
         if value.has_param_types() || value.has_self_ty() {
             ParamEnvAnd {
                 param_env: self,
-                value: value,
+                value,
             }
         } else {
             ParamEnvAnd {
                 param_env: ParamEnv::empty(self.reveal),
-                value: value,
+                value,
             }
         }
     }
@@ -1386,7 +1368,7 @@ impl_stable_hash_for!(struct ReprFlags {
 #[derive(Copy, Clone, Eq, PartialEq, RustcEncodable, RustcDecodable, Default)]
 pub struct ReprOptions {
     pub int: Option<attr::IntType>,
-    pub align: u16,
+    pub align: u32,
     pub flags: ReprFlags,
 }
 
@@ -1475,10 +1457,10 @@ impl<'a, 'gcx, 'tcx> AdtDef {
             AdtKind::Struct => {}
         }
         AdtDef {
-            did: did,
-            variants: variants,
-            flags: flags,
-            repr: repr,
+            did,
+            variants,
+            flags,
+            repr,
         }
     }
 
@@ -1604,14 +1586,15 @@ impl<'a, 'gcx, 'tcx> AdtDef {
     #[inline]
     pub fn discriminants(&'a self, tcx: TyCtxt<'a, 'gcx, 'tcx>)
                          -> impl Iterator<Item=ConstInt> + 'a {
+        let param_env = ParamEnv::empty(traits::Reveal::UserFacing);
         let repr_type = self.repr.discr_type();
         let initial = repr_type.initial_discriminant(tcx.global_tcx());
         let mut prev_discr = None::<ConstInt>;
         self.variants.iter().map(move |v| {
             let mut discr = prev_discr.map_or(initial, |d| d.wrap_incr());
             if let VariantDiscr::Explicit(expr_did) = v.discr {
-                let substs = Substs::empty();
-                match tcx.const_eval((expr_did, substs)) {
+                let substs = Substs::identity_for_item(tcx.global_tcx(), expr_did);
+                match tcx.const_eval(param_env.and((expr_did, substs))) {
                     Ok(ConstVal::Integral(v)) => {
                         discr = v;
                     }
@@ -1639,6 +1622,7 @@ impl<'a, 'gcx, 'tcx> AdtDef {
                                     tcx: TyCtxt<'a, 'gcx, 'tcx>,
                                     variant_index: usize)
                                     -> ConstInt {
+        let param_env = ParamEnv::empty(traits::Reveal::UserFacing);
         let repr_type = self.repr.discr_type();
         let mut explicit_value = repr_type.initial_discriminant(tcx.global_tcx());
         let mut explicit_index = variant_index;
@@ -1649,8 +1633,8 @@ impl<'a, 'gcx, 'tcx> AdtDef {
                     explicit_index -= distance;
                 }
                 ty::VariantDiscr::Explicit(expr_did) => {
-                    let substs = Substs::empty();
-                    match tcx.const_eval((expr_did, substs)) {
+                    let substs = Substs::identity_for_item(tcx.global_tcx(), expr_did);
+                    match tcx.const_eval(param_env.and((expr_did, substs))) {
                         Ok(ConstVal::Integral(v)) => {
                             explicit_value = v;
                             break;
@@ -1701,12 +1685,15 @@ impl<'a, 'gcx, 'tcx> AdtDef {
     pub fn sized_constraint(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> &'tcx [Ty<'tcx>] {
         match queries::adt_sized_constraint::try_get(tcx, DUMMY_SP, self.did) {
             Ok(tys) => tys,
-            Err(_) => {
+            Err(mut bug) => {
                 debug!("adt_sized_constraint: {:?} is recursive", self);
                 // This should be reported as an error by `check_representable`.
                 //
                 // Consider the type as Sized in the meanwhile to avoid
-                // further errors.
+                // further errors. Delay our `bug` diagnostic here to get
+                // emitted later as well in case we accidentally otherwise don't
+                // emit an error.
+                bug.delay_as_bug();
                 tcx.intern_type_list(&[tcx.types.err])
             }
         }
@@ -1988,7 +1975,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 
     pub fn local_var_name_str(self, id: NodeId) -> InternedString {
         match self.hir.find(id) {
-            Some(hir_map::NodeLocal(pat)) => {
+            Some(hir_map::NodeBinding(pat)) => {
                 match pat.node {
                     hir::PatKind::Binding(_, _, ref path1, _) => path1.node.as_str(),
                     _ => {
@@ -1998,6 +1985,11 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             },
             r => bug!("Variable id {} maps to {:?}, not local", id, r),
         }
+    }
+
+    pub fn local_var_name_str_def_index(self, def_index: DefIndex) -> InternedString {
+        let node_id = self.hir.as_local_node_id(DefId::local(def_index)).unwrap();
+        self.local_var_name_str(node_id)
     }
 
     pub fn expr_is_lval(self, expr: &hir::Expr) -> bool {
@@ -2101,11 +2093,11 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 
         AssociatedItem {
             name: trait_item_ref.name,
-            kind: kind,
+            kind,
             // Visibility of trait items is inherited from their traits.
             vis: Visibility::from_hir(parent_vis, trait_item_ref.id.node_id, self),
             defaultness: trait_item_ref.defaultness,
-            def_id: def_id,
+            def_id,
             container: TraitContainer(parent_def_id),
             method_has_self_argument: has_self
         }
@@ -2126,11 +2118,11 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 
         ty::AssociatedItem {
             name: impl_item_ref.name,
-            kind: kind,
+            kind,
             // Visibility of trait impl items doesn't matter.
             vis: ty::Visibility::from_hir(&impl_item_ref.vis, impl_item_ref.id.node_id, self),
             defaultness: impl_item_ref.defaultness,
-            def_id: def_id,
+            def_id,
             container: ImplContainer(parent_def_id),
             method_has_self_argument: has_self
         }
@@ -2244,7 +2236,8 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             ty::InstanceDef::FnPtrShim(..) |
             ty::InstanceDef::Virtual(..) |
             ty::InstanceDef::ClosureOnceShim { .. } |
-            ty::InstanceDef::DropGlue(..) => {
+            ty::InstanceDef::DropGlue(..) |
+            ty::InstanceDef::CloneShim(..) => {
                 self.mir_shims(instance)
             }
         }
@@ -2525,7 +2518,6 @@ pub fn provide(providers: &mut ty::maps::Providers) {
         param_env,
         trait_of_item,
         trait_impls_of: trait_def::trait_impls_of_provider,
-        relevant_trait_impls_for: trait_def::relevant_trait_impls_provider,
         ..*providers
     };
 }
@@ -2535,7 +2527,6 @@ pub fn provide_extern(providers: &mut ty::maps::Providers) {
         adt_sized_constraint,
         adt_dtorck_constraint,
         trait_impls_of: trait_def::trait_impls_of_provider,
-        relevant_trait_impls_for: trait_def::relevant_trait_impls_provider,
         param_env,
         ..*providers
     };

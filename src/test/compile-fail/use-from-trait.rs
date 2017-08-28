@@ -8,7 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(associated_consts)]
 
 use Trait::foo;
 //~^ ERROR `foo` is not directly importable
@@ -18,11 +17,11 @@ use Trait::C;
 //~^ ERROR `C` is not directly importable
 
 use Foo::new;
-//~^ ERROR unresolved import `Foo::new` [E0432]
+//~^ ERROR unresolved import `Foo` [E0432]
 //~| Not a module `Foo`
 
 use Foo::C2;
-//~^ ERROR unresolved import `Foo::C2` [E0432]
+//~^ ERROR unresolved import `Foo` [E0432]
 //~| Not a module `Foo`
 
 pub trait Trait {

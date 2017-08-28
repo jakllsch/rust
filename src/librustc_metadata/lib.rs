@@ -8,9 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![crate_name = "rustc_metadata"]
-#![crate_type = "dylib"]
-#![crate_type = "rlib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/")]
@@ -26,14 +23,13 @@
 #![feature(specialization)]
 #![feature(discriminant_value)]
 #![feature(rustc_private)]
-#![feature(sort_unstable)]
 
 #[macro_use]
 extern crate log;
 #[macro_use]
 extern crate syntax;
 extern crate syntax_pos;
-extern crate flate;
+extern crate flate2;
 extern crate serialize as rustc_serialize; // used by deriving
 extern crate owning_ref;
 extern crate rustc_errors as errors;
@@ -43,12 +39,9 @@ extern crate proc_macro;
 #[macro_use]
 extern crate rustc;
 extern crate rustc_back;
-extern crate rustc_const_math;
 extern crate rustc_data_structures;
 
 mod diagnostics;
-
-pub use rustc::middle;
 
 mod astencode;
 mod index_builder;

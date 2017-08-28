@@ -13,7 +13,7 @@
                       slightly, especially to possibly take into account the \
                       types being stored to make room for a future \
                       tracing garbage collector",
-            issue = "27700")]
+            issue = "32838")]
 
 use core::cmp;
 use core::fmt;
@@ -40,7 +40,7 @@ fn size_align<T>() -> (usize, usize) {
 ///
 /// (Note however that layouts are *not* required to have positive
 /// size, even though many allocators require that all memory
-/// requeusts have positive size. A caller to the `Alloc::alloc`
+/// requests have positive size. A caller to the `Alloc::alloc`
 /// method must either ensure that conditions like this are met, or
 /// use specific allocators with looser requirements.)
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,16 +65,23 @@ pub struct Layout {
 
 impl Layout {
     /// Constructs a `Layout` from a given `size` and `align`,
-    /// or returns `None` if either of the following conditions
+    /// or returns `None` if any of the following conditions
     /// are not met:
     ///
     /// * `align` must be a power of two,
     ///
+    /// * `align` must not exceed 2^31 (i.e. `1 << 31`),
+    ///
     /// * `size`, when rounded up to the nearest multiple of `align`,
     ///    must not overflow (i.e. the rounded value must be less than
     ///    `usize::MAX`).
+    #[inline]
     pub fn from_size_align(size: usize, align: usize) -> Option<Layout> {
         if !align.is_power_of_two() {
+            return None;
+        }
+
+        if align > (1 << 31) {
             return None;
         }
 
@@ -96,13 +103,30 @@ impl Layout {
             return None;
         }
 
-        Some(Layout { size: size, align: align })
+        unsafe {
+            Some(Layout::from_size_align_unchecked(size, align))
+        }
+    }
+
+    /// Creates a layout, bypassing all checks.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe as it does not verify that `align` is
+    /// a power-of-two that is also less than or equal to 2^31, nor
+    /// that `size` aligned to `align` fits within the address space
+    /// (i.e. the `Layout::from_size_align` preconditions).
+    #[inline]
+    pub unsafe fn from_size_align_unchecked(size: usize, align: usize) -> Layout {
+        Layout { size: size, align: align }
     }
 
     /// The minimum size in bytes for a memory block of this layout.
+    #[inline]
     pub fn size(&self) -> usize { self.size }
 
     /// The minimum byte alignment for a memory block of this layout.
+    #[inline]
     pub fn align(&self) -> usize { self.align }
 
     /// Constructs a `Layout` suitable for holding a value of type `T`.
@@ -135,6 +159,7 @@ impl Layout {
     ///
     /// Panics if the combination of `self.size` and the given `align`
     /// violates the conditions listed in `from_size_align`.
+    #[inline]
     pub fn align_to(&self, align: usize) -> Self {
         Layout::from_size_align(self.size, cmp::max(self.align, align)).unwrap()
     }
@@ -155,6 +180,7 @@ impl Layout {
     /// to be less than or equal to the alignment of the starting
     /// address for the whole allocated block of memory. One way to
     /// satisfy this constraint is to ensure `align <= self.align`.
+    #[inline]
     pub fn padding_needed_for(&self, align: usize) -> usize {
         let len = self.size();
 
@@ -189,6 +215,7 @@ impl Layout {
     /// of each element in the array.
     ///
     /// On arithmetic overflow, returns `None`.
+    #[inline]
     pub fn repeat(&self, n: usize) -> Option<(Self, usize)> {
         let padded_size = match self.size.checked_add(self.padding_needed_for(self.align)) {
             None => return None,
@@ -199,10 +226,10 @@ impl Layout {
             Some(alloc_size) => alloc_size,
         };
 
-        // We can assume that `self.align` is a power-of-two.
-        // Furthermore, `alloc_size` has alreayd been rounded up
-        // to a multiple of `self.align`; therefore, the call
-        // to `Layout::from_size_align` below should never panic.
+        // We can assume that `self.align` is a power-of-two that does
+        // not exceed 2^31. Furthermore, `alloc_size` has already been
+        // rounded up to a multiple of `self.align`; therefore, the
+        // call to `Layout::from_size_align` below should never panic.
         Some((Layout::from_size_align(alloc_size, self.align).unwrap(), padded_size))
     }
 
@@ -213,7 +240,7 @@ impl Layout {
     ///
     /// Returns `Some((k, offset))`, where `k` is layout of the concatenated
     /// record and `offset` is the relative location, in bytes, of the
-    /// start of the `next` embedded witnin the concatenated record
+    /// start of the `next` embedded within the concatenated record
     /// (assuming that the record itself starts at offset 0).
     ///
     /// On arithmetic overflow, returns `None`.
@@ -266,11 +293,11 @@ impl Layout {
     /// Creates a layout describing the record for `self` followed by
     /// `next` with no additional padding between the two. Since no
     /// padding is inserted, the alignment of `next` is irrelevant,
-    /// and is not incoporated *at all* into the resulting layout.
+    /// and is not incorporated *at all* into the resulting layout.
     ///
     /// Returns `(k, offset)`, where `k` is layout of the concatenated
     /// record and `offset` is the relative location, in bytes, of the
-    /// start of the `next` embedded witnin the concatenated record
+    /// start of the `next` embedded within the concatenated record
     /// (assuming that the record itself starts at offset 0).
     ///
     /// (The `offset` is always the same as `self.size()`; we use this
@@ -327,15 +354,19 @@ pub enum AllocErr {
 }
 
 impl AllocErr {
+    #[inline]
     pub fn invalid_input(details: &'static str) -> Self {
         AllocErr::Unsupported { details: details }
     }
+    #[inline]
     pub fn is_memory_exhausted(&self) -> bool {
         if let AllocErr::Exhausted { .. } = *self { true } else { false }
     }
+    #[inline]
     pub fn is_request_unsupported(&self) -> bool {
         if let AllocErr::Unsupported { .. } = *self { true } else { false }
     }
+    #[inline]
     pub fn description(&self) -> &str {
         match *self {
             AllocErr::Exhausted { .. } => "allocator memory exhausted",
@@ -454,7 +485,7 @@ pub unsafe trait Alloc {
     /// behavior, e.g. to ensure initialization to particular sets of
     /// bit patterns.)
     ///
-    /// # Unsafety
+    /// # Safety
     ///
     /// This function is unsafe because undefined behavior can result
     /// if the caller does not ensure that `layout` has non-zero size.
@@ -482,7 +513,7 @@ pub unsafe trait Alloc {
 
     /// Deallocate the memory referenced by `ptr`.
     ///
-    /// # Unsafety
+    /// # Safety
     ///
     /// This function is unsafe because undefined behavior can result
     /// if the caller does not ensure all of the following:
@@ -497,7 +528,7 @@ pub unsafe trait Alloc {
     ///   to allocate that block of memory.
     unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout);
 
-    /// Allocator-specific method for signalling an out-of-memory
+    /// Allocator-specific method for signaling an out-of-memory
     /// condition.
     ///
     /// `oom` aborts the thread or process, optionally performing
@@ -508,7 +539,7 @@ pub unsafe trait Alloc {
     /// unsatisfied allocation request (signaled by an error such as
     /// `AllocErr::Exhausted`), and wish to abandon computation rather
     /// than attempt to recover locally. Such clients should pass the
-    /// signalling error value back into `oom`, where the allocator
+    /// signaling error value back into `oom`, where the allocator
     /// may incorporate that error value into its diagnostic report
     /// before aborting.
     ///
@@ -517,7 +548,7 @@ pub unsafe trait Alloc {
     /// practice this means implementors should eschew allocating,
     /// especially from `self` (directly or indirectly).
     ///
-    /// Implementions of the allocation and reallocation methods
+    /// Implementations of the allocation and reallocation methods
     /// (e.g. `alloc`, `alloc_one`, `realloc`) are discouraged from
     /// panicking (or aborting) in the event of memory exhaustion;
     /// instead they should return an appropriate error from the
@@ -556,6 +587,7 @@ pub unsafe trait Alloc {
     /// However, for clients that do not wish to track the capacity
     /// returned by `alloc_excess` locally, this method is likely to
     /// produce useful results.
+    #[inline]
     fn usable_size(&self, layout: &Layout) -> (usize, usize) {
         (layout.size(), layout.size())
     }
@@ -585,7 +617,7 @@ pub unsafe trait Alloc {
     /// behavior is well-defined (though underspecified) when this
     /// constraint is violated; further discussion below.
     ///
-    /// # Unsafety
+    /// # Safety
     ///
     /// This function is unsafe because undefined behavior can result
     /// if the caller does not ensure all of the following:
@@ -656,7 +688,7 @@ pub unsafe trait Alloc {
     /// Behaves like `alloc`, but also ensures that the contents
     /// are set to zero before being returned.
     ///
-    /// # Unsafety
+    /// # Safety
     ///
     /// This function is unsafe for the same reasons that `alloc` is.
     ///
@@ -682,7 +714,7 @@ pub unsafe trait Alloc {
     /// the returned block. For some `layout` inputs, like arrays, this
     /// may include extra storage usable for additional data.
     ///
-    /// # Unsafety
+    /// # Safety
     ///
     /// This function is unsafe for the same reasons that `alloc` is.
     ///
@@ -704,7 +736,7 @@ pub unsafe trait Alloc {
     /// the returned block. For some `layout` inputs, like arrays, this
     /// may include extra storage usable for additional data.
     ///
-    /// # Unsafety
+    /// # Safety
     ///
     /// This function is unsafe for the same reasons that `realloc` is.
     ///
@@ -738,7 +770,7 @@ pub unsafe trait Alloc {
     /// memory block referenced by `ptr` has not been transferred, and
     /// the contents of the memory block are unaltered.
     ///
-    /// # Unsafety
+    /// # Safety
     ///
     /// This function is unsafe because undefined behavior can result
     /// if the caller does not ensure all of the following:
@@ -795,7 +827,7 @@ pub unsafe trait Alloc {
     /// the memory block has not been transferred, and the contents of
     /// the memory block are unaltered.
     ///
-    /// # Unsafety
+    /// # Safety
     ///
     /// This function is unsafe because undefined behavior can result
     /// if the caller does not ensure all of the following:
@@ -873,7 +905,7 @@ pub unsafe trait Alloc {
     {
         let k = Layout::new::<T>();
         if k.size() > 0 {
-            unsafe { self.alloc(k).map(|p|Unique::new(*p as *mut T)) }
+            unsafe { self.alloc(k).map(|p| Unique::new_unchecked(p as *mut T)) }
         } else {
             Err(AllocErr::invalid_input("zero-sized type invalid for alloc_one"))
         }
@@ -888,7 +920,7 @@ pub unsafe trait Alloc {
     ///
     /// Captures a common usage pattern for allocators.
     ///
-    /// # Unsafety
+    /// # Safety
     ///
     /// This function is unsafe because undefined behavior can result
     /// if the caller does not ensure both:
@@ -944,7 +976,7 @@ pub unsafe trait Alloc {
                 unsafe {
                     self.alloc(layout.clone())
                         .map(|p| {
-                            Unique::new(p as *mut T)
+                            Unique::new_unchecked(p as *mut T)
                         })
                 }
             }
@@ -961,7 +993,7 @@ pub unsafe trait Alloc {
     /// The returned block is suitable for passing to the
     /// `alloc`/`realloc` methods of this allocator.
     ///
-    /// # Unsafety
+    /// # Safety
     ///
     /// This function is unsafe because undefined behavior can result
     /// if the caller does not ensure all of the following:
@@ -993,7 +1025,7 @@ pub unsafe trait Alloc {
         match (Layout::array::<T>(n_old), Layout::array::<T>(n_new), ptr.as_ptr()) {
             (Some(ref k_old), Some(ref k_new), ptr) if k_old.size() > 0 && k_new.size() > 0 => {
                 self.realloc(ptr as *mut u8, k_old.clone(), k_new.clone())
-                    .map(|p|Unique::new(p as *mut T))
+                    .map(|p|Unique::new_unchecked(p as *mut T))
             }
             _ => {
                 Err(AllocErr::invalid_input("invalid layout for realloc_array"))
@@ -1005,7 +1037,7 @@ pub unsafe trait Alloc {
     ///
     /// Captures a common usage pattern for allocators.
     ///
-    /// # Unsafety
+    /// # Safety
     ///
     /// This function is unsafe because undefined behavior can result
     /// if the caller does not ensure both:

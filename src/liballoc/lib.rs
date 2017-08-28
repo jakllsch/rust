@@ -60,8 +60,6 @@
 //! The [`heap`](heap/index.html) module defines the low-level interface to the
 //! default global allocator. It is not compatible with the libc allocator API.
 
-#![crate_name = "alloc"]
-#![crate_type = "rlib"]
 #![allow(unused_attributes)]
 #![unstable(feature = "alloc",
             reason = "this library is unlikely to be stabilized in its current \
@@ -79,14 +77,10 @@
 
 #![cfg_attr(test, allow(deprecated))] // rand
 #![cfg_attr(test, feature(placement_in))]
-#![cfg_attr(not(test), feature(char_escape_debug))]
 #![cfg_attr(not(test), feature(core_float))]
 #![cfg_attr(not(test), feature(exact_size_is_empty))]
 #![cfg_attr(not(test), feature(slice_rotate))]
-#![cfg_attr(not(test), feature(sort_unstable))]
-#![cfg_attr(not(test), feature(str_checked_slicing))]
 #![cfg_attr(test, feature(rand, test))]
-#![feature(allocator)]
 #![feature(allow_internal_unstable)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
@@ -104,7 +98,6 @@
 #![feature(i128_type)]
 #![feature(inclusive_range)]
 #![feature(lang_items)]
-#![feature(manually_drop)]
 #![feature(needs_allocator)]
 #![feature(nonzero)]
 #![feature(offset_to)]
@@ -119,14 +112,14 @@
 #![feature(specialization)]
 #![feature(staged_api)]
 #![feature(str_internals)]
-#![feature(str_mut_extras)]
 #![feature(trusted_len)]
 #![feature(unboxed_closures)]
 #![feature(unicode)]
 #![feature(unique)]
 #![feature(unsize)]
+#![feature(allocator_internals)]
 
-#![cfg_attr(not(test), feature(fused, fn_traits, placement_new_protocol))]
+#![cfg_attr(not(test), feature(fused, fn_traits, placement_new_protocol, swap_with_slice))]
 #![cfg_attr(test, feature(test, box_heap))]
 
 // Allow testing this library
@@ -169,7 +162,6 @@ mod boxed_test;
 pub mod arc;
 pub mod rc;
 pub mod raw_vec;
-pub mod oom;
 
 // collections modules
 pub mod binary_heap;
@@ -245,10 +237,10 @@ mod std {
 pub enum Bound<T> {
     /// An inclusive bound.
     #[stable(feature = "collections_bound", since = "1.17.0")]
-    Included(T),
+    Included(#[stable(feature = "collections_bound", since = "1.17.0")] T),
     /// An exclusive bound.
     #[stable(feature = "collections_bound", since = "1.17.0")]
-    Excluded(T),
+    Excluded(#[stable(feature = "collections_bound", since = "1.17.0")] T),
     /// An infinite endpoint. Indicates that there is no bound in this direction.
     #[stable(feature = "collections_bound", since = "1.17.0")]
     Unbounded,
@@ -260,8 +252,6 @@ trait SpecExtend<I: IntoIterator> {
     /// Extends `self` with the contents of the given iterator.
     fn spec_extend(&mut self, iter: I);
 }
-
-pub use oom::oom;
 
 #[doc(no_inline)]
 pub use binary_heap::BinaryHeap;

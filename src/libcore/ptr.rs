@@ -16,6 +16,7 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+use convert::From;
 use intrinsics;
 use ops::CoerceUnsized;
 use fmt;
@@ -117,6 +118,93 @@ pub unsafe fn swap<T>(x: *mut T, y: *mut T) {
     mem::forget(tmp);
 }
 
+/// Swaps a sequence of values at two mutable locations of the same type.
+///
+/// # Safety
+///
+/// The two arguments must each point to the beginning of `count` locations
+/// of valid memory, and the two memory ranges must not overlap.
+///
+/// # Examples
+///
+/// Basic usage:
+///
+/// ```
+/// #![feature(swap_nonoverlapping)]
+///
+/// use std::ptr;
+///
+/// let mut x = [1, 2, 3, 4];
+/// let mut y = [7, 8, 9];
+///
+/// unsafe {
+///     ptr::swap_nonoverlapping(x.as_mut_ptr(), y.as_mut_ptr(), 2);
+/// }
+///
+/// assert_eq!(x, [7, 8, 3, 4]);
+/// assert_eq!(y, [1, 2, 9]);
+/// ```
+#[inline]
+#[unstable(feature = "swap_nonoverlapping", issue = "42818")]
+pub unsafe fn swap_nonoverlapping<T>(x: *mut T, y: *mut T, count: usize) {
+    let x = x as *mut u8;
+    let y = y as *mut u8;
+    let len = mem::size_of::<T>() * count;
+    swap_nonoverlapping_bytes(x, y, len)
+}
+
+#[inline]
+unsafe fn swap_nonoverlapping_bytes(x: *mut u8, y: *mut u8, len: usize) {
+    // The approach here is to utilize simd to swap x & y efficiently. Testing reveals
+    // that swapping either 32 bytes or 64 bytes at a time is most efficient for intel
+    // Haswell E processors. LLVM is more able to optimize if we give a struct a
+    // #[repr(simd)], even if we don't actually use this struct directly.
+    //
+    // FIXME repr(simd) broken on emscripten and redox
+    // It's also broken on big-endian powerpc64 and s390x.  #42778
+    #[cfg_attr(not(any(target_os = "emscripten", target_os = "redox",
+                       target_endian = "big")),
+               repr(simd))]
+    struct Block(u64, u64, u64, u64);
+    struct UnalignedBlock(u64, u64, u64, u64);
+
+    let block_size = mem::size_of::<Block>();
+
+    // Loop through x & y, copying them `Block` at a time
+    // The optimizer should unroll the loop fully for most types
+    // N.B. We can't use a for loop as the `range` impl calls `mem::swap` recursively
+    let mut i = 0;
+    while i + block_size <= len {
+        // Create some uninitialized memory as scratch space
+        // Declaring `t` here avoids aligning the stack when this loop is unused
+        let mut t: Block = mem::uninitialized();
+        let t = &mut t as *mut _ as *mut u8;
+        let x = x.offset(i as isize);
+        let y = y.offset(i as isize);
+
+        // Swap a block of bytes of x & y, using t as a temporary buffer
+        // This should be optimized into efficient SIMD operations where available
+        copy_nonoverlapping(x, t, block_size);
+        copy_nonoverlapping(y, x, block_size);
+        copy_nonoverlapping(t, y, block_size);
+        i += block_size;
+    }
+
+    if i < len {
+        // Swap any remaining bytes
+        let mut t: UnalignedBlock = mem::uninitialized();
+        let rem = len - i;
+
+        let t = &mut t as *mut _ as *mut u8;
+        let x = x.offset(i as isize);
+        let y = y.offset(i as isize);
+
+        copy_nonoverlapping(x, t, rem);
+        copy_nonoverlapping(y, x, rem);
+        copy_nonoverlapping(t, y, rem);
+    }
+}
+
 /// Replaces the value at `dest` with `src`, returning the old
 /// value, without dropping either.
 ///
@@ -157,7 +245,7 @@ pub unsafe fn replace<T>(dest: *mut T, mut src: T) -> T {
 ///     assert_eq!(std::ptr::read(y), 12);
 /// }
 /// ```
-#[inline(always)]
+#[inline]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub unsafe fn read<T>(src: *const T) -> T {
     let mut tmp: T = mem::uninitialized();
@@ -191,7 +279,7 @@ pub unsafe fn read<T>(src: *const T) -> T {
 ///     assert_eq!(std::ptr::read_unaligned(y), 12);
 /// }
 /// ```
-#[inline(always)]
+#[inline]
 #[stable(feature = "ptr_unaligned", since = "1.17.0")]
 pub unsafe fn read_unaligned<T>(src: *const T) -> T {
     let mut tmp: T = mem::uninitialized();
@@ -296,6 +384,11 @@ pub unsafe fn write_unaligned<T>(dst: *mut T, src: T) {
 /// over time. That being said, the semantics will almost always end up pretty
 /// similar to [C11's definition of volatile][c11].
 ///
+/// The compiler shouldn't change the relative order or number of volatile
+/// memory operations. However, volatile memory operations on zero-sized types
+/// (e.g. if a zero-sized type is passed to `read_volatile`) are no-ops
+/// and may be ignored.
+///
 /// [c11]: http://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf
 ///
 /// # Safety
@@ -338,6 +431,11 @@ pub unsafe fn read_volatile<T>(src: *const T) -> T {
 /// so the precise semantics of what "volatile" means here is subject to change
 /// over time. That being said, the semantics will almost always end up pretty
 /// similar to [C11's definition of volatile][c11].
+///
+/// The compiler shouldn't change the relative order or number of volatile
+/// memory operations. However, volatile memory operations on zero-sized types
+/// (e.g. if a zero-sized type is passed to `write_volatile`) are no-ops
+/// and may be ignored.
 ///
 /// [c11]: http://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf
 ///
@@ -408,11 +506,11 @@ impl<T: ?Sized> *const T {
     ///
     /// Basic usage:
     ///
-    /// ```ignore
-    /// let val: *const u8 = &10u8 as *const u8;
+    /// ```
+    /// let ptr: *const u8 = &10u8 as *const u8;
     ///
     /// unsafe {
-    ///     if let Some(val_back) = val.as_ref() {
+    ///     if let Some(val_back) = ptr.as_ref() {
     ///         println!("We got back the value: {}!", val_back);
     ///     }
     /// }
@@ -570,11 +668,11 @@ impl<T: ?Sized> *mut T {
     ///
     /// Basic usage:
     ///
-    /// ```ignore
-    /// let val: *mut u8 = &mut 10u8 as *mut u8;
+    /// ```
+    /// let ptr: *mut u8 = &mut 10u8 as *mut u8;
     ///
     /// unsafe {
-    ///     if let Some(val_back) = val.as_ref() {
+    ///     if let Some(val_back) = ptr.as_ref() {
     ///         println!("We got back the value: {}!", val_back);
     ///     }
     /// }
@@ -778,6 +876,7 @@ pub fn eq<T: ?Sized>(a: *const T, b: *const T) -> bool {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
+#[cfg(stage0)]
 impl<T: ?Sized> Clone for *const T {
     #[inline]
     fn clone(&self) -> *const T {
@@ -786,6 +885,7 @@ impl<T: ?Sized> Clone for *const T {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
+#[cfg(stage0)]
 impl<T: ?Sized> Clone for *mut T {
     #[inline]
     fn clone(&self) -> *mut T {
@@ -797,6 +897,7 @@ impl<T: ?Sized> Clone for *mut T {
 macro_rules! fnptr_impls_safety_abi {
     ($FnTy: ty, $($Arg: ident),*) => {
         #[stable(feature = "rust1", since = "1.0.0")]
+        #[cfg(stage0)]
         impl<Ret, $($Arg),*> Clone for $FnTy {
             #[inline]
             fn clone(&self) -> Self {
@@ -1011,7 +1112,7 @@ impl<T: Sized> Unique<T> {
     pub fn empty() -> Self {
         unsafe {
             let ptr = mem::align_of::<T>() as *mut T;
-            Unique::new(ptr)
+            Unique::new_unchecked(ptr)
         }
     }
 }
@@ -1023,8 +1124,13 @@ impl<T: ?Sized> Unique<T> {
     /// # Safety
     ///
     /// `ptr` must be non-null.
-    pub const unsafe fn new(ptr: *mut T) -> Unique<T> {
-        Unique { pointer: NonZero::new(ptr), _marker: PhantomData }
+    pub const unsafe fn new_unchecked(ptr: *mut T) -> Self {
+        Unique { pointer: NonZero::new_unchecked(ptr), _marker: PhantomData }
+    }
+
+    /// Creates a new `Unique` if `ptr` is non-null.
+    pub fn new(ptr: *mut T) -> Option<Self> {
+        NonZero::new(ptr as *const T).map(|nz| Unique { pointer: nz, _marker: PhantomData })
     }
 
     /// Acquires the underlying `*mut` pointer.
@@ -1051,14 +1157,14 @@ impl<T: ?Sized> Unique<T> {
     }
 }
 
-#[unstable(feature = "shared", issue = "27730")]
+#[unstable(feature = "unique", issue = "27730")]
 impl<T: ?Sized> Clone for Unique<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-#[unstable(feature = "shared", issue = "27730")]
+#[unstable(feature = "unique", issue = "27730")]
 impl<T: ?Sized> Copy for Unique<T> { }
 
 #[unstable(feature = "unique", issue = "27730")]
@@ -1068,6 +1174,20 @@ impl<T: ?Sized, U: ?Sized> CoerceUnsized<Unique<U>> for Unique<T> where T: Unsiz
 impl<T: ?Sized> fmt::Pointer for Unique<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Pointer::fmt(&self.as_ptr(), f)
+    }
+}
+
+#[unstable(feature = "unique", issue = "27730")]
+impl<'a, T: ?Sized> From<&'a mut T> for Unique<T> {
+    fn from(reference: &'a mut T) -> Self {
+        Unique { pointer: NonZero::from(reference), _marker: PhantomData }
+    }
+}
+
+#[unstable(feature = "unique", issue = "27730")]
+impl<'a, T: ?Sized> From<&'a T> for Unique<T> {
+    fn from(reference: &'a T) -> Self {
+        Unique { pointer: NonZero::from(reference), _marker: PhantomData }
     }
 }
 
@@ -1125,7 +1245,7 @@ impl<T: Sized> Shared<T> {
     pub fn empty() -> Self {
         unsafe {
             let ptr = mem::align_of::<T>() as *mut T;
-            Shared::new(ptr)
+            Shared::new_unchecked(ptr)
         }
     }
 }
@@ -1137,8 +1257,13 @@ impl<T: ?Sized> Shared<T> {
     /// # Safety
     ///
     /// `ptr` must be non-null.
-    pub unsafe fn new(ptr: *mut T) -> Self {
-        Shared { pointer: NonZero::new(ptr), _marker: PhantomData }
+    pub const unsafe fn new_unchecked(ptr: *mut T) -> Self {
+        Shared { pointer: NonZero::new_unchecked(ptr), _marker: PhantomData }
+    }
+
+    /// Creates a new `Shared` if `ptr` is non-null.
+    pub fn new(ptr: *mut T) -> Option<Self> {
+        NonZero::new(ptr as *const T).map(|nz| Shared { pointer: nz, _marker: PhantomData })
     }
 
     /// Acquires the underlying `*mut` pointer.
@@ -1189,5 +1314,26 @@ impl<T: ?Sized, U: ?Sized> CoerceUnsized<Shared<U>> for Shared<T> where T: Unsiz
 impl<T: ?Sized> fmt::Pointer for Shared<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Pointer::fmt(&self.as_ptr(), f)
+    }
+}
+
+#[unstable(feature = "shared", issue = "27730")]
+impl<T: ?Sized> From<Unique<T>> for Shared<T> {
+    fn from(unique: Unique<T>) -> Self {
+        Shared { pointer: unique.pointer, _marker: PhantomData }
+    }
+}
+
+#[unstable(feature = "shared", issue = "27730")]
+impl<'a, T: ?Sized> From<&'a mut T> for Shared<T> {
+    fn from(reference: &'a mut T) -> Self {
+        Shared { pointer: NonZero::from(reference), _marker: PhantomData }
+    }
+}
+
+#[unstable(feature = "shared", issue = "27730")]
+impl<'a, T: ?Sized> From<&'a T> for Shared<T> {
+    fn from(reference: &'a T) -> Self {
+        Shared { pointer: NonZero::from(reference), _marker: PhantomData }
     }
 }

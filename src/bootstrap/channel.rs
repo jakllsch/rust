@@ -21,14 +21,15 @@ use std::process::Command;
 use build_helper::output;
 
 use Build;
+use config::Config;
 
 // The version number
-pub const CFG_RELEASE_NUM: &'static str = "1.20.0";
+pub const CFG_RELEASE_NUM: &str = "1.21.0";
 
 // An optional number to put after the label, e.g. '.2' -> '-beta.2'
 // Be sure to make this starts with a dot to conform to semver pre-release
 // versions (section 9)
-pub const CFG_PRERELEASE_VERSION: &'static str = ".1";
+pub const CFG_PRERELEASE_VERSION: &str = ".1";
 
 pub struct GitInfo {
     inner: Option<Info>,
@@ -41,9 +42,9 @@ struct Info {
 }
 
 impl GitInfo {
-    pub fn new(dir: &Path) -> GitInfo {
+    pub fn new(config: &Config, dir: &Path) -> GitInfo {
         // See if this even begins to look like a git dir
-        if !dir.join(".git").exists() {
+        if config.ignore_git || !dir.join(".git").exists() {
             return GitInfo { inner: None }
         }
 
@@ -99,6 +100,10 @@ impl GitInfo {
             version.push_str(&inner.commit_date);
             version.push_str(")");
         }
-        return version
+        version
+    }
+
+    pub fn is_git(&self) -> bool {
+        self.inner.is_some()
     }
 }

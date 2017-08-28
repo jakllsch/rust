@@ -12,7 +12,7 @@ use io::prelude::*;
 
 use core::convert::TryInto;
 use cmp;
-use io::{self, SeekFrom, Error, ErrorKind};
+use io::{self, Initializer, SeekFrom, Error, ErrorKind};
 
 /// A `Cursor` wraps another type and provides it with a
 /// [`Seek`] implementation.
@@ -69,7 +69,7 @@ use io::{self, SeekFrom, Error, ErrorKind};
 /// // now let's write a test
 /// #[test]
 /// fn test_writes_bytes() {
-///     // setting up a real File is much more slow than an in-memory buffer,
+///     // setting up a real File is much slower than an in-memory buffer,
 ///     // let's use a cursor instead
 ///     use std::io::Cursor;
 ///     let mut buff = Cursor::new(vec![0; 15]);
@@ -228,6 +228,11 @@ impl<T> Read for Cursor<T> where T: AsRef<[u8]> {
         let n = Read::read(&mut self.fill_buf()?, buf)?;
         self.pos += n as u64;
         Ok(n)
+    }
+
+    #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        Initializer::nop()
     }
 }
 
@@ -451,7 +456,7 @@ mod tests {
     #[test]
     fn test_slice_reader() {
         let in_buf = vec![0, 1, 2, 3, 4, 5, 6, 7];
-        let mut reader = &mut &in_buf[..];
+        let reader = &mut &in_buf[..];
         let mut buf = [];
         assert_eq!(reader.read(&mut buf).unwrap(), 0);
         let mut buf = [0];

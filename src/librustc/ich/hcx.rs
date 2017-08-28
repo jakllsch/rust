@@ -14,7 +14,7 @@ use hir::map::DefPathHash;
 use ich::{self, CachingCodemapView};
 use session::config::DebugInfoLevel::NoDebugInfo;
 use ty;
-use util::nodemap::NodeMap;
+use util::nodemap::{NodeMap, ItemLocalMap};
 
 use std::hash as std_hash;
 use std::collections::{HashMap, HashSet, BTreeMap};
@@ -65,13 +65,13 @@ impl<'a, 'gcx, 'tcx> StableHashingContext<'a, 'gcx, 'tcx> {
         ignored_attr_names.sort();
 
         StableHashingContext {
-            tcx: tcx,
+            tcx,
             codemap: CachingCodemapView::new(tcx),
             hash_spans: hash_spans_initial,
             hash_bodies: true,
             overflow_checks_enabled: check_overflow_initial,
             node_id_hashing_mode: NodeIdHashingMode::HashDefPath,
-            ignored_attr_names: ignored_attr_names,
+            ignored_attr_names,
         }
     }
 
@@ -355,6 +355,18 @@ pub fn hash_stable_nodemap<'a, 'tcx, 'gcx, V, W>(
 {
     hash_stable_hashmap(hcx, hasher, map, |hcx, node_id| {
         hcx.tcx.hir.definitions().node_to_hir_id(*node_id).local_id
+    });
+}
+
+pub fn hash_stable_itemlocalmap<'a, 'tcx, 'gcx, V, W>(
+    hcx: &mut StableHashingContext<'a, 'gcx, 'tcx>,
+    hasher: &mut StableHasher<W>,
+    map: &ItemLocalMap<V>)
+    where V: HashStable<StableHashingContext<'a, 'gcx, 'tcx>>,
+          W: StableHasherResult,
+{
+    hash_stable_hashmap(hcx, hasher, map, |_, local_id| {
+        *local_id
     });
 }
 

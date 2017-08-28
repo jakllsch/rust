@@ -171,7 +171,7 @@ mod hack {
 impl<T> [T] {
     /// Returns the number of elements in the slice.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// let a = [1, 2, 3];
@@ -185,7 +185,7 @@ impl<T> [T] {
 
     /// Returns `true` if the slice has a length of 0.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// let a = [1, 2, 3];
@@ -523,7 +523,7 @@ impl<T> [T] {
 
     /// Reverses the order of elements in the slice, in place.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// let mut v = [1, 2, 3];
@@ -580,7 +580,7 @@ impl<T> [T] {
     ///
     /// Panics if `size` is 0.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// let slice = ['r', 'u', 's', 't'];
@@ -613,7 +613,7 @@ impl<T> [T] {
     ///
     /// Panics if `size` is 0.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// let slice = ['l', 'o', 'r', 'e', 'm'];
@@ -1040,7 +1040,7 @@ impl<T> [T] {
     /// `Err` is returned, containing the index where a matching
     /// element could be inserted while maintaining sorted order.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// Looks up a series of four elements. The first is found, with a
     /// uniquely determined position; the second and third are not
@@ -1074,7 +1074,7 @@ impl<T> [T] {
     /// `Err` is returned, containing the index where a matching
     /// element could be inserted while maintaining sorted order.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// Looks up a series of four elements. The first is found, with a
     /// uniquely determined position; the second and third are not
@@ -1144,6 +1144,10 @@ impl<T> [T] {
     ///
     /// This sort is stable (i.e. does not reorder equal elements) and `O(n log n)` worst-case.
     ///
+    /// When applicable, unstable sorting is preferred because it is generally faster than stable
+    /// sorting and it doesn't allocate auxiliary memory.
+    /// See [`sort_unstable`](#method.sort_unstable).
+    ///
     /// # Current implementation
     ///
     /// The current algorithm is an adaptive, iterative merge sort inspired by
@@ -1173,6 +1177,10 @@ impl<T> [T] {
     /// Sorts the slice with a comparator function.
     ///
     /// This sort is stable (i.e. does not reorder equal elements) and `O(n log n)` worst-case.
+    ///
+    /// When applicable, unstable sorting is preferred because it is generally faster than stable
+    /// sorting and it doesn't allocate auxiliary memory.
+    /// See [`sort_unstable_by`](#method.sort_unstable_by).
     ///
     /// # Current implementation
     ///
@@ -1207,6 +1215,10 @@ impl<T> [T] {
     ///
     /// This sort is stable (i.e. does not reorder equal elements) and `O(n log n)` worst-case.
     ///
+    /// When applicable, unstable sorting is preferred because it is generally faster than stable
+    /// sorting and it doesn't allocate auxiliary memory.
+    /// See [`sort_unstable_by_key`](#method.sort_unstable_by_key).
+    ///
     /// # Current implementation
     ///
     /// The current algorithm is an adaptive, iterative merge sort inspired by
@@ -1240,19 +1252,18 @@ impl<T> [T] {
     ///
     /// # Current implementation
     ///
-    /// The current algorithm is based on Orson Peters' [pattern-defeating quicksort][pdqsort],
-    /// which is a quicksort variant designed to be very fast on certain kinds of patterns,
-    /// sometimes achieving linear time. It is randomized but deterministic, and falls back to
-    /// heapsort on degenerate inputs.
+    /// The current algorithm is based on [pattern-defeating quicksort][pdqsort] by Orson Peters,
+    /// which combines the fast average case of randomized quicksort with the fast worst case of
+    /// heapsort, while achieving linear time on slices with certain patterns. It uses some
+    /// randomization to avoid degenerate cases, but with a fixed seed to always provide
+    /// deterministic behavior.
     ///
-    /// It is generally faster than stable sorting, except in a few special cases, e.g. when the
+    /// It is typically faster than stable sorting, except in a few special cases, e.g. when the
     /// slice consists of several concatenated sorted sequences.
     ///
     /// # Examples
     ///
     /// ```
-    /// #![feature(sort_unstable)]
-    ///
     /// let mut v = [-5, 4, 1, -3, 2];
     ///
     /// v.sort_unstable();
@@ -1260,8 +1271,7 @@ impl<T> [T] {
     /// ```
     ///
     /// [pdqsort]: https://github.com/orlp/pdqsort
-    // FIXME #40585: Mention `sort_unstable` in the documentation for `sort`.
-    #[unstable(feature = "sort_unstable", issue = "40585")]
+    #[stable(feature = "sort_unstable", since = "1.20.0")]
     #[inline]
     pub fn sort_unstable(&mut self)
         where T: Ord
@@ -1277,19 +1287,18 @@ impl<T> [T] {
     ///
     /// # Current implementation
     ///
-    /// The current algorithm is based on Orson Peters' [pattern-defeating quicksort][pdqsort],
-    /// which is a quicksort variant designed to be very fast on certain kinds of patterns,
-    /// sometimes achieving linear time. It is randomized but deterministic, and falls back to
-    /// heapsort on degenerate inputs.
+    /// The current algorithm is based on [pattern-defeating quicksort][pdqsort] by Orson Peters,
+    /// which combines the fast average case of randomized quicksort with the fast worst case of
+    /// heapsort, while achieving linear time on slices with certain patterns. It uses some
+    /// randomization to avoid degenerate cases, but with a fixed seed to always provide
+    /// deterministic behavior.
     ///
-    /// It is generally faster than stable sorting, except in a few special cases, e.g. when the
+    /// It is typically faster than stable sorting, except in a few special cases, e.g. when the
     /// slice consists of several concatenated sorted sequences.
     ///
     /// # Examples
     ///
     /// ```
-    /// #![feature(sort_unstable)]
-    ///
     /// let mut v = [5, 4, 1, 3, 2];
     /// v.sort_unstable_by(|a, b| a.cmp(b));
     /// assert!(v == [1, 2, 3, 4, 5]);
@@ -1300,8 +1309,7 @@ impl<T> [T] {
     /// ```
     ///
     /// [pdqsort]: https://github.com/orlp/pdqsort
-    // FIXME #40585: Mention `sort_unstable_by` in the documentation for `sort_by`.
-    #[unstable(feature = "sort_unstable", issue = "40585")]
+    #[stable(feature = "sort_unstable", since = "1.20.0")]
     #[inline]
     pub fn sort_unstable_by<F>(&mut self, compare: F)
         where F: FnMut(&T, &T) -> Ordering
@@ -1317,19 +1325,18 @@ impl<T> [T] {
     ///
     /// # Current implementation
     ///
-    /// The current algorithm is based on Orson Peters' [pattern-defeating quicksort][pdqsort],
-    /// which is a quicksort variant designed to be very fast on certain kinds of patterns,
-    /// sometimes achieving linear time. It is randomized but deterministic, and falls back to
-    /// heapsort on degenerate inputs.
+    /// The current algorithm is based on [pattern-defeating quicksort][pdqsort] by Orson Peters,
+    /// which combines the fast average case of randomized quicksort with the fast worst case of
+    /// heapsort, while achieving linear time on slices with certain patterns. It uses some
+    /// randomization to avoid degenerate cases, but with a fixed seed to always provide
+    /// deterministic behavior.
     ///
-    /// It is generally faster than stable sorting, except in a few special cases, e.g. when the
+    /// It is typically faster than stable sorting, except in a few special cases, e.g. when the
     /// slice consists of several concatenated sorted sequences.
     ///
     /// # Examples
     ///
     /// ```
-    /// #![feature(sort_unstable)]
-    ///
     /// let mut v = [-5i32, 4, 1, -3, 2];
     ///
     /// v.sort_unstable_by_key(|k| k.abs());
@@ -1337,8 +1344,7 @@ impl<T> [T] {
     /// ```
     ///
     /// [pdqsort]: https://github.com/orlp/pdqsort
-    // FIXME #40585: Mention `sort_unstable_by_key` in the documentation for `sort_by_key`.
-    #[unstable(feature = "sort_unstable", issue = "40585")]
+    #[stable(feature = "sort_unstable", since = "1.20.0")]
     #[inline]
     pub fn sort_unstable_by_key<B, F>(&mut self, f: F)
         where F: FnMut(&T) -> B,
@@ -1413,7 +1419,7 @@ impl<T> [T] {
     ///
     /// This function will panic if the two slices have different lengths.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// let mut dst = [0, 0, 0];
@@ -1439,7 +1445,7 @@ impl<T> [T] {
     ///
     /// This function will panic if the two slices have different lengths.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// let mut dst = [0, 0, 0];
@@ -1453,6 +1459,31 @@ impl<T> [T] {
     #[stable(feature = "copy_from_slice", since = "1.9.0")]
     pub fn copy_from_slice(&mut self, src: &[T]) where T: Copy {
         core_slice::SliceExt::copy_from_slice(self, src)
+    }
+
+    /// Swaps all elements in `self` with those in `src`.
+    ///
+    /// The length of `src` must be the same as `self`.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the two slices have different lengths.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// #![feature(swap_with_slice)]
+    ///
+    /// let mut src = [1, 2, 3];
+    /// let mut dst = [7, 8, 9];
+    ///
+    /// src.swap_with_slice(&mut dst);
+    /// assert_eq!(src, [7, 8, 9]);
+    /// assert_eq!(dst, [1, 2, 3]);
+    /// ```
+    #[unstable(feature = "swap_with_slice", issue = "44030")]
+    pub fn swap_with_slice(&mut self, src: &mut [T]) {
+        core_slice::SliceExt::swap_with_slice(self, src)
     }
 
     /// Copies `self` into a new `Vec`.
@@ -1794,7 +1825,7 @@ unsafe fn merge<T, F>(v: &mut [T], mid: usize, buf: *mut T, is_less: &mut F)
 
     impl<T> Drop for MergeHole<T> {
         fn drop(&mut self) {
-            // `T` is not a zero-sized type, so it's okay to divide by it's size.
+            // `T` is not a zero-sized type, so it's okay to divide by its size.
             let len = (self.end as usize - self.start as usize) / mem::size_of::<T>();
             unsafe { ptr::copy_nonoverlapping(self.start, self.dest, len); }
         }
@@ -1880,7 +1911,7 @@ fn merge_sort<T, F>(v: &mut [T], mut is_less: F)
 
         // Push this run onto the stack.
         runs.push(Run {
-            start: start,
+            start,
             len: end - start,
         });
         end = start;
@@ -1908,7 +1939,7 @@ fn merge_sort<T, F>(v: &mut [T], mut is_less: F)
     // if `Some(r)` is returned, that means `runs[r]` and `runs[r + 1]` must be merged next. If the
     // algorithm should continue building a new run instead, `None` is returned.
     //
-    // TimSort is infamous for it's buggy implementations, as described here:
+    // TimSort is infamous for its buggy implementations, as described here:
     // http://envisage-project.eu/timsort-specification-and-verification/
     //
     // The gist of the story is: we must enforce the invariants on the top four runs on the stack.

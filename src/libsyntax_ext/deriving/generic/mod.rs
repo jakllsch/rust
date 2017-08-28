@@ -23,7 +23,7 @@
 //!   and lifetimes for methods.)
 //! - Additional bounds on the type parameters (`TraitDef.additional_bounds`)
 //!
-//! The most important thing for implementers is the `Substructure` and
+//! The most important thing for implementors is the `Substructure` and
 //! `SubstructureFields` objects. The latter groups 5 possibilities of the
 //! arguments:
 //!
@@ -305,10 +305,10 @@ pub enum StaticFields {
 /// A summary of the possible sets of fields.
 pub enum SubstructureFields<'a> {
     Struct(&'a ast::VariantData, Vec<FieldInfo<'a>>),
-    /// Matching variants of the enum: variant index, ast::Variant,
+    /// Matching variants of the enum: variant index, variant count, ast::Variant,
     /// fields: the field name is only non-`None` in the case of a struct
     /// variant.
-    EnumMatching(usize, &'a ast::Variant, Vec<FieldInfo<'a>>),
+    EnumMatching(usize, usize, &'a ast::Variant, Vec<FieldInfo<'a>>),
 
     /// Non-matching variants of the enum, but with all state hidden from
     /// the consequent code.  The first component holds `Ident`s for all of
@@ -381,10 +381,10 @@ fn find_type_parameters(ty: &ast::Ty,
     }
 
     let mut visitor = Visitor {
-        ty_param_names: ty_param_names,
+        ty_param_names,
         types: Vec::new(),
-        span: span,
-        cx: cx,
+        span,
+        cx,
     };
 
     visit::Visitor::visit_ty(&mut visitor, ty);
@@ -456,7 +456,7 @@ impl<'a> TraitDef<'a> {
 
     /// Given that we are deriving a trait `DerivedTrait` for a type like:
     ///
-    /// ```ignore
+    /// ```ignore (only-for-syntax-highlight)
     /// struct Struct<'a, ..., 'z, A, B: DeclaredTrait, C, ..., Z> where C: WhereTrait {
     ///     a: A,
     ///     b: B::Item,
@@ -469,7 +469,7 @@ impl<'a> TraitDef<'a> {
     ///
     /// create an impl like:
     ///
-    /// ```ignore
+    /// ```ignore (only-for-syntax-highlight)
     /// impl<'a, ..., 'z, A, B: DeclaredTrait, C, ...  Z> where
     ///     C:                       WhereTrait,
     ///     A: DerivedTrait + B1 + ... + BN,
@@ -499,11 +499,12 @@ impl<'a> TraitDef<'a> {
             ast::ImplItem {
                 id: ast::DUMMY_NODE_ID,
                 span: self.span,
-                ident: ident,
+                ident,
                 vis: ast::Visibility::Inherited,
                 defaultness: ast::Defaultness::Final,
                 attrs: Vec::new(),
                 node: ast::ImplItemKind::Type(type_def.to_ty(cx, self.span, type_ident, generics)),
+                tokens: None,
             }
         });
 
@@ -595,7 +596,7 @@ impl<'a> TraitDef<'a> {
                         span: self.span,
                         bound_lifetimes: vec![],
                         bounded_ty: ty,
-                        bounds: bounds,
+                        bounds,
                     };
 
                     let predicate = ast::WherePredicate::BoundPredicate(predicate);
@@ -605,10 +606,10 @@ impl<'a> TraitDef<'a> {
         }
 
         let trait_generics = Generics {
-            lifetimes: lifetimes,
-            ty_params: ty_params,
-            where_clause: where_clause,
-            span: span,
+            lifetimes,
+            ty_params,
+            where_clause,
+            span,
         };
 
         // Create the reference to the trait.
@@ -806,11 +807,11 @@ impl<'a> MethodDef<'a> {
                                 fields: &SubstructureFields)
                                 -> P<Expr> {
         let substructure = Substructure {
-            type_ident: type_ident,
+            type_ident,
             method_ident: cx.ident_of(self.name),
-            self_args: self_args,
-            nonself_args: nonself_args,
-            fields: fields,
+            self_args,
+            nonself_args,
+            fields,
         };
         let mut f = self.combine_substructure.borrow_mut();
         let f: &mut CombineSubstructureFunc = &mut *f;
@@ -923,18 +924,20 @@ impl<'a> MethodDef<'a> {
             ident: method_ident,
             node: ast::ImplItemKind::Method(ast::MethodSig {
                                                 generics: fn_generics,
-                                                abi: abi,
-                                                unsafety: unsafety,
+                                                abi,
+                                                unsafety,
                                                 constness:
                                                     dummy_spanned(ast::Constness::NotConst),
                                                 decl: fn_decl,
                                             },
                                             body_block),
+            tokens: None,
         }
     }
 
-    /// ```ignore
+    /// ```
     /// #[derive(PartialEq)]
+    /// # struct Dummy;
     /// struct A { x: i32, y: i32 }
     ///
     /// // equivalent to:
@@ -982,7 +985,7 @@ impl<'a> MethodDef<'a> {
             let mut other_fields: Vec<vec::IntoIter<_>> = raw_fields.collect();
             first_field.map(|(span, opt_id, field, attrs)| {
                     FieldInfo {
-                        span: span,
+                        span,
                         name: opt_id,
                         self_: field,
                         other: other_fields.iter_mut()
@@ -992,7 +995,7 @@ impl<'a> MethodDef<'a> {
                                 }
                             })
                             .collect(),
-                        attrs: attrs,
+                        attrs,
                     }
                 })
                 .collect()
@@ -1040,8 +1043,9 @@ impl<'a> MethodDef<'a> {
                                       &StaticStruct(struct_def, summary))
     }
 
-    /// ```ignore
+    /// ```
     /// #[derive(PartialEq)]
+    /// # struct Dummy;
     /// enum A {
     ///     A1,
     ///     A2(i32)
@@ -1242,7 +1246,7 @@ impl<'a> MethodDef<'a> {
                                     name: opt_ident,
                                     self_: self_getter_expr,
                                     other: others,
-                                    attrs: attrs,
+                                    attrs,
                         }
                     }).collect::<Vec<FieldInfo>>();
 
@@ -1250,7 +1254,7 @@ impl<'a> MethodDef<'a> {
                 // expressions for referencing every field of every
                 // Self arg, assuming all are instances of VariantK.
                 // Build up code associated with such a case.
-                let substructure = EnumMatching(index, variant, field_tuples);
+                let substructure = EnumMatching(index, variants.len(), variant, field_tuples);
                 let arm_expr = self.call_substructure_method(cx,
                                                              trait_,
                                                              type_ident,
@@ -1267,12 +1271,13 @@ impl<'a> MethodDef<'a> {
                 // We need a default case that handles the fieldless variants.
                 // The index and actual variant aren't meaningful in this case,
                 // so just use whatever
+                let substructure = EnumMatching(0, variants.len(), v, Vec::new());
                 Some(self.call_substructure_method(cx,
                                                    trait_,
                                                    type_ident,
                                                    &self_args[..],
                                                    nonself_args,
-                                                   &EnumMatching(0, v, Vec::new())))
+                                                   &substructure))
             }
             _ if variants.len() > 1 && self_args.len() > 1 => {
                 // Since we know that all the arguments will match if we reach
@@ -1548,7 +1553,7 @@ impl<'a> TraitDef<'a> {
                             span: Span { ctxt: self.span.ctxt, ..pat.span },
                             node: ast::FieldPat {
                                 ident: ident.unwrap(),
-                                pat: pat,
+                                pat,
                                 is_shorthand: false,
                                 attrs: ast::ThinVec::new(),
                             },
@@ -1624,7 +1629,7 @@ pub fn cs_fold<F>(use_foldl: bool,
 /// Call the method that is being derived on all the fields, and then
 /// process the collected results. i.e.
 ///
-/// ```ignore
+/// ```ignore (only-for-syntax-highlight)
 /// f(cx, span, vec![self_1.method(__arg_1_1, __arg_2_1),
 ///                  self_2.method(__arg_1_2, __arg_2_2)])
 /// ```

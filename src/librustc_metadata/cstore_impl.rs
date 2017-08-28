@@ -12,17 +12,18 @@ use cstore;
 use encoder;
 use schema;
 
-use rustc::dep_graph::DepTrackingMapConfig;
+use rustc::ty::maps::QueryConfig;
 use rustc::middle::cstore::{CrateStore, CrateSource, LibSource, DepKind,
                             NativeLibrary, MetadataLoader, LinkMeta,
-                            LinkagePreference, LoadedMacro, EncodedMetadata};
+                            LinkagePreference, LoadedMacro, EncodedMetadata,
+                            EncodedMetadataHashes};
 use rustc::hir::def;
 use rustc::middle::lang_items;
 use rustc::session::Session;
 use rustc::ty::{self, TyCtxt};
 use rustc::ty::maps::Providers;
 use rustc::hir::def_id::{CrateNum, DefId, DefIndex, CRATE_DEF_INDEX, LOCAL_CRATE};
-use rustc::hir::map::{DefKey, DefPath, DisambiguatedDefPathData, DefPathHash};
+use rustc::hir::map::{DefKey, DefPath, DefPathHash};
 use rustc::hir::map::blocks::FnLikeNode;
 use rustc::hir::map::definitions::{DefPathTable, GlobalMetaDataKind};
 use rustc::util::nodemap::{NodeSet, DefIdMap};
@@ -33,6 +34,7 @@ use std::rc::Rc;
 
 use syntax::ast;
 use syntax::attr;
+use syntax::ext::base::SyntaxExtension;
 use syntax::parse::filemap_to_stream;
 use syntax::symbol::Symbol;
 use syntax_pos::{Span, NO_EXPANSION};
@@ -44,7 +46,7 @@ macro_rules! provide {
         pub fn provide<$lt>(providers: &mut Providers<$lt>) {
             $(fn $name<'a, $lt:$lt>($tcx: TyCtxt<'a, $lt, $lt>, $def_id: DefId)
                                     -> <ty::queries::$name<$lt> as
-                                        DepTrackingMapConfig>::Value {
+                                        QueryConfig>::Value {
                 assert!(!$def_id.is_local());
 
                 let def_path_hash = $tcx.def_path_hash($def_id);
@@ -106,7 +108,7 @@ provide! { <'tcx> tcx, def_id, cdata,
     mir_const_qualif => { cdata.mir_const_qualif(def_id.index) }
     typeck_tables_of => { cdata.item_body_tables(def_id.index, tcx) }
     closure_kind => { cdata.closure_kind(def_id.index) }
-    closure_type => { cdata.closure_ty(def_id.index, tcx) }
+    fn_sig => { cdata.fn_sig(def_id.index, tcx) }
     inherent_impls => { Rc::new(cdata.get_inherent_implementations_for_type(def_id.index)) }
     is_const_fn => { cdata.is_const_fn(def_id.index) }
     is_foreign_item => { cdata.is_foreign_item(def_id.index) }
@@ -134,8 +136,9 @@ provide! { <'tcx> tcx, def_id, cdata,
     is_mir_available => { cdata.is_item_mir_available(def_id.index) }
 
     dylib_dependency_formats => { Rc::new(cdata.get_dylib_dependency_formats(&tcx.dep_graph)) }
-    is_allocator => { cdata.is_allocator(&tcx.dep_graph) }
     is_panic_runtime => { cdata.is_panic_runtime(&tcx.dep_graph) }
+    is_compiler_builtins => { cdata.is_compiler_builtins(&tcx.dep_graph) }
+    has_global_allocator => { cdata.has_global_allocator(&tcx.dep_graph) }
     extern_crate => { Rc::new(cdata.extern_crate.get()) }
 }
 
@@ -281,7 +284,7 @@ impl CrateStore for cstore::CStore {
     {
         self.get_crate_data(cnum).root.plugin_registrar_fn.map(|index| DefId {
             krate: cnum,
-            index: index
+            index,
         })
     }
 
@@ -289,7 +292,7 @@ impl CrateStore for cstore::CStore {
     {
         self.get_crate_data(cnum).root.macro_derive_registrar.map(|index| DefId {
             krate: cnum,
-            index: index
+            index,
         })
     }
 
@@ -305,16 +308,6 @@ impl CrateStore for cstore::CStore {
 
     fn is_no_builtins(&self, cnum: CrateNum) -> bool {
         self.get_crate_data(cnum).is_no_builtins(&self.dep_graph)
-    }
-
-    fn retrace_path(&self,
-                    cnum: CrateNum,
-                    path: &[DisambiguatedDefPathData])
-                    -> Option<DefId> {
-        let cdata = self.get_crate_data(cnum);
-        cdata.def_path_table
-             .retrace_path(&path)
-             .map(|index| DefId { krate: cnum, index: index })
     }
 
     /// Returns the `DefKey` for a given `DefId`. This indicates the
@@ -365,6 +358,10 @@ impl CrateStore for cstore::CStore {
         let data = self.get_crate_data(id.krate);
         if let Some(ref proc_macros) = data.proc_macros {
             return LoadedMacro::ProcMacro(proc_macros[id.index.as_usize() - 1].1.clone());
+        } else if data.name == "proc_macro" &&
+                  self.get_crate_data(id.krate).item_name(id.index) == "quote" {
+            let ext = SyntaxExtension::ProcMacro(Box::new(::proc_macro::__internal::Quoter));
+            return LoadedMacro::ProcMacro(Rc::new(ext));
         }
 
         let (name, def) = data.get_macro(id.index);
@@ -372,7 +369,7 @@ impl CrateStore for cstore::CStore {
 
         let filemap = sess.parse_sess.codemap().new_filemap(source_name, def.body);
         let local_span = Span { lo: filemap.start_pos, hi: filemap.end_pos, ctxt: NO_EXPANSION };
-        let body = filemap_to_stream(&sess.parse_sess, filemap);
+        let body = filemap_to_stream(&sess.parse_sess, filemap, None);
 
         // Mark the attrs as used
         let attrs = data.get_item_attrs(id.index, &self.dep_graph);
@@ -395,6 +392,7 @@ impl CrateStore for cstore::CStore {
                 legacy: def.legacy,
             }),
             vis: ast::Visibility::Inherited,
+            tokens: None,
         })
     }
 
@@ -448,7 +446,7 @@ impl CrateStore for cstore::CStore {
                                  tcx: TyCtxt<'a, 'tcx, 'tcx>,
                                  link_meta: &LinkMeta,
                                  reachable: &NodeSet)
-                                 -> EncodedMetadata
+                                 -> (EncodedMetadata, EncodedMetadataHashes)
     {
         encoder::encode_metadata(tcx, link_meta, reachable)
     }
@@ -483,7 +481,7 @@ impl CrateStore for cstore::CStore {
                 _ => {},
             }
 
-            let mut bfs_queue = &mut VecDeque::new();
+            let bfs_queue = &mut VecDeque::new();
             let mut add_child = |bfs_queue: &mut VecDeque<_>, child: def::Export, parent: DefId| {
                 let child = child.def.def_id();
 

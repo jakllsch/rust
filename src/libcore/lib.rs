@@ -36,12 +36,12 @@
 //!   These functions are often provided by the system libc, but can also be
 //!   provided by the [rlibc crate](https://crates.io/crates/rlibc).
 //!
-//! * `rust_begin_panic` - This function takes three arguments, a
-//!   `fmt::Arguments`, a `&'static str`, and a `u32`. These three arguments
+//! * `rust_begin_panic` - This function takes four arguments, a
+//!   `fmt::Arguments`, a `&'static str`, and two `u32`'s. These four arguments
 //!   dictate the panic message, the file at which panic was invoked, and the
-//!   line. It is up to consumers of this core library to define this panic
-//!   function; it is only required to never return. This requires a `lang`
-//!   attribute named `panic_fmt`.
+//!   line and column inside the file. It is up to consumers of this core
+//!   library to define this panic function; it is only required to never
+//!   return. This requires a `lang` attribute named `panic_fmt`.
 //!
 //! * `rust_eh_personality` - is used by the failure mechanisms of the
 //!    compiler. This is often mapped to GCC's personality function, but crates
@@ -51,9 +51,7 @@
 // Since libcore defines many fundamental lang items, all tests live in a
 // separate crate, libcoretest, to avoid bizarre issues.
 
-#![crate_name = "core"]
 #![stable(feature = "core", since = "1.6.0")]
-#![crate_type = "rlib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/",
@@ -70,7 +68,6 @@
 #![feature(allow_internal_unstable)]
 #![feature(asm)]
 #![feature(associated_type_defaults)]
-#![feature(associated_consts)]
 #![feature(cfg_target_feature)]
 #![feature(cfg_target_has_atomic)]
 #![feature(concat_idents)]

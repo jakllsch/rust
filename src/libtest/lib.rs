@@ -23,10 +23,11 @@
 // running tests while providing a base that other test frameworks may
 // build off of.
 
+// NB: this is also specified in this crate's Cargo.toml, but libsyntax contains logic specific to
+// this crate, which relies on this attribute (rather than the value of `--crate-name` passed by
+// cargo) to detect this crate.
 #![crate_name = "test"]
 #![unstable(feature = "test", issue = "27812")]
-#![crate_type = "rlib"]
-#![crate_type = "dylib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/",
@@ -34,14 +35,14 @@
 #![deny(warnings)]
 
 #![feature(asm)]
-#![feature(libc)]
-#![feature(rustc_private)]
+#![cfg_attr(unix, feature(libc))]
 #![feature(set_stdio)]
-#![feature(staged_api)]
 #![feature(panic_unwind)]
+#![feature(staged_api)]
 
 extern crate getopts;
 extern crate term;
+#[cfg(unix)]
 extern crate libc;
 extern crate panic_unwind;
 
@@ -212,6 +213,7 @@ pub struct TestDesc {
     pub name: TestName,
     pub ignore: bool,
     pub should_panic: ShouldPanic,
+    pub allow_fail: bool,
 }
 
 #[derive(Clone)]
@@ -236,8 +238,8 @@ pub struct Metric {
 impl Metric {
     pub fn new(value: f64, noise: f64) -> Metric {
         Metric {
-            value: value,
-            noise: noise,
+            value,
+            noise,
         }
     }
 }
@@ -372,30 +374,31 @@ impl TestOpts {
 /// Result of parsing the options.
 pub type OptRes = Result<TestOpts, String>;
 
-#[cfg_attr(rustfmt, rustfmt_skip)]
-fn optgroups() -> Vec<getopts::OptGroup> {
-    vec![getopts::optflag("", "ignored", "Run ignored tests"),
-      getopts::optflag("", "test", "Run tests and not benchmarks"),
-      getopts::optflag("", "bench", "Run benchmarks instead of tests"),
-      getopts::optflag("", "list", "List all tests and benchmarks"),
-      getopts::optflag("h", "help", "Display this message (longer with --help)"),
-      getopts::optopt("", "logfile", "Write logs to the specified file instead \
-                          of stdout", "PATH"),
-      getopts::optflag("", "nocapture", "don't capture stdout/stderr of each \
-                                         task, allow printing directly"),
-      getopts::optopt("", "test-threads", "Number of threads used for running tests \
-                                           in parallel", "n_threads"),
-      getopts::optmulti("", "skip", "Skip tests whose names contain FILTER (this flag can \
-                                     be used multiple times)","FILTER"),
-      getopts::optflag("q", "quiet", "Display one character per test instead of one line"),
-      getopts::optflag("", "exact", "Exactly match filters rather than by substring"),
-      getopts::optopt("", "color", "Configure coloring of output:
+fn optgroups() -> getopts::Options {
+    let mut opts = getopts::Options::new();
+    opts.optflag("", "ignored", "Run ignored tests")
+        .optflag("", "test", "Run tests and not benchmarks")
+        .optflag("", "bench", "Run benchmarks instead of tests")
+        .optflag("", "list", "List all tests and benchmarks")
+        .optflag("h", "help", "Display this message (longer with --help)")
+        .optopt("", "logfile", "Write logs to the specified file instead \
+                                of stdout", "PATH")
+        .optflag("", "nocapture", "don't capture stdout/stderr of each \
+                                   task, allow printing directly")
+        .optopt("", "test-threads", "Number of threads used for running tests \
+                                     in parallel", "n_threads")
+        .optmulti("", "skip", "Skip tests whose names contain FILTER (this flag can \
+                               be used multiple times)","FILTER")
+        .optflag("q", "quiet", "Display one character per test instead of one line")
+        .optflag("", "exact", "Exactly match filters rather than by substring")
+        .optopt("", "color", "Configure coloring of output:
             auto   = colorize if stdout is a tty and tests are run on serially (default);
             always = always colorize output;
-            never  = never colorize output;", "auto|always|never")]
+            never  = never colorize output;", "auto|always|never");
+    return opts
 }
 
-fn usage(binary: &str) {
+fn usage(binary: &str, options: &getopts::Options) {
     let message = format!("Usage: {} [OPTIONS] [FILTER]", binary);
     println!(r#"{usage}
 
@@ -424,19 +427,19 @@ Test Attributes:
                      test, then the test runner will ignore these tests during
                      normal test runs. Running with --ignored will run these
                      tests."#,
-             usage = getopts::usage(&message, &optgroups()));
+             usage = options.usage(&message));
 }
 
 // Parses command line arguments into test options
 pub fn parse_opts(args: &[String]) -> Option<OptRes> {
-    let args_ = &args[1..];
-    let matches = match getopts::getopts(args_, &optgroups()) {
+    let opts = optgroups();
+    let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(f) => return Some(Err(f.to_string())),
     };
 
     if matches.opt_present("h") {
-        usage(&args[0]);
+        usage(&args[0], &opts);
         return None;
     }
 
@@ -492,17 +495,17 @@ pub fn parse_opts(args: &[String]) -> Option<OptRes> {
     };
 
     let test_opts = TestOpts {
-        list: list,
-        filter: filter,
+        list,
+        filter,
         filter_exact: exact,
-        run_ignored: run_ignored,
-        run_tests: run_tests,
-        bench_benchmarks: bench_benchmarks,
-        logfile: logfile,
-        nocapture: nocapture,
-        color: color,
-        quiet: quiet,
-        test_threads: test_threads,
+        run_ignored,
+        run_tests,
+        bench_benchmarks,
+        logfile,
+        nocapture,
+        color,
+        quiet,
+        test_threads,
         skip: matches.opt_strs("skip"),
         options: Options::new(),
     };
@@ -522,6 +525,7 @@ pub enum TestResult {
     TrFailed,
     TrFailedMsg(String),
     TrIgnored,
+    TrAllowedFail,
     TrMetrics(MetricMap),
     TrBench(BenchSamples),
 }
@@ -542,6 +546,7 @@ struct ConsoleTestState<T> {
     passed: usize,
     failed: usize,
     ignored: usize,
+    allowed_fail: usize,
     filtered_out: usize,
     measured: usize,
     metrics: MetricMap,
@@ -563,14 +568,15 @@ impl<T: Write> ConsoleTestState<T> {
         };
 
         Ok(ConsoleTestState {
-            out: out,
-            log_out: log_out,
+            out,
+            log_out,
             use_color: use_color(opts),
             quiet: opts.quiet,
             total: 0,
             passed: 0,
             failed: 0,
             ignored: 0,
+            allowed_fail: 0,
             filtered_out: 0,
             measured: 0,
             metrics: MetricMap::new(),
@@ -591,6 +597,10 @@ impl<T: Write> ConsoleTestState<T> {
 
     pub fn write_ignored(&mut self) -> io::Result<()> {
         self.write_short_result("ignored", "i", term::color::YELLOW)
+    }
+
+    pub fn write_allowed_fail(&mut self) -> io::Result<()> {
+        self.write_short_result("FAILED (allowed)", "a", term::color::YELLOW)
     }
 
     pub fn write_metric(&mut self) -> io::Result<()> {
@@ -668,6 +678,7 @@ impl<T: Write> ConsoleTestState<T> {
             TrOk => self.write_ok(),
             TrFailed | TrFailedMsg(_) => self.write_failed(),
             TrIgnored => self.write_ignored(),
+            TrAllowedFail => self.write_allowed_fail(),
             TrMetrics(ref mm) => {
                 self.write_metric()?;
                 self.write_plain(&format!(": {}\n", mm.fmt_metrics()))
@@ -701,6 +712,7 @@ impl<T: Write> ConsoleTestState<T> {
                         TrFailed => "failed".to_owned(),
                         TrFailedMsg(ref msg) => format!("failed: {}", msg),
                         TrIgnored => "ignored".to_owned(),
+                        TrAllowedFail => "failed (allowed)".to_owned(),
                         TrMetrics(ref mm) => mm.fmt_metrics(),
                         TrBench(ref bs) => fmt_bench_samples(bs),
                     },
@@ -760,7 +772,8 @@ impl<T: Write> ConsoleTestState<T> {
     }
 
     pub fn write_run_finish(&mut self) -> io::Result<bool> {
-        assert!(self.passed + self.failed + self.ignored + self.measured == self.total);
+        assert!(self.passed + self.failed + self.ignored + self.measured +
+                    self.allowed_fail == self.total);
 
         if self.options.display_output {
             self.write_outputs()?;
@@ -777,12 +790,24 @@ impl<T: Write> ConsoleTestState<T> {
         } else {
             self.write_pretty("FAILED", term::color::RED)?;
         }
-        let s = format!(". {} passed; {} failed; {} ignored; {} measured; {} filtered out\n\n",
-                        self.passed,
-                        self.failed,
-                        self.ignored,
-                        self.measured,
-                        self.filtered_out);
+        let s = if self.allowed_fail > 0 {
+            format!(
+                ". {} passed; {} failed ({} allowed); {} ignored; {} measured; {} filtered out\n\n",
+                self.passed,
+                self.failed + self.allowed_fail,
+                self.allowed_fail,
+                self.ignored,
+                self.measured,
+                self.filtered_out)
+        } else {
+            format!(
+                ". {} passed; {} failed; {} ignored; {} measured; {} filtered out\n\n",
+                self.passed,
+                self.failed,
+                self.ignored,
+                self.measured,
+                self.filtered_out)
+        };
         self.write_plain(&s)?;
         return Ok(success);
     }
@@ -890,6 +915,7 @@ pub fn run_tests_console(opts: &TestOpts, tests: Vec<TestDescAndFn>) -> io::Resu
                         st.not_failures.push((test, stdout));
                     }
                     TrIgnored => st.ignored += 1,
+                    TrAllowedFail => st.allowed_fail += 1,
                     TrMetrics(mm) => {
                         let tname = test.name;
                         let MetricMap(mm) = mm;
@@ -944,12 +970,14 @@ fn should_sort_failures_before_printing_them() {
         name: StaticTestName("a"),
         ignore: false,
         should_panic: ShouldPanic::No,
+        allow_fail: false,
     };
 
     let test_b = TestDesc {
         name: StaticTestName("b"),
         ignore: false,
         should_panic: ShouldPanic::No,
+        allow_fail: false,
     };
 
     let mut st = ConsoleTestState {
@@ -961,6 +989,7 @@ fn should_sort_failures_before_printing_them() {
         passed: 0,
         failed: 0,
         ignored: 0,
+        allowed_fail: 0,
         filtered_out: 0,
         measured: 0,
         max_name_len: 10,
@@ -1304,7 +1333,7 @@ pub fn filter_tests(opts: &TestOpts, tests: Vec<TestDescAndFn>) -> Vec<TestDescA
                 let TestDescAndFn {desc, testfn} = test;
                 Some(TestDescAndFn {
                     desc: TestDesc { ignore: false, ..desc },
-                    testfn: testfn,
+                    testfn,
                 })
             } else {
                 None
@@ -1341,7 +1370,7 @@ pub fn convert_benchmarks_to_tests(tests: Vec<TestDescAndFn>) -> Vec<TestDescAnd
         };
         TestDescAndFn {
             desc: x.desc,
-            testfn: testfn,
+            testfn,
         }
     }).collect()
 }
@@ -1470,8 +1499,13 @@ fn calc_result(desc: &TestDesc, task_result: Result<(), Box<Any + Send>>) -> Tes
                   .unwrap_or(false) {
                 TrOk
             } else {
-                TrFailedMsg(format!("Panic did not include expected string '{}'", msg))
+                if desc.allow_fail {
+                    TrAllowedFail
+                } else {
+                    TrFailedMsg(format!("Panic did not include expected string '{}'", msg))
+                }
             },
+        _ if desc.allow_fail => TrAllowedFail,
         _ => TrFailed,
     }
 }
@@ -1496,8 +1530,8 @@ impl MetricMap {
     /// negative direction represents a regression.
     pub fn insert_metric(&mut self, name: &str, value: f64, noise: f64) {
         let m = Metric {
-            value: value,
-            noise: noise,
+            value,
+            noise,
         };
         let MetricMap(ref mut map) = *self;
         map.insert(name.to_owned(), m);
@@ -1658,7 +1692,7 @@ pub mod bench {
                 let mb_s = bs.bytes * 1000 / ns_iter;
 
                 BenchSamples {
-                    ns_iter_summ: ns_iter_summ,
+                    ns_iter_summ,
                     mb_s: mb_s as usize,
                 }
             }
@@ -1705,6 +1739,7 @@ mod tests {
                 name: StaticTestName("whatever"),
                 ignore: true,
                 should_panic: ShouldPanic::No,
+                allow_fail: false,
             },
             testfn: DynTestFn(Box::new(move |()| f())),
         };
@@ -1722,6 +1757,7 @@ mod tests {
                 name: StaticTestName("whatever"),
                 ignore: true,
                 should_panic: ShouldPanic::No,
+                allow_fail: false,
             },
             testfn: DynTestFn(Box::new(move |()| f())),
         };
@@ -1741,6 +1777,7 @@ mod tests {
                 name: StaticTestName("whatever"),
                 ignore: false,
                 should_panic: ShouldPanic::Yes,
+                allow_fail: false,
             },
             testfn: DynTestFn(Box::new(move |()| f())),
         };
@@ -1760,6 +1797,7 @@ mod tests {
                 name: StaticTestName("whatever"),
                 ignore: false,
                 should_panic: ShouldPanic::YesWithMessage("error message"),
+                allow_fail: false,
             },
             testfn: DynTestFn(Box::new(move |()| f())),
         };
@@ -1781,6 +1819,7 @@ mod tests {
                 name: StaticTestName("whatever"),
                 ignore: false,
                 should_panic: ShouldPanic::YesWithMessage(expected),
+                allow_fail: false,
             },
             testfn: DynTestFn(Box::new(move |()| f())),
         };
@@ -1798,6 +1837,7 @@ mod tests {
                 name: StaticTestName("whatever"),
                 ignore: false,
                 should_panic: ShouldPanic::Yes,
+                allow_fail: false,
             },
             testfn: DynTestFn(Box::new(move |()| f())),
         };
@@ -1831,6 +1871,7 @@ mod tests {
                                  name: StaticTestName("1"),
                                  ignore: true,
                                  should_panic: ShouldPanic::No,
+                                 allow_fail: false,
                              },
                              testfn: DynTestFn(Box::new(move |()| {})),
                          },
@@ -1839,6 +1880,7 @@ mod tests {
                                  name: StaticTestName("2"),
                                  ignore: false,
                                  should_panic: ShouldPanic::No,
+                                 allow_fail: false,
                              },
                              testfn: DynTestFn(Box::new(move |()| {})),
                          }];
@@ -1862,6 +1904,7 @@ mod tests {
                     name: StaticTestName(name),
                     ignore: false,
                     should_panic: ShouldPanic::No,
+                    allow_fail: false,
                 },
                 testfn: DynTestFn(Box::new(move |()| {}))
             })
@@ -1943,6 +1986,7 @@ mod tests {
                         name: DynTestName((*name).clone()),
                         ignore: false,
                         should_panic: ShouldPanic::No,
+                        allow_fail: false,
                     },
                     testfn: DynTestFn(Box::new(move |()| testfn())),
                 };

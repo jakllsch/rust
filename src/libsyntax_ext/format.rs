@@ -117,7 +117,8 @@ struct Context<'a, 'b: 'a> {
 /// expressions.
 ///
 /// If parsing succeeds, the return value is:
-/// ```ignore
+///
+/// ```text
 /// Some((fmtstr, parsed arguments, index map for named arguments))
 /// ```
 fn parse_args(ecx: &mut ExtCtxt,
@@ -528,7 +529,7 @@ impl<'a, 'b> Context<'a, 'b> {
 
     /// Actually builds the expression which the format_args! block will be
     /// expanded to
-    fn into_expr(mut self) -> P<ast::Expr> {
+    fn into_expr(self) -> P<ast::Expr> {
         let mut locals = Vec::new();
         let mut counts = Vec::new();
         let mut pats = Vec::new();
@@ -557,7 +558,11 @@ impl<'a, 'b> Context<'a, 'b> {
         // passed to this function.
         for (i, e) in self.args.into_iter().enumerate() {
             let name = self.ecx.ident_of(&format!("__arg{}", i));
-            pats.push(self.ecx.pat_ident(DUMMY_SP, name));
+            let span = Span {
+                ctxt: e.span.ctxt.apply_mark(self.ecx.current_expansion.mark),
+                ..DUMMY_SP
+            };
+            pats.push(self.ecx.pat_ident(span, name));
             for ref arg_ty in self.arg_unique_types[i].iter() {
                 locals.push(Context::format_arg(self.ecx, self.macsp, e.span, arg_ty, name));
             }
@@ -671,10 +676,10 @@ impl<'a, 'b> Context<'a, 'b> {
 }
 
 pub fn expand_format_args<'cx>(ecx: &'cx mut ExtCtxt,
-                               sp: Span,
+                               mut sp: Span,
                                tts: &[tokenstream::TokenTree])
                                -> Box<base::MacResult + 'cx> {
-
+    sp.ctxt = sp.ctxt.apply_mark(ecx.current_expansion.mark);
     match parse_args(ecx, sp, tts) {
         Some((efmt, args, names)) => {
             MacEager::expr(expand_preparsed_format_args(ecx, sp, efmt, args, names))
@@ -695,7 +700,8 @@ pub fn expand_preparsed_format_args(ecx: &mut ExtCtxt,
     // `ArgumentType` does not derive `Clone`.
     let arg_types: Vec<_> = (0..args.len()).map(|_| Vec::new()).collect();
     let arg_unique_types: Vec<_> = (0..args.len()).map(|_| Vec::new()).collect();
-    let macsp = ecx.call_site();
+    let mut macsp = ecx.call_site();
+    macsp.ctxt = macsp.ctxt.apply_mark(ecx.current_expansion.mark);
     let msg = "format argument must be a string literal.";
     let fmt = match expr_to_spanned_string(ecx, efmt, msg) {
         Some(fmt) => fmt,
@@ -703,11 +709,11 @@ pub fn expand_preparsed_format_args(ecx: &mut ExtCtxt,
     };
 
     let mut cx = Context {
-        ecx: ecx,
-        args: args,
-        arg_types: arg_types,
-        arg_unique_types: arg_unique_types,
-        names: names,
+        ecx,
+        args,
+        arg_types,
+        arg_unique_types,
+        names,
         curarg: 0,
         arg_index_map: Vec::new(),
         count_args: Vec::new(),
@@ -718,7 +724,7 @@ pub fn expand_preparsed_format_args(ecx: &mut ExtCtxt,
         pieces: Vec::new(),
         str_pieces: Vec::new(),
         all_pieces_simple: true,
-        macsp: macsp,
+        macsp,
         fmtsp: fmt.span,
     };
 
@@ -794,9 +800,13 @@ pub fn expand_preparsed_format_args(ecx: &mut ExtCtxt,
             } else {
                 let mut diag = cx.ecx.struct_span_err(cx.fmtsp,
                     "multiple unused formatting arguments");
-                for (sp, msg) in errs {
-                    diag.span_note(sp, msg);
+
+                // Ignoring message, as it gets repetitive
+                // Then use MultiSpan to not clutter up errors
+                for (sp, _) in errs {
+                    diag.span_label(sp, "unused");
                 }
+
                 diag
             }
         };

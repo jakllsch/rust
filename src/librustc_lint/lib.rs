@@ -19,9 +19,6 @@
 //!
 //! This API is completely unstable and subject to change.
 
-#![crate_name = "rustc_lint"]
-#![crate_type = "dylib"]
-#![crate_type = "rlib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
       html_root_url = "https://doc.rust-lang.org/nightly/")]
@@ -45,10 +42,10 @@ extern crate rustc_back;
 extern crate rustc_const_eval;
 extern crate syntax_pos;
 
-pub use rustc::lint;
-pub use rustc::middle;
-pub use rustc::session;
-pub use rustc::util;
+use rustc::lint;
+use rustc::middle;
+use rustc::session;
+use rustc::util;
 
 use session::Session;
 use lint::LintId;
@@ -111,6 +108,7 @@ pub fn register_builtins(store: &mut lint::LintStore, sess: Option<&Session>) {
                        UnusedImportBraces,
                        AnonymousParameters,
                        IllegalFloatLiteralPattern,
+                       UnusedDocComment,
                        );
 
     add_early_builtin_with_new!(sess,
@@ -185,6 +183,10 @@ pub fn register_builtins(store: &mut lint::LintStore, sess: Option<&Session>) {
             reference: "issue #34537 <https://github.com/rust-lang/rust/issues/34537>",
         },
         FutureIncompatibleInfo {
+            id: LintId::of(PUB_USE_OF_PRIVATE_EXTERN_CRATE),
+            reference: "issue #34537 <https://github.com/rust-lang/rust/issues/34537>",
+        },
+        FutureIncompatibleInfo {
             id: LintId::of(PATTERNS_IN_FNS_WITHOUT_BODY),
             reference: "issue #35203 <https://github.com/rust-lang/rust/issues/35203>",
         },
@@ -231,7 +233,11 @@ pub fn register_builtins(store: &mut lint::LintStore, sess: Option<&Session>) {
         FutureIncompatibleInfo {
             id: LintId::of(PARENTHESIZED_PARAMS_IN_TYPES_AND_MODULES),
             reference: "issue #42238 <https://github.com/rust-lang/rust/issues/42238>",
-        }
+        },
+        FutureIncompatibleInfo {
+            id: LintId::of(LATE_BOUND_LIFETIME_ARGUMENTS),
+            reference: "issue #42868 <https://github.com/rust-lang/rust/issues/42868>",
+        },
         ]);
 
     // Register renamed and removed lints
