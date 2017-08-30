@@ -8,15 +8,19 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![feature(drop_types_in_const)]
 
-// pretty-expanded FIXME #23616
+struct WithDtor;
 
-#[repr(simd)] //~ ERROR SIMD types are experimental
-struct RGBA {
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32
+impl Drop for WithDtor {
+    fn drop(&mut self) {}
 }
 
-pub fn main() {}
+static FOO: Option<&'static WithDtor> = Some(&WithDtor);
+//~^ ERROR statics are not allowed to have destructors
+//~| ERROR borrowed value does not live long enoug
+
+static BAR: i32 = (WithDtor, 0).1;
+//~^ ERROR statics are not allowed to have destructors
+
+fn main () {}

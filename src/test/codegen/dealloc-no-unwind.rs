@@ -7,16 +7,26 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+//
+// no-system-llvm
+// compile-flags: -O
 
+#![crate_type="lib"]
 
-// pretty-expanded FIXME #23616
+struct A;
 
-#[repr(simd)] //~ ERROR SIMD types are experimental
-struct RGBA {
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32
+impl Drop for A {
+    fn drop(&mut self) {
+        extern { fn foo(); }
+        unsafe { foo(); }
+    }
 }
 
-pub fn main() {}
+#[no_mangle]
+pub fn a(a: Box<i32>) {
+    // CHECK-LABEL: define void @a
+    // CHECK: call void @__rust_dealloc
+    // CHECK-NEXT: call void @foo
+    let _a = A;
+    drop(a);
+}

@@ -8,15 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+fn foo(():(), ():()) {}
+fn bar(():()) {}
 
-// pretty-expanded FIXME #23616
-
-#[repr(simd)] //~ ERROR SIMD types are experimental
-struct RGBA {
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32
+fn main() {
+    let _: Result<(), String> = Ok();
+    foo();
+    foo(());
+    bar();
 }
-
-pub fn main() {}
